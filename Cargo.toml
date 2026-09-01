@@ -1,0 +1,15 @@
+[package]
+name = "nvim-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "A GPUI-based graphical frontend for Neovim"
+license = "MIT"
+publish = false
+
+[dependencies]
+async-channel = "2.5.0"
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+rmpv = "1.3.0"
+
+[profile.dev]
+debug = 1
