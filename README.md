@@ -69,6 +69,13 @@ explicit `nix develop` command remains useful for CI and non-interactive
 shells. The shell also adds the Cargo debug target directory to `PATH`, making
 the Rust `gpvim` helper available after the first build.
 
+The same shell provides `lazy.nvim`, `snacks.nvim`, an `nvim-treesitter`
+package containing only the Markdown parser, and ImageMagick. The repository
+profile loads those plugins from the Nix store through Lazy without cloning or
+downloading plugins at runtime. `SNACKS_KITTY=1` enables the image backend for
+this GUI during development; the application also answers Snacks' terminal
+capability query through Neovim's `TermResponse` API.
+
 The development shell exports `NVIM_APPNAME=nvim-gpui`, records the absolute
 Nix `nvim` wrapper in `NVIM_GPUI_NVIM`, and keeps the repository paths in the
 custom `NVIM_GPUI_CONFIG_DIR` and `NVIM_GPUI_CACHE_DIR` variables. It does not
@@ -84,9 +91,12 @@ and can be removed as a project-local cleanup operation.
 
 `just run` starts the wrapper selected by `NVIM_GPUI_NVIM` with `--embed`,
 performs the MessagePack-RPC handshake, identifies the client as a
-UI, and attaches an initial line grid. `grid_resize`, `grid_clear`,
+UI, and attaches linegrid plus multigrid support. `grid_resize`, `grid_clear`,
 `grid_destroy`, `grid_line`, `grid_cursor_goto`, `grid_scroll`, and `flush` are
-mapped into the Rust cell model. `mode_info_set` and `mode_change` select
+mapped into the Rust cell models. `win_pos` places normal split-window grids;
+`win_float_pos` places floating grids in composition order, and `win_hide`,
+`win_close`, and `win_external_pos` update their visibility. The outer grid is
+painted first, then visible window grids are layered over it. `mode_info_set` and `mode_change` select
 block, horizontal, or vertical cursor shapes and their blink timings; the
 jelly transition remains one additional quad inside `GridElement`. `option_set`
 retains all UI options and applies the font, wide-font, `linespace`, and
@@ -96,6 +106,16 @@ overline, and underline variants; `altfont` and `url` are retained as metadata
 for the future font and mouse layers. `set_icon` is decoded and retained by the
 client model. GPUI 0.2.2 has no cross-platform runtime window-icon setter, so
 it does not yet replace the macOS Dock/Finder icon.
+
+The UI advertises `stdout_tty` and consumes Neovim `ui_send` redraw events.
+`ImageStore` now parses the Kitty APC graphics stream, including tmux-wrapped
+data, chunked `a=T` transfers, local-file (`t=f`) and direct-data (`t=d`)
+transfers, PNG and raw RGB/RGBA payloads, normal placements, deletion, and
+`U=1` Unicode placeholders. Image bytes are normalized into GPUI image sources;
+placeholder cells are hidden by `GridElement` and the image is painted as a
+clipped grid overlay. The first implementation is focused on the protocol path
+used by Snacks; animation, advanced Kitty composition, and mouse/clipboard
+integration remain separate slices.
 
 In Insert and Command-line modes, the focused grid registers GPUI's system
 input handler; marked text stays in the local IME state and committed text is
@@ -107,6 +127,19 @@ optional future backend.
 
 Useful tasks are listed with `just --list`. `just ci` runs formatting,
 Clippy, and tests.
+
+To exercise the image path with the repository profile, start a PNG directly or
+open a Markdown file containing an image:
+
+```sh
+cargo run -- path/to/image.png
+cargo run -- path/to/document.md
+```
+
+Snacks will send the image through `nvim_ui_send`; Neovim's `ui_send` redraw
+event is then decoded by Rust and the placeholder grid is painted as a GPUI
+overlay. The image path is deliberately tested with the same child-process
+environment as the normal embedded session.
 
 The application reserves `--help`/`-h`, `--version`/`-V`,
 `--debug-window`, `--no-debug-window`, `--embed`, `--connect`, and
@@ -173,15 +206,17 @@ The input and image boundaries are reserved in `src/input.rs` and
 `src/image_store.rs`. `InputRouter` selects between Neovim, the system IME,
 and the future Rime backend based on editor context. The current system-input
 slice registers GPUI's `EntityInputHandler`, keeps marked text locally, and
-forwards committed text and control keys to Neovim. `ImageStore` currently
-stores protocol-neutral assets and grid-anchored placements; Kitty parsing and
-GPUI image decoding are not enabled yet.
+forwards committed text and control keys to Neovim. `ImageStore` owns Kitty
+transfers and grid-anchored or placeholder-based image placements; GPUI keeps a
+stable image source per image id so redraws do not repeatedly copy the image
+into every cell.
 
 ## Planned slices
 
 1. Coalesce resize requests during continuous window dragging.
 2. Expand input, commands, events, and multi-window behavior.
-3. Add Kitty graphics parsing and image placement behind `ImageStore`.
+3. Add Kitty animation/composition details and richer image invalidation behind
+   `ImageStore`.
 
 ## Current client boundary
 
@@ -192,5 +227,5 @@ cursor, resize the grid, route system-IME text, and terminate with the Neovim
 session. It is not yet a daily-driver replacement for Neovide or a terminal
 UI. The largest missing slices are mouse and clipboard support, complete
 command-line/message/popup rendering, multi-grid and split-window support,
-full redraw event coverage, robust key/IME composition, Kitty graphics, and
-connection/error/reconnect handling.
+full redraw event coverage, robust key/IME composition, advanced Kitty
+composition, and connection/error/reconnect handling.

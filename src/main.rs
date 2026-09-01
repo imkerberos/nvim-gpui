@@ -4,20 +4,21 @@ pub mod input;
 pub mod nvim;
 
 use gpui::{
-    div, font, point, prelude::*, px, rgb, size, svg, App, Application, AssetSource, Bounds,
-    Context, ElementInputHandler, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    div, font, img, point, prelude::*, px, rgb, size, svg, App, Application, AssetSource, Bounds,
+    Context, ElementInputHandler, Entity, FocusHandle, Focusable, Image, KeyDownEvent, MouseButton,
     Pixels, Render, SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowKind, WindowOptions,
 };
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     ffi::OsString,
     fs,
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
     time::Instant,
 };
 
@@ -25,6 +26,7 @@ use std::{
 use std::os::unix::fs::symlink;
 
 use grid::GridElement;
+use image_store::{GridId, ImageId, KittyEvent};
 use input::{
     key_to_nvim_input, should_route_key_to_neovim, EntityInputHandler, InputRouter, InputTarget,
     SystemImeState,
@@ -56,6 +58,7 @@ const INITIAL_WINDOW_HEIGHT: f32 = 600.0;
 const MIN_WINDOW_WIDTH: f32 = 80.0;
 const MIN_WINDOW_HEIGHT: f32 = 44.0;
 const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
+const DEFAULT_WINDOW_TITLE: &str = "gpvim";
 const LOGO_ASSET: &str = "nvim-gpui.svg";
 
 struct AppAssets;
@@ -403,6 +406,40 @@ impl Default for EditorState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridPlacement {
+    row: i64,
+    col: i64,
+    width: u64,
+    height: u64,
+    compindex: i64,
+    visible: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImageLayer {
+    image: ImageId,
+    grid: u64,
+    row: usize,
+    column: usize,
+    columns: u32,
+    rows: u32,
+    z_index: i32,
+}
+
+impl Default for GridPlacement {
+    fn default() -> Self {
+        Self {
+            row: 0,
+            col: 0,
+            width: 0,
+            height: 0,
+            compindex: -1,
+            visible: false,
+        }
+    }
+}
+
 struct NvimGpui {
     focus_handle: Option<FocusHandle>,
     state: EditorState,
@@ -431,6 +468,14 @@ struct NvimGpui {
     resolved_grid_wide_font: Option<GuiFontSpec>,
     shaping_cache: grid::SharedShapedLineCache,
     cursor_animation: Option<grid::CursorAnimation>,
+    other_grids: HashMap<u64, grid::GridModel>,
+    pending_other_grids: HashMap<u64, grid::GridModel>,
+    grid_placements: HashMap<u64, GridPlacement>,
+    pending_grid_placements: HashMap<u64, GridPlacement>,
+    pending_destroyed_grids: HashSet<u64>,
+    cursor_grid: u64,
+    image_store: image_store::ImageStore,
+    image_sources: HashMap<ImageId, Arc<Image>>,
 }
 
 impl Default for NvimGpui {
@@ -448,7 +493,7 @@ impl Default for NvimGpui {
             grid_size: None,
             guifont: None,
             guifontwide: None,
-            window_title: "nvim-gpui".to_owned(),
+            window_title: DEFAULT_WINDOW_TITLE.to_owned(),
             window_icon: "nvim-gpui".to_owned(),
             ui_options: HashMap::new(),
             linespace: 0.0,
@@ -463,6 +508,14 @@ impl Default for NvimGpui {
             resolved_grid_wide_font: None,
             shaping_cache: grid::ShapedLineCache::shared(),
             cursor_animation: None,
+            other_grids: HashMap::new(),
+            pending_other_grids: HashMap::new(),
+            grid_placements: HashMap::new(),
+            pending_grid_placements: HashMap::new(),
+            pending_destroyed_grids: HashSet::new(),
+            cursor_grid: 1,
+            image_store: image_store::ImageStore::new(),
+            image_sources: HashMap::new(),
         }
     }
 }
@@ -594,25 +647,13 @@ impl NvimGpui {
                 height,
             } => {
                 if grid == 1 {
-                    let highlights = self
-                        .pending_grid
-                        .as_ref()
-                        .unwrap_or(&self.grid)
-                        .highlights()
-                        .clone();
-                    let mut next_grid = grid::GridModel::new(width as usize, height as usize);
-                    for (id, attrs) in highlights {
-                        next_grid.set_highlight(id, attrs);
-                    }
-                    let (foreground, background, special) = self
-                        .pending_grid
-                        .as_ref()
-                        .unwrap_or(&self.grid)
-                        .default_colors();
-                    next_grid.set_default_colors(foreground, background, special);
-                    self.pending_grid = Some(next_grid);
+                    self.pending_grid = Some(self.new_styled_grid(width as usize, height as usize));
                     self.grid_size = Some((width, height));
+                } else {
+                    self.pending_grid_mut_for(grid)
+                        .resize(width as usize, height as usize);
                 }
+                self.pending_destroyed_grids.remove(&grid);
             }
             NvimEvent::GridLine {
                 grid,
@@ -621,42 +662,39 @@ impl NvimGpui {
                 cells,
                 wraps_to_next,
             } => {
-                if grid == 1 {
-                    self.pending_grid_mut().apply_grid_line(
-                        row as usize,
-                        col_start as usize,
-                        &cells,
-                        wraps_to_next,
-                    );
-                }
+                self.pending_grid_mut_for(grid).apply_grid_line(
+                    row as usize,
+                    col_start as usize,
+                    &cells,
+                    wraps_to_next,
+                );
             }
             NvimEvent::GridClear { grid } => {
-                if grid == 1 {
-                    self.pending_grid_mut().clear();
-                }
+                self.pending_grid_mut_for(grid).clear();
             }
             NvimEvent::GridDestroy { grid } => {
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.grid_size = None;
+                } else {
+                    self.pending_other_grids.remove(&grid);
+                    self.pending_destroyed_grids.insert(grid);
                 }
             }
             NvimEvent::GridCursorGoto { grid, row, col } => {
-                if grid == 1 {
-                    self.pending_grid_mut()
-                        .set_cursor(row as usize, col as usize);
-                }
+                self.cursor_grid = grid;
+                self.pending_grid_mut_for(grid)
+                    .set_cursor(row as usize, col as usize);
             }
             NvimEvent::DefaultColorsSet {
                 foreground,
                 background,
                 special,
             } => {
-                self.pending_grid_mut()
-                    .set_default_colors(foreground, background, special);
+                self.set_default_colors_on_all_grids(foreground, background, special);
             }
             NvimEvent::HlAttrDefine { id, attrs } => {
-                self.pending_grid_mut().set_highlight(id, attrs);
+                self.set_highlight_on_all_grids(id, attrs);
             }
             NvimEvent::GridScroll {
                 grid,
@@ -667,15 +705,87 @@ impl NvimGpui {
                 rows,
                 cols,
             } => {
+                self.pending_grid_mut_for(grid).scroll(
+                    top as usize,
+                    bot as usize,
+                    left as usize,
+                    right as usize,
+                    rows as isize,
+                    cols as isize,
+                );
+            }
+            NvimEvent::WinPos {
+                grid,
+                win: _,
+                row,
+                col,
+                width,
+                height,
+            } => {
+                self.set_grid_placement(
+                    grid,
+                    GridPlacement {
+                        row: row as i64,
+                        col: col as i64,
+                        width,
+                        height,
+                        compindex: -1,
+                        visible: true,
+                    },
+                );
+            }
+            NvimEvent::WinFloatPos {
+                grid,
+                win: _,
+                anchor: _,
+                anchor_grid: _,
+                anchor_row: _,
+                anchor_col: _,
+                mouse_enabled: _,
+                zindex: _,
+                compindex,
+                screen_row,
+                screen_col,
+            } => {
+                let mut placement = self
+                    .pending_grid_placements
+                    .get(&grid)
+                    .copied()
+                    .or_else(|| self.grid_placements.get(&grid).copied())
+                    .unwrap_or_default();
+                placement.row = screen_row;
+                placement.col = screen_col;
+                placement.compindex = compindex;
+                placement.visible = true;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinExternalPos { grid, win: _ } => {
+                let mut placement = self
+                    .pending_grid_placements
+                    .get(&grid)
+                    .copied()
+                    .or_else(|| self.grid_placements.get(&grid).copied())
+                    .unwrap_or_default();
+                placement.visible = false;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinHide { grid } => {
+                let mut placement = self
+                    .pending_grid_placements
+                    .get(&grid)
+                    .copied()
+                    .or_else(|| self.grid_placements.get(&grid).copied())
+                    .unwrap_or_default();
+                placement.visible = false;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinClose { grid } => {
                 if grid == 1 {
-                    self.pending_grid_mut().scroll(
-                        top as usize,
-                        bot as usize,
-                        left as usize,
-                        right as usize,
-                        rows as isize,
-                        cols as isize,
-                    );
+                    self.pending_grid_mut().destroy();
+                    self.grid_size = None;
+                } else {
+                    self.pending_other_grids.remove(&grid);
+                    self.pending_destroyed_grids.insert(grid);
                 }
             }
             NvimEvent::OptionSet { name, value } => {
@@ -729,6 +839,7 @@ impl NvimGpui {
                 self.cursor_mode_index = mode_idx as usize;
                 self.cursor_blink_started_at = Instant::now();
             }
+            NvimEvent::UiSend { data } => self.apply_ui_send(&data),
             NvimEvent::Flush => self.commit_pending_grid(),
             NvimEvent::Error(error) => {
                 self.rpc_status = format!("rpc error: {error}");
@@ -739,32 +850,237 @@ impl NvimGpui {
         }
     }
 
+    fn apply_ui_send(&mut self, data: &str) {
+        let events = self
+            .image_store
+            .consume_ui_data(data, GridId(self.cursor_grid));
+        for event in events {
+            match event {
+                KittyEvent::AssetUpdated { image, .. } => {
+                    if let Some(asset) = self.image_store.asset(image) {
+                        let source =
+                            Image::from_bytes(asset.format.gpui_format(), asset.encoded.clone());
+                        self.image_sources.insert(image, Arc::new(source));
+                    }
+                }
+                KittyEvent::AssetDeleted { image } => {
+                    self.image_sources.remove(&image);
+                }
+                KittyEvent::AssetsCleared => {
+                    self.image_sources.clear();
+                }
+                KittyEvent::TerminalResponse(response) => {
+                    if let Some(nvim) = self.nvim.as_ref() {
+                        if let Err(error) = nvim.send_term_event("termresponse", response) {
+                            self.rpc_status = format!("rpc terminal response error: {error}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn pending_grid_mut(&mut self) -> &mut grid::GridModel {
         self.pending_grid.get_or_insert_with(|| self.grid.clone())
     }
 
+    fn new_styled_grid(&self, width: usize, height: usize) -> grid::GridModel {
+        let source = self.pending_grid.as_ref().unwrap_or(&self.grid);
+        let mut next_grid = grid::GridModel::new(width, height);
+        for (id, attrs) in source.highlights() {
+            next_grid.set_highlight(*id, attrs.clone());
+        }
+        let (foreground, background, special) = source.default_colors();
+        next_grid.set_default_colors(foreground, background, special);
+        next_grid
+    }
+
+    fn pending_grid_mut_for(&mut self, grid: u64) -> &mut grid::GridModel {
+        if grid == 1 {
+            return self.pending_grid_mut();
+        }
+
+        if !self.pending_other_grids.contains_key(&grid) {
+            let model = self
+                .other_grids
+                .get(&grid)
+                .cloned()
+                .unwrap_or_else(|| self.new_styled_grid(0, 0));
+            self.pending_other_grids.insert(grid, model);
+        }
+
+        self.pending_other_grids
+            .get_mut(&grid)
+            .expect("pending grid was inserted")
+    }
+
+    fn set_default_colors_on_all_grids(
+        &mut self,
+        foreground: Option<u32>,
+        background: Option<u32>,
+        special: Option<u32>,
+    ) {
+        self.pending_grid_mut()
+            .set_default_colors(foreground, background, special);
+        for model in self.other_grids.values_mut() {
+            model.set_default_colors(foreground, background, special);
+        }
+        for model in self.pending_other_grids.values_mut() {
+            model.set_default_colors(foreground, background, special);
+        }
+    }
+
+    fn set_highlight_on_all_grids(&mut self, id: grid::HighlightId, attrs: grid::HighlightAttrs) {
+        self.pending_grid_mut().set_highlight(id, attrs.clone());
+        for model in self.other_grids.values_mut() {
+            model.set_highlight(id, attrs.clone());
+        }
+        for model in self.pending_other_grids.values_mut() {
+            model.set_highlight(id, attrs.clone());
+        }
+    }
+
+    fn set_grid_placement(&mut self, grid: u64, placement: GridPlacement) {
+        self.pending_grid_placements.insert(grid, placement);
+        self.pending_destroyed_grids.remove(&grid);
+    }
+
     fn commit_pending_grid(&mut self) {
-        let Some(grid) = self.pending_grid.take() else {
-            return;
-        };
+        if let Some(grid) = self.pending_grid.take() {
+            let previous_cursor = self.grid.cursor_visual_position();
+            let next_cursor = grid.cursor_visual_position();
+            if previous_cursor != next_cursor {
+                self.cursor_animation = match (previous_cursor, next_cursor) {
+                    (Some(from), Some(target)) => self
+                        .cursor_animation
+                        .map(|animation| animation.retarget(target))
+                        .or_else(|| Some(grid::CursorAnimation::new(from, target))),
+                    _ => None,
+                };
+            }
 
-        let previous_cursor = self.grid.cursor_visual_position();
-        let next_cursor = grid.cursor_visual_position();
-        if previous_cursor != next_cursor {
-            self.cursor_animation = match (previous_cursor, next_cursor) {
-                (Some(from), Some(target)) => self
-                    .cursor_animation
-                    .map(|animation| animation.retarget(target))
-                    .or_else(|| Some(grid::CursorAnimation::new(from, target))),
-                _ => None,
-            };
+            if let Some(cursor) = grid.cursor() {
+                self.state.line = cursor.row + 1;
+                self.state.column = cursor.col + 1;
+            }
+            self.grid = grid;
         }
 
-        if let Some(cursor) = grid.cursor() {
-            self.state.line = cursor.row + 1;
-            self.state.column = cursor.col + 1;
+        for (grid, model) in std::mem::take(&mut self.pending_other_grids) {
+            if !self.pending_destroyed_grids.contains(&grid) {
+                self.other_grids.insert(grid, model);
+            }
         }
-        self.grid = grid;
+
+        for (grid, placement) in std::mem::take(&mut self.pending_grid_placements) {
+            if !self.pending_destroyed_grids.contains(&grid) {
+                self.grid_placements.insert(grid, placement);
+            }
+        }
+
+        for grid in std::mem::take(&mut self.pending_destroyed_grids) {
+            self.other_grids.remove(&grid);
+            self.grid_placements.remove(&grid);
+        }
+    }
+
+    fn visible_grid_layers(&self) -> Vec<(u64, grid::GridModel, GridPlacement)> {
+        let mut layers = self
+            .other_grids
+            .iter()
+            .filter_map(|(grid, model)| {
+                let placement = self.grid_placements.get(grid).copied()?;
+                placement.visible.then(|| (*grid, model.clone(), placement))
+            })
+            .collect::<Vec<_>>();
+        layers.sort_by(|left, right| {
+            left.2
+                .compindex
+                .cmp(&right.2.compindex)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        layers
+    }
+
+    fn visible_image_layers(&self) -> Vec<ImageLayer> {
+        let mut layers = Vec::new();
+
+        for placement in self.image_store.placements() {
+            if placement.is_virtual_placeholder()
+                || self.image_store.asset(placement.key.image).is_none()
+                || !self.grid_is_visible(placement.anchor.grid.0)
+            {
+                continue;
+            }
+            layers.push(ImageLayer {
+                image: placement.key.image,
+                grid: placement.anchor.grid.0,
+                row: placement.anchor.row as usize,
+                column: placement.anchor.column as usize,
+                columns: placement.columns,
+                rows: placement.rows,
+                z_index: placement.z_index,
+            });
+        }
+
+        let mut models = vec![(1, &self.grid)];
+        models.extend(
+            self.other_grids
+                .iter()
+                .filter_map(|(grid, model)| self.grid_is_visible(*grid).then_some((*grid, model))),
+        );
+
+        for (grid, model) in models {
+            for (row, grid_row) in model.rows().iter().enumerate() {
+                for (column, cell) in grid_row.cells().iter().enumerate() {
+                    let Some((row_offset, column_offset)) =
+                        image_store::placeholder_position(&cell.text)
+                    else {
+                        continue;
+                    };
+                    if row_offset != 1 || column_offset != 1 {
+                        continue;
+                    }
+                    let Some(image) = model
+                        .highlight(cell.highlight)
+                        .and_then(|attrs| attrs.foreground)
+                        .map(ImageId)
+                    else {
+                        continue;
+                    };
+                    let Some(placement) = self.image_store.virtual_placements_for(image).next()
+                    else {
+                        continue;
+                    };
+                    layers.push(ImageLayer {
+                        image,
+                        grid,
+                        row,
+                        column,
+                        columns: placement.columns,
+                        rows: placement.rows,
+                        z_index: placement.z_index,
+                    });
+                }
+            }
+        }
+
+        layers.sort_by(|left, right| {
+            left.z_index
+                .cmp(&right.z_index)
+                .then_with(|| left.grid.cmp(&right.grid))
+                .then_with(|| left.row.cmp(&right.row))
+                .then_with(|| left.column.cmp(&right.column))
+        });
+        layers
+    }
+
+    fn grid_is_visible(&self, grid: u64) -> bool {
+        grid == 1
+            || self
+                .grid_placements
+                .get(&grid)
+                .is_some_and(|placement| placement.visible)
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, _cx: &mut Context<Self>) {
@@ -944,41 +1260,100 @@ impl Render for NvimGpui {
             root = root.child(themed_titlebar(self.window_title.clone(), BACKGROUND));
         }
 
-        root.child(
-            div()
-                .flex_1()
-                .overflow_hidden()
-                .font_family(gui_font.family.clone())
-                .text_size(px(gui_font.size))
-                .line_height(line_height)
-                .child(
-                    GridElement::new(self.grid.clone())
-                        .with_metrics(px(10.0), line_height)
-                        .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
-                        .with_shaping_cache(shaping_cache)
-                        .with_cursor_animation(self.cursor_animation)
-                        .with_cursor_mode(cursor_mode)
-                        .with_cursor_blink_started_at(cursor_blink_started_at)
-                        .with_nerd_font_mode(true)
-                        .with_input_handler(move |bounds, window, cx| {
-                            let focus_handle = {
-                                let view = entity.read(cx);
-                                if view.input_router.target() == InputTarget::SystemIme {
-                                    view.focus_handle.clone()
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(focus_handle) = focus_handle {
-                                window.handle_input(
-                                    &focus_handle,
-                                    ElementInputHandler::new(bounds, entity.clone()),
-                                    cx,
-                                );
+        let cell_width = gui_font.cell_width(window);
+        let mut editor = div()
+            .flex_1()
+            .relative()
+            .overflow_hidden()
+            .font_family(gui_font.family.clone())
+            .text_size(px(gui_font.size))
+            .line_height(line_height)
+            .child(
+                GridElement::new(self.grid.clone())
+                    .with_metrics(cell_width, line_height)
+                    .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
+                    .with_shaping_cache(Rc::clone(&shaping_cache))
+                    .with_cursor_animation(self.cursor_animation)
+                    .with_cursor_visible(self.cursor_grid == 1)
+                    .with_cursor_mode(if self.cursor_grid == 1 {
+                        cursor_mode
+                    } else {
+                        grid::CursorModeInfo::default()
+                    })
+                    .with_cursor_blink_started_at(cursor_blink_started_at)
+                    .with_nerd_font_mode(true)
+                    .with_input_handler(move |bounds, window, cx| {
+                        let focus_handle = {
+                            let view = entity.read(cx);
+                            if view.input_router.target() == InputTarget::SystemIme {
+                                view.focus_handle.clone()
+                            } else {
+                                None
                             }
-                        }),
-                ),
-        )
+                        };
+                        if let Some(focus_handle) = focus_handle {
+                            window.handle_input(
+                                &focus_handle,
+                                ElementInputHandler::new(bounds, entity.clone()),
+                                cx,
+                            );
+                        }
+                    }),
+            );
+
+        for (grid_id, model, placement) in self.visible_grid_layers() {
+            let width = placement.width.max(model.width() as u64);
+            let height = placement.height.max(model.height() as u64);
+            let layer = div()
+                .absolute()
+                .left(px(placement.col as f32 * f32::from(cell_width)))
+                .top(px(placement.row as f32 * f32::from(line_height)))
+                .w(px(width as f32 * f32::from(cell_width)))
+                .h(px(height as f32 * f32::from(line_height)))
+                .child(
+                    GridElement::new(model)
+                        .with_metrics(cell_width, line_height)
+                        .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
+                        .with_shaping_cache(Rc::clone(&shaping_cache))
+                        .with_cursor_visible(self.cursor_grid == grid_id)
+                        .with_cursor_mode(if self.cursor_grid == grid_id {
+                            cursor_mode
+                        } else {
+                            grid::CursorModeInfo::default()
+                        })
+                        .with_nerd_font_mode(true),
+                );
+            editor = editor.child(layer);
+        }
+
+        for layer in self.visible_image_layers() {
+            let Some(source) = self.image_sources.get(&layer.image).cloned() else {
+                continue;
+            };
+            let (grid_row, grid_col) = if layer.grid == 1 {
+                (0, 0)
+            } else {
+                self.grid_placements
+                    .get(&layer.grid)
+                    .map(|placement| (placement.row.max(0), placement.col.max(0)))
+                    .unwrap_or((0, 0))
+            };
+            editor = editor.child(
+                img(source)
+                    .absolute()
+                    .left(px(
+                        (layer.column as f32 + grid_col as f32) * f32::from(cell_width)
+                    ))
+                    .top(px(
+                        (layer.row as f32 + grid_row as f32) * f32::from(line_height)
+                    ))
+                    .w(px(layer.columns as f32 * f32::from(cell_width)))
+                    .h(px(layer.rows as f32 * f32::from(line_height)))
+                    .object_fit(gpui::ObjectFit::Fill),
+            );
+        }
+
+        root.child(editor)
     }
 }
 
@@ -1126,6 +1501,7 @@ fn themed_titlebar(title: String, background: u32) -> impl IntoElement {
         .h_full()
         .flex()
         .items_center()
+        .justify_start()
         .pl(px(if cfg!(target_os = "macos") {
             76.0
         } else {
@@ -1269,7 +1645,7 @@ fn main() {
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(main_bounds)),
-                        titlebar: Some(themed_titlebar_options("nvim-gpui")),
+                        titlebar: Some(themed_titlebar_options(DEFAULT_WINDOW_TITLE)),
                         is_resizable: true,
                         window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
                         ..Default::default()
@@ -1314,7 +1690,7 @@ fn main() {
 mod tests {
     use super::{
         parse_cli, parse_guifont_spec, CliAction, CliOptions, EditorState, NvimConnection,
-        NvimEvent, NvimGpui,
+        NvimEvent, NvimGpui, DEFAULT_WINDOW_TITLE,
     };
     use crate::grid::{CursorModeInfo, CursorShape, GridLineCell, HighlightAttrs, HighlightId};
     use gpui::px;
@@ -1473,6 +1849,11 @@ mod tests {
     }
 
     #[test]
+    fn default_window_title_is_gpvim() {
+        assert_eq!(NvimGpui::default().window_title, DEFAULT_WINDOW_TITLE);
+    }
+
+    #[test]
     fn nvim_icon_and_ui_options_update_the_client_model() {
         let mut app = NvimGpui::default();
 
@@ -1624,6 +2005,80 @@ mod tests {
             app.pending_grid.as_ref().unwrap().default_colors(),
             (Some(0x101010), Some(0xf0f0f0), Some(0xff0000))
         );
+    }
+
+    #[test]
+    fn multigrid_layers_keep_window_positions_and_visibility() {
+        let mut app = NvimGpui::default();
+
+        app.apply_nvim_event(NvimEvent::GridResized {
+            grid: 2,
+            width: 20,
+            height: 10,
+        });
+        app.apply_nvim_event(NvimEvent::WinPos {
+            grid: 2,
+            win: Vec::new(),
+            row: 3,
+            col: 4,
+            width: 20,
+            height: 10,
+        });
+        app.apply_nvim_event(NvimEvent::GridResized {
+            grid: 3,
+            width: 8,
+            height: 4,
+        });
+        app.apply_nvim_event(NvimEvent::GridLine {
+            grid: 3,
+            row: 0,
+            col_start: 0,
+            cells: vec![GridLineCell::new("│", HighlightId(4), 1)],
+            wraps_to_next: false,
+        });
+        app.apply_nvim_event(NvimEvent::WinFloatPos {
+            grid: 3,
+            win: Vec::new(),
+            anchor: "NW".to_owned(),
+            anchor_grid: 1,
+            anchor_row: 0,
+            anchor_col: 0,
+            mouse_enabled: true,
+            zindex: 50,
+            compindex: 7,
+            screen_row: 5,
+            screen_col: 6,
+        });
+        app.apply_nvim_event(NvimEvent::Flush);
+
+        assert_eq!(app.other_grids.get(&2).unwrap().width(), 20);
+        assert_eq!(
+            app.other_grids.get(&3).unwrap().rows()[0].cells()[0].text,
+            "│"
+        );
+        let layers = app.visible_grid_layers();
+        assert_eq!(
+            layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(layers[0].2.row, 3);
+        assert_eq!(layers[0].2.col, 4);
+        assert_eq!(layers[1].2.row, 5);
+        assert_eq!(layers[1].2.col, 6);
+
+        app.apply_nvim_event(NvimEvent::WinHide { grid: 3 });
+        app.apply_nvim_event(NvimEvent::Flush);
+        assert_eq!(
+            app.visible_grid_layers()
+                .iter()
+                .map(|(grid, _, _)| *grid)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        app.apply_nvim_event(NvimEvent::WinClose { grid: 2 });
+        app.apply_nvim_event(NvimEvent::Flush);
+        assert!(!app.other_grids.contains_key(&2));
     }
 
     #[test]

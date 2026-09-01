@@ -1,3 +1,4 @@
+use crate::image_store::is_kitty_placeholder;
 use gpui::{
     fill, font, point, px, rgb, size, App, Bounds, Corners, Element, ElementId, Font,
     GlobalElementId, Hsla, IntoElement, LayoutId, Pixels, ShapedLine, SharedString,
@@ -412,9 +413,10 @@ impl GridModel {
     }
 
     pub fn set_cursor(&mut self, row: usize, col: usize) {
-        if row < self.rows.len() && col < self.width {
-            self.cursor = Some(GridCursor { row, col });
-        }
+        // A multigrid redraw may announce the cursor before the first
+        // `grid_resize` for a newly-created window grid. Keep the coordinates
+        // and let `resize` clamp them once the grid dimensions are known.
+        self.cursor = Some(GridCursor { row, col });
     }
 
     pub fn cursor(&self) -> Option<GridCursor> {
@@ -570,6 +572,16 @@ pub struct VisualCell {
     pub kind: VisualCellKind,
 }
 
+fn visual_cell_overlaps_cursor(cell: &VisualCell, cursor: CursorVisualPosition) -> bool {
+    if cell.row != cursor.row {
+        return false;
+    }
+
+    let cell_end = cell.grid_start + cell.grid_len;
+    let cursor_end = cursor.col + cursor.width;
+    cell.grid_start < cursor_end && cursor.col < cell_end
+}
+
 pub struct VisualCellBuilder {
     nerd_font_mode: bool,
 }
@@ -714,7 +726,15 @@ fn highlight_colors(model: &GridModel, highlight: HighlightId) -> (Hsla, Option<
         .foreground
         .or(default_foreground)
         .unwrap_or(DEFAULT_FOREGROUND);
-    let background = attrs.background;
+    // A terminal paints every cell, including a blank cell whose highlight
+    // does not specify an explicit background. Keeping this as `None` makes
+    // a multigrid float transparent, so the text behind a Noice/cmdline
+    // window leaks through. Neovim's missing background means the current
+    // default background, not transparent pixels.
+    let background = attrs
+        .background
+        .or(default_background)
+        .unwrap_or(DEFAULT_BACKGROUND);
     let mut foreground: Hsla = rgb(foreground).into();
     if attrs.dim {
         foreground.a *= 0.6;
@@ -722,21 +742,13 @@ fn highlight_colors(model: &GridModel, highlight: HighlightId) -> (Hsla, Option<
     foreground.a *= blend_alpha(attrs.blend);
 
     if attrs.reverse {
-        let mut background_color: Hsla = rgb(background
-            .or(default_background)
-            .unwrap_or(DEFAULT_BACKGROUND))
-        .into();
+        let mut background_color: Hsla = rgb(background).into();
         background_color.a *= blend_alpha(attrs.blend);
         (background_color, Some(foreground))
     } else {
-        (
-            foreground,
-            background.map(|color| {
-                let mut color: Hsla = rgb(color).into();
-                color.a *= blend_alpha(attrs.blend);
-                color
-            }),
-        )
+        let mut background: Hsla = rgb(background).into();
+        background.a *= blend_alpha(attrs.blend);
+        (foreground, Some(background))
     }
 }
 
@@ -842,6 +854,7 @@ pub struct GridElement {
     wide_font: Option<(String, Pixels)>,
     cursor_animation: Option<CursorAnimation>,
     cursor_mode: CursorModeInfo,
+    cursor_visible: bool,
     cursor_blink_started_at: Instant,
     input_handler: Option<InputHandlerRegistrar>,
 }
@@ -857,6 +870,7 @@ impl GridElement {
             wide_font: None,
             cursor_animation: None,
             cursor_mode: CursorModeInfo::default(),
+            cursor_visible: false,
             cursor_blink_started_at: Instant::now(),
             input_handler: None,
         }
@@ -890,6 +904,11 @@ impl GridElement {
 
     pub fn with_cursor_mode(mut self, mode: CursorModeInfo) -> Self {
         self.cursor_mode = mode;
+        self
+    }
+
+    pub fn with_cursor_visible(mut self, visible: bool) -> Self {
+        self.cursor_visible = visible;
         self
     }
 
@@ -968,6 +987,17 @@ impl Element for GridElement {
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let now = Instant::now();
         let mut has_blinking_text = false;
+        let cursor_position = self
+            .cursor_visible
+            .then(|| self.model.cursor_visual_position())
+            .flatten();
+        let block_cursor_colors = (self.cursor_visible
+            && self.cursor_mode.shape == CursorShape::Block)
+            .then(|| {
+                cursor_position
+                    .map(|position| cursor_colors(&self.model, position, self.cursor_mode))
+            })
+            .flatten();
         let mut shaping_cache = self.shaping_cache.borrow_mut();
 
         let cells = builder
@@ -978,12 +1008,24 @@ impl Element for GridElement {
                     .model
                     .highlight(cell.highlight)
                     .unwrap_or_else(|| demo_highlight_attrs(cell.highlight));
-                let (foreground, background) = highlight_colors(&self.model, cell.highlight);
+                let (mut foreground, mut background) =
+                    highlight_colors(&self.model, cell.highlight);
+                let is_cursor_cell = block_cursor_colors.is_some_and(|_| {
+                    cursor_position
+                        .is_some_and(|position| visual_cell_overlaps_cursor(&cell, position))
+                });
+                if is_cursor_cell {
+                    let (cursor_foreground, cursor_background) =
+                        block_cursor_colors.expect("cursor colors are available");
+                    foreground = cursor_foreground;
+                    background = Some(cursor_background);
+                }
                 if attrs.blink {
                     has_blinking_text = true;
                 }
                 let line = if cell.text.is_empty()
                     || cell.text == " "
+                    || is_kitty_placeholder(&cell.text)
                     || attrs.conceal
                     || (attrs.blink
                         && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
@@ -1079,7 +1121,7 @@ impl Element for GridElement {
             window.request_animation_frame();
         }
 
-        let cursor = self.model.cursor_visual_position().and_then(|target| {
+        let cursor = cursor_position.and_then(|target| {
             if self.cursor_mode.blink_enabled()
                 && !self
                     .cursor_mode
@@ -1103,7 +1145,7 @@ impl Element for GridElement {
                 else {
                     return Some(PaintedCursor {
                         bounds: target_bounds,
-                        color: cursor_color(&self.model, target, self.cursor_mode),
+                        color: cursor_colors(&self.model, target, self.cursor_mode).1,
                     });
                 };
 
@@ -1117,7 +1159,7 @@ impl Element for GridElement {
 
             Some(PaintedCursor {
                 bounds: cursor_bounds,
-                color: cursor_color(&self.model, target, self.cursor_mode),
+                color: cursor_colors(&self.model, target, self.cursor_mode).1,
             })
         });
 
@@ -1203,23 +1245,35 @@ fn cursor_bounds(
     Bounds::new(origin, size)
 }
 
-fn cursor_color(model: &GridModel, position: CursorVisualPosition, mode: CursorModeInfo) -> Hsla {
-    let Some(attr_id) = mode.attr_id else {
-        return rgb(BLUE_FOREGROUND).into();
-    };
+fn cursor_colors(
+    model: &GridModel,
+    position: CursorVisualPosition,
+    mode: CursorModeInfo,
+) -> (Hsla, Hsla) {
+    let default_colors = highlight_colors(model, DEFAULT_HIGHLIGHT);
+    let default_background = default_colors
+        .1
+        .unwrap_or_else(|| rgb(DEFAULT_BACKGROUND).into());
+    let cell_highlight = model
+        .rows()
+        .get(position.row)
+        .and_then(|row| row.cells().get(position.col))
+        .map(|cell| cell.highlight)
+        .unwrap_or(DEFAULT_HIGHLIGHT);
 
-    if attr_id == DEFAULT_HIGHLIGHT {
-        let cell_highlight = model
-            .rows()
-            .get(position.row)
-            .and_then(|row| row.cells().get(position.col))
-            .map(|cell| cell.highlight)
-            .unwrap_or(DEFAULT_HIGHLIGHT);
-        return highlight_colors(model, cell_highlight).0;
+    match mode.attr_id {
+        // Neovim defines attr_id 0 as a request to swap the current cell's
+        // foreground and background, rather than as a normal highlight id.
+        Some(DEFAULT_HIGHLIGHT) => {
+            let (cell_foreground, cell_background) = highlight_colors(model, cell_highlight);
+            (cell_background.unwrap_or(default_colors.0), cell_foreground)
+        }
+        Some(attr_id) => {
+            let (foreground, background) = highlight_colors(model, attr_id);
+            (foreground, background.unwrap_or(default_background))
+        }
+        None => (default_background, rgb(BLUE_FOREGROUND).into()),
     }
-
-    let (foreground, background) = highlight_colors(model, attr_id);
-    background.unwrap_or(foreground)
 }
 
 fn blink_visible(started_at: Instant, now: Instant, wait_ms: u32, on_ms: u32, off_ms: u32) -> bool {
@@ -1421,10 +1475,11 @@ fn long_unicode_cells(prefix: &str) -> Vec<GridCell> {
 #[cfg(test)]
 mod tests {
     use super::{
-        blink_visible, cursor_bounds, cursor_geometry, CellKind, CursorAnimation, CursorModeInfo,
-        CursorShape, CursorVisualPosition, GridCell, GridLineCell, GridModel, GridRow,
-        HighlightAttrs, HighlightId, VisualCellBuilder, VisualCellKind, COMMENT_HIGHLIGHT,
-        DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT, LONG_TEXT_CHAR_COUNT,
+        blink_visible, cursor_bounds, cursor_colors, cursor_geometry, highlight_colors, CellKind,
+        CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell, GridLineCell,
+        GridModel, GridRow, HighlightAttrs, HighlightId, VisualCell, VisualCellBuilder,
+        VisualCellKind, COMMENT_HIGHLIGHT, DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT,
+        LONG_TEXT_CHAR_COUNT,
     };
     use gpui::{point, px, size, Bounds};
     use std::time::{Duration, Instant};
@@ -1444,6 +1499,29 @@ mod tests {
         assert_eq!(cells[0].grid_len, 2);
         assert_eq!(cells[0].text, "界");
         assert_eq!(cells[0].kind, VisualCellKind::WideCharacter);
+    }
+
+    #[test]
+    fn cursor_highlight_only_applies_to_the_cursor_row() {
+        let cell = VisualCell {
+            row: 3,
+            grid_start: 5,
+            grid_len: 1,
+            text: "x".to_owned(),
+            highlight: DEFAULT_HIGHLIGHT,
+            kind: VisualCellKind::Text,
+        };
+        let cursor = CursorVisualPosition {
+            row: 4,
+            col: 5,
+            width: 1,
+        };
+
+        assert!(!super::visual_cell_overlaps_cursor(&cell, cursor));
+        assert!(super::visual_cell_overlaps_cursor(
+            &VisualCell { row: 4, ..cell },
+            cursor
+        ));
     }
 
     #[test]
@@ -1619,6 +1697,16 @@ mod tests {
     }
 
     #[test]
+    fn cursor_can_arrive_before_the_grid_resize() {
+        let mut model = GridModel::new(0, 0);
+
+        model.set_cursor(4, 7);
+        model.resize(10, 5);
+
+        assert_eq!(model.cursor(), Some(super::GridCursor { row: 4, col: 7 }));
+    }
+
+    #[test]
     fn cursor_covers_a_wide_character_from_either_grid_cell() {
         let row = GridRow::new(vec![
             GridCell::wide_lead("界", DEFAULT_HIGHLIGHT),
@@ -1670,6 +1758,49 @@ mod tests {
         model.set_highlight(HighlightId(42), attrs.clone());
 
         assert_eq!(model.highlight(HighlightId(42)), Some(attrs));
+    }
+
+    #[test]
+    fn missing_highlight_background_inherits_the_grid_default() {
+        let mut model = GridModel::new(1, 1);
+        model.set_default_colors(Some(0xffffff), Some(0x112233), None);
+        model.set_highlight(HighlightId(42), HighlightAttrs::default());
+
+        let (_, background) = highlight_colors(&model, HighlightId(42));
+
+        assert_eq!(background, Some(gpui::rgb(0x112233).into()));
+    }
+
+    #[test]
+    fn default_cursor_attribute_swaps_the_current_cell_colors() {
+        let mut model = GridModel::new(1, 1);
+        model.set_default_colors(Some(0xffffff), Some(0x112233), None);
+        model.set_highlight(
+            HighlightId(42),
+            HighlightAttrs {
+                foreground: Some(0xaabbcc),
+                background: Some(0x445566),
+                ..Default::default()
+            },
+        );
+        model.apply_grid_line(0, 0, &[GridLineCell::new("x", HighlightId(42), 1)], false);
+
+        let normal = highlight_colors(&model, HighlightId(42));
+        let cursor = cursor_colors(
+            &model,
+            CursorVisualPosition {
+                row: 0,
+                col: 0,
+                width: 1,
+            },
+            CursorModeInfo {
+                attr_id: Some(DEFAULT_HIGHLIGHT),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(cursor.0, normal.1.expect("cell background should exist"));
+        assert_eq!(cursor.1, normal.0);
     }
 
     #[test]

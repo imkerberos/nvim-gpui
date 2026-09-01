@@ -58,6 +58,7 @@ type RpcStreams = (
 enum NvimCommand {
     Input(String),
     Resize { width: u32, height: u32 },
+    TermEvent { event: String, value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +111,37 @@ pub enum NvimEvent {
         rows: i64,
         cols: i64,
     },
+    WinPos {
+        grid: u64,
+        win: Vec<u8>,
+        row: u64,
+        col: u64,
+        width: u64,
+        height: u64,
+    },
+    WinFloatPos {
+        grid: u64,
+        win: Vec<u8>,
+        anchor: String,
+        anchor_grid: u64,
+        anchor_row: i64,
+        anchor_col: i64,
+        mouse_enabled: bool,
+        zindex: i64,
+        compindex: i64,
+        screen_row: i64,
+        screen_col: i64,
+    },
+    WinExternalPos {
+        grid: u64,
+        win: Vec<u8>,
+    },
+    WinHide {
+        grid: u64,
+    },
+    WinClose {
+        grid: u64,
+    },
     OptionSet {
         name: String,
         value: String,
@@ -127,6 +159,9 @@ pub enum NvimEvent {
     ModeChanged {
         mode: String,
         mode_idx: u64,
+    },
+    UiSend {
+        data: String,
     },
     Flush,
     Error(String),
@@ -280,6 +315,19 @@ impl NvimProcess {
             .try_send(NvimCommand::Resize { width, height })
             .map_err(|error| format!("failed to queue Neovim resize: {error}"))
     }
+
+    pub fn send_term_event(
+        &self,
+        event: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), String> {
+        self.commands
+            .try_send(NvimCommand::TermEvent {
+                event: event.into(),
+                value: value.into(),
+            })
+            .map_err(|error| format!("failed to queue Neovim terminal response: {error}"))
+    }
 }
 
 impl Drop for NvimProcess {
@@ -350,6 +398,7 @@ fn run_command_writer(
                 request_id += 1;
                 message
             }
+            NvimCommand::TermEvent { event, value } => term_event_notification_frame(event, value),
         };
         if let Err(error) = write_shared_message(&writer, &message) {
             if !shutdown_requested.load(Ordering::Acquire) {
@@ -610,6 +659,8 @@ fn ui_attach_params(width: u32, height: u32) -> Value {
         Value::Map(vec![
             (Value::from("rgb"), Value::Boolean(true)),
             (Value::from("ext_linegrid"), Value::Boolean(true)),
+            (Value::from("ext_multigrid"), Value::Boolean(true)),
+            (Value::from("stdout_tty"), Value::Boolean(true)),
         ]),
     ])
 }
@@ -724,6 +775,14 @@ fn resize_request_frame(id: u64, width: u32, height: u32) -> Value {
     ])
 }
 
+fn term_event_notification_frame(event: String, value: String) -> Value {
+    Value::Array(vec![
+        Value::from(2),
+        Value::from("nvim_ui_term_event"),
+        Value::Array(vec![Value::from(event), Value::from(value)]),
+    ])
+}
+
 fn handle_notification(
     method: &str,
     params: &Value,
@@ -800,6 +859,11 @@ fn handle_notification(
                         },
                     )?;
                 }
+                "ui_send" if !args.is_empty() => {
+                    if let Some(data) = string_value(&args[0]) {
+                        send_event(events, NvimEvent::UiSend { data })?;
+                    }
+                }
                 "grid_resize" if args.len() >= 3 => {
                     send_event(
                         events,
@@ -850,6 +914,43 @@ fn handle_notification(
                             right: args[4].as_u64().unwrap_or_default(),
                             rows: args[5].as_i64().unwrap_or_default(),
                             cols: args[6].as_i64().unwrap_or_default(),
+                        },
+                    )?;
+                }
+                "win_pos" if args.len() >= 6 => {
+                    send_event(events, parse_win_pos(args)?)?;
+                }
+                "win_float_pos" if args.len() >= 11 => {
+                    send_event(events, parse_win_float_pos(args)?)?;
+                }
+                "win_external_pos" if args.len() >= 2 => {
+                    send_event(
+                        events,
+                        NvimEvent::WinExternalPos {
+                            grid: args[0].as_u64().ok_or_else(|| {
+                                "win_external_pos has an invalid grid id".to_owned()
+                            })?,
+                            win: parse_window_id(&args[1])?,
+                        },
+                    )?;
+                }
+                "win_hide" if !args.is_empty() => {
+                    send_event(
+                        events,
+                        NvimEvent::WinHide {
+                            grid: args[0]
+                                .as_u64()
+                                .ok_or_else(|| "win_hide has an invalid grid id".to_owned())?,
+                        },
+                    )?;
+                }
+                "win_close" if !args.is_empty() => {
+                    send_event(
+                        events,
+                        NvimEvent::WinClose {
+                            grid: args[0]
+                                .as_u64()
+                                .ok_or_else(|| "win_close has an invalid grid id".to_owned())?,
                         },
                     )?;
                 }
@@ -1073,6 +1174,62 @@ fn parse_grid_line(args: &[Value]) -> Result<NvimEvent, String> {
     })
 }
 
+fn parse_win_pos(args: &[Value]) -> Result<NvimEvent, String> {
+    Ok(NvimEvent::WinPos {
+        grid: parse_u64_value(&args[0], "win_pos grid")?,
+        win: parse_window_id(&args[1])?,
+        row: parse_u64_value(&args[2], "win_pos row")?,
+        col: parse_u64_value(&args[3], "win_pos column")?,
+        width: parse_u64_value(&args[4], "win_pos width")?,
+        height: parse_u64_value(&args[5], "win_pos height")?,
+    })
+}
+
+fn parse_win_float_pos(args: &[Value]) -> Result<NvimEvent, String> {
+    Ok(NvimEvent::WinFloatPos {
+        grid: parse_u64_value(&args[0], "win_float_pos grid")?,
+        win: parse_window_id(&args[1])?,
+        anchor: string_value(&args[2]).unwrap_or_default(),
+        anchor_grid: parse_u64_value(&args[3], "win_float_pos anchor grid")?,
+        anchor_row: parse_i64_value(&args[4], "win_float_pos anchor row")?,
+        anchor_col: parse_i64_value(&args[5], "win_float_pos anchor column")?,
+        mouse_enabled: bool_value(&args[6])
+            .ok_or_else(|| "win_float_pos has an invalid mouse flag".to_owned())?,
+        zindex: parse_i64_value(&args[7], "win_float_pos z-index")?,
+        compindex: parse_i64_value(&args[8], "win_float_pos composition index")?,
+        screen_row: parse_i64_value(&args[9], "win_float_pos screen row")?,
+        screen_col: parse_i64_value(&args[10], "win_float_pos screen column")?,
+    })
+}
+
+fn parse_u64_value(value: &Value, name: &str) -> Result<u64, String> {
+    value.as_u64().ok_or_else(|| format!("{name} is invalid"))
+}
+
+fn parse_window_id(value: &Value) -> Result<Vec<u8>, String> {
+    match value {
+        Value::Ext(_, bytes) => Ok(bytes.clone()),
+        _ => Err(format!(
+            "window id is not a MessagePack extension: {value:?}"
+        )),
+    }
+}
+
+fn parse_i64_value(value: &Value, name: &str) -> Result<i64, String> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| {
+            value.as_f64().and_then(|value| {
+                value
+                    .is_finite()
+                    .then_some(value.round())
+                    .and_then(|value| i64::try_from(value as i128).ok())
+            })
+        })
+        .ok_or_else(|| format!("{name} is invalid"))
+}
+
 fn send_event(events: &Sender<NvimEvent>, event: NvimEvent) -> Result<(), String> {
     events
         .send_blocking(event)
@@ -1136,7 +1293,8 @@ fn bool_value(value: &Value) -> Option<bool> {
 mod tests {
     use super::{
         apply_project_nvim_environment, handle_notification, parse_environment, read_message,
-        resize_request_frame, write_message, NvimEvent, NVIM_EXITED,
+        resize_request_frame, term_event_notification_frame, ui_attach_params, write_message,
+        NvimEvent, NVIM_EXITED,
     };
     use async_channel::unbounded;
     use rmpv::Value;
@@ -1254,6 +1412,24 @@ mod tests {
             NvimEvent::OptionSet {
                 name: "guifont".to_owned(),
                 value: "Monaco:h12".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn redraw_ui_send_becomes_a_typed_event() {
+        let (sender, receiver) = unbounded();
+        let params = Value::Array(vec![Value::Array(vec![
+            Value::from("ui_send"),
+            Value::Array(vec![Value::from("\x1b[>q")]),
+        ])]);
+
+        handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+        assert_eq!(
+            receiver.try_recv().expect("event should be available"),
+            NvimEvent::UiSend {
+                data: "\x1b[>q".to_owned(),
             }
         );
     }
@@ -1478,5 +1654,112 @@ mod tests {
                 wraps_to_next: true,
             }
         );
+    }
+
+    #[test]
+    fn redraw_multigrid_window_events_are_decoded() {
+        let (sender, receiver) = unbounded();
+        let params = Value::Array(vec![
+            Value::Array(vec![
+                Value::from("win_pos"),
+                Value::Array(vec![
+                    Value::from(2),
+                    Value::Ext(1, vec![205, 3, 232]),
+                    Value::from(3),
+                    Value::from(4),
+                    Value::from(40),
+                    Value::from(10),
+                ]),
+            ]),
+            Value::Array(vec![
+                Value::from("win_float_pos"),
+                Value::Array(vec![
+                    Value::from(3),
+                    Value::Ext(1, vec![205, 3, 233]),
+                    Value::from("NW"),
+                    Value::from(1),
+                    Value::from(0),
+                    Value::from(0),
+                    Value::Boolean(true),
+                    Value::from(50),
+                    Value::from(7),
+                    Value::from(5),
+                    Value::from(6),
+                ]),
+            ]),
+            Value::Array(vec![
+                Value::from("win_hide"),
+                Value::Array(vec![Value::from(3)]),
+            ]),
+        ]);
+
+        handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+        assert_eq!(
+            receiver.try_recv().expect("win_pos should be available"),
+            NvimEvent::WinPos {
+                grid: 2,
+                win: vec![205, 3, 232],
+                row: 3,
+                col: 4,
+                width: 40,
+                height: 10,
+            }
+        );
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("win_float_pos should be available"),
+            NvimEvent::WinFloatPos {
+                grid: 3,
+                win: vec![205, 3, 233],
+                anchor: "NW".to_owned(),
+                anchor_grid: 1,
+                anchor_row: 0,
+                anchor_col: 0,
+                mouse_enabled: true,
+                zindex: 50,
+                compindex: 7,
+                screen_row: 5,
+                screen_col: 6,
+            }
+        );
+        assert_eq!(
+            receiver.try_recv().expect("win_hide should be available"),
+            NvimEvent::WinHide { grid: 3 }
+        );
+    }
+
+    #[test]
+    fn ui_attach_enables_multigrid() {
+        let params = ui_attach_params(80, 24);
+        let options = params[2].as_map().expect("ui options should be a map");
+
+        assert_eq!(
+            options
+                .iter()
+                .find(|(key, _)| key.as_str() == Some("ext_multigrid"))
+                .and_then(|(_, value)| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            options
+                .iter()
+                .find(|(key, _)| key.as_str() == Some("stdout_tty"))
+                .and_then(|(_, value)| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn term_event_notification_uses_the_nvim_ui_term_event_api() {
+        let frame = term_event_notification_frame(
+            "termresponse".to_owned(),
+            "\x1bP>|kitty 0.40.0\x1b\\".to_owned(),
+        );
+
+        assert_eq!(frame[0].as_u64(), Some(2));
+        assert_eq!(frame[1].as_str(), Some("nvim_ui_term_event"));
+        assert_eq!(frame[2][0].as_str(), Some("termresponse"));
     }
 }

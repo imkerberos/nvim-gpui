@@ -34,6 +34,9 @@
             openssl
             pkg-config
           ];
+          treesitterMarkdown = pkgs.vimPlugins.nvim-treesitter.withPlugins (plugins: [
+            plugins.tree-sitter-markdown
+          ]);
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -42,6 +45,7 @@
               gnumake
               just
               neovim
+              imagemagick
               rust-analyzer
               rustc
               rustfmt
@@ -56,8 +60,13 @@
             shellHook = ''
               export NVIM_GPUI_CACHE_DIR="$PWD/.cache"
               export NVIM_GPUI_CONFIG_DIR="$PWD/config"
+              export NVIM_GPUI_LAZY="${pkgs.vimPlugins.lazy-nvim}"
+              export NVIM_GPUI_SNACKS="${pkgs.vimPlugins.snacks-nvim}"
+              export NVIM_GPUI_TREESITTER="${treesitterMarkdown}"
+              export NVIM_GPUI_IMAGEMAGICK="${pkgs.imagemagick}"
               export PATH="$PWD/.cache/cargo-target/debug:$PWD/bin:$PATH"
               export NVIM_GPUI_NVIM="''${NVIM_GPUI_NVIM:-$(command -v nvim)}"
+              export SNACKS_KITTY="''${SNACKS_KITTY:-1}"
               export CARGO_TARGET_DIR="$NVIM_GPUI_CACHE_DIR/cargo-target"
               export CARGO_HOME="$NVIM_GPUI_CACHE_DIR/cargo-home"
               export TMPDIR="$PWD/tmp"
@@ -72,6 +81,7 @@
               echo "  cargo home   $CARGO_HOME"
               echo "  temp         $TMPDIR"
               echo "  nvim config  $NVIM_GPUI_CONFIG_DIR/$NVIM_APPNAME"
+              echo "  image tools  $NVIM_GPUI_IMAGEMAGICK"
               echo "  gpvim        $CARGO_TARGET_DIR/debug/gpvim (after cargo build)"
               echo "  just check   type-check and verify formatting"
               echo "  just run     launch the GPUI scaffold"
