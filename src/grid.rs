@@ -1,7 +1,7 @@
 use crate::image_store::is_kitty_placeholder;
 use gpui::{
     fill, font, point, px, rgb, size, App, Bounds, Corners, Element, ElementId, Font,
-    GlobalElementId, Hsla, IntoElement, LayoutId, Pixels, ShapedLine, SharedString,
+    FontFallbacks, GlobalElementId, Hsla, IntoElement, LayoutId, Pixels, ShapedLine, SharedString,
     StrikethroughStyle, Style, TextRun, UnderlineStyle, Window,
 };
 use std::{
@@ -761,9 +761,52 @@ fn blend_alpha(blend: Option<u8>) -> f32 {
 const MAX_SHAPED_LINE_CACHE_ENTRIES: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GlyphCoverageKey {
+    font: Font,
+    character: char,
+}
+
+/// Caches whether a primary GPUI font contains a glyph. Coverage is
+/// independent of font size, color, and grid position.
+#[derive(Default)]
+pub struct GlyphCoverageCache {
+    entries: HashMap<GlyphCoverageKey, bool>,
+}
+
+pub type SharedGlyphCoverageCache = Rc<RefCell<GlyphCoverageCache>>;
+
+impl GlyphCoverageCache {
+    pub fn shared() -> SharedGlyphCoverageCache {
+        Rc::new(RefCell::new(Self::default()))
+    }
+
+    fn contains(&mut self, window: &Window, font: &Font, character: char) -> bool {
+        let key = GlyphCoverageKey {
+            font: font.clone(),
+            character,
+        };
+        if let Some(contains) = self.entries.get(&key) {
+            return *contains;
+        }
+
+        let text_system = window.text_system();
+        let requested_font = text_system.resolve_font(font);
+        // A shaping result can still contain the primary font's missing-glyph
+        // box, so comparing shaped font ids is not a reliable coverage test.
+        // `typographic_bounds` asks the platform font directly for the glyph
+        // and therefore distinguishes a real glyph from a replacement box.
+        let contains = text_system
+            .typographic_bounds(requested_font, px(16.0), character)
+            .is_ok();
+        self.entries.insert(key, contains);
+        contains
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ShapingKey {
     text: SharedString,
-    style: ShapingStyle,
+    runs: Vec<StyledTextRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -773,6 +816,12 @@ struct ShapingStyle {
     foreground: Hsla,
     underline: Option<UnderlineStyle>,
     strikethrough: Option<StrikethroughStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StyledTextRun {
+    len: usize,
+    style: ShapingStyle,
 }
 
 #[derive(Default)]
@@ -795,11 +844,11 @@ impl ShapedLineCache {
         &mut self,
         window: &Window,
         text: SharedString,
-        style: ShapingStyle,
+        runs: Vec<StyledTextRun>,
     ) -> ShapedLine {
         let key = ShapingKey {
             text: text.clone(),
-            style: style.clone(),
+            runs: runs.clone(),
         };
 
         if let Some(line) = self.lines.get(&key) {
@@ -810,31 +859,50 @@ impl ShapedLineCache {
             self.lines.clear();
         }
 
-        let text_run = TextRun {
-            len: text.len(),
-            font: style.font,
-            color: style.foreground,
-            background_color: None,
-            underline: style.underline,
-            strikethrough: style.strikethrough,
-        };
+        let font_size = runs
+            .first()
+            .map(|run| run.style.font_size)
+            .unwrap_or(px(1.0));
+        let text_runs = runs
+            .into_iter()
+            .map(|run| TextRun {
+                len: run.len,
+                font: run.style.font,
+                color: run.style.foreground,
+                background_color: None,
+                underline: run.style.underline,
+                strikethrough: run.style.strikethrough,
+            })
+            .collect::<Vec<_>>();
         let line = window
             .text_system()
-            .shape_line(text, style.font_size, &[text_run], None);
+            .shape_line(text, font_size, &text_runs, None);
         self.lines.insert(key, line.clone());
         line
     }
 }
 
 pub struct PaintedCell {
-    line: Option<ShapedLine>,
-    origin: gpui::Point<Pixels>,
     background: Option<(Bounds<Pixels>, Hsla)>,
     overline: Option<(Bounds<Pixels>, Hsla)>,
 }
 
+struct PendingText {
+    row: usize,
+    grid_start: usize,
+    grid_end: usize,
+    text: String,
+    runs: Vec<StyledTextRun>,
+}
+
+struct PaintedText {
+    line: ShapedLine,
+    origin: gpui::Point<Pixels>,
+}
+
 pub struct GridPrepaintState {
     cells: Vec<PaintedCell>,
+    texts: Vec<PaintedText>,
     cursor: Option<PaintedCursor>,
 }
 
@@ -852,6 +920,8 @@ pub struct GridElement {
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
     wide_font: Option<(String, Pixels)>,
+    nerd_fallback_font: Option<(String, Pixels)>,
+    glyph_coverage_cache: SharedGlyphCoverageCache,
     cursor_animation: Option<CursorAnimation>,
     cursor_mode: CursorModeInfo,
     cursor_visible: bool,
@@ -868,6 +938,8 @@ impl GridElement {
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
             wide_font: None,
+            nerd_fallback_font: None,
+            glyph_coverage_cache: GlyphCoverageCache::shared(),
             cursor_animation: None,
             cursor_mode: CursorModeInfo::default(),
             cursor_visible: false,
@@ -889,6 +961,19 @@ impl GridElement {
 
     pub fn with_wide_font(mut self, family: impl Into<String>, size: Pixels) -> Self {
         self.wide_font = Some((family.into(), size));
+        self
+    }
+
+    pub fn with_nerd_fallback_font(mut self, family: impl Into<String>, size: Pixels) -> Self {
+        let family = family.into();
+        if !family.is_empty() {
+            self.nerd_fallback_font = Some((family, size));
+        }
+        self
+    }
+
+    pub fn with_glyph_coverage_cache(mut self, cache: SharedGlyphCoverageCache) -> Self {
+        self.glyph_coverage_cache = cache;
         self
     }
 
@@ -935,6 +1020,52 @@ impl GridElement {
             .ch_advance(window.text_system().resolve_font(&font), font_size)
             .map(|advance| advance.max(px(1.0)))
             .unwrap_or(self.cell_width)
+    }
+
+    fn font_for_cell(
+        &mut self,
+        window: &Window,
+        cell: &VisualCell,
+        normal_font: &Font,
+        normal_font_size: Pixels,
+    ) -> (Font, Pixels) {
+        let (base_font, size) = if cell.kind == VisualCellKind::WideCharacter {
+            self.wide_font
+                .as_ref()
+                .map(|(family, size)| (font(family.clone()), *size))
+                .unwrap_or_else(|| (normal_font.clone(), normal_font_size))
+        } else {
+            (normal_font.clone(), normal_font_size)
+        };
+
+        if cell.kind != VisualCellKind::NerdSymbol {
+            return (base_font, size);
+        }
+
+        let Some(character) = cell.text.chars().next() else {
+            return (base_font, size);
+        };
+        let Some((fallback_family, fallback_size)) = self.nerd_fallback_font.as_ref() else {
+            return (base_font, size);
+        };
+
+        if self
+            .glyph_coverage_cache
+            .borrow_mut()
+            .contains(window, &base_font, character)
+        {
+            return (base_font, size);
+        }
+
+        // Keep the primary font as the requested face. GPUI's macOS and
+        // Windows backends then pass this explicit cascade to CoreText or
+        // DirectWrite, allowing the symbol-only font to supply just the
+        // missing glyph. Resolving Symbols Nerd Font as a standalone font
+        // would fail on GPUI 0.2.2 because that font intentionally has no
+        // ordinary `m` glyph.
+        let mut fallback_font = base_font;
+        fallback_font.fallbacks = Some(FontFallbacks::from_fonts(vec![fallback_family.clone()]));
+        (fallback_font, *fallback_size)
     }
 }
 
@@ -998,122 +1129,162 @@ impl Element for GridElement {
                     .map(|position| cursor_colors(&self.model, position, self.cursor_mode))
             })
             .flatten();
-        let mut shaping_cache = self.shaping_cache.borrow_mut();
+        let mut cells = Vec::new();
+        let mut text_groups = Vec::new();
+        let mut pending_text: Option<PendingText> = None;
 
-        let cells = builder
-            .build_grid(&self.model)
-            .into_iter()
-            .map(|cell| {
-                let attrs = self
-                    .model
-                    .highlight(cell.highlight)
-                    .unwrap_or_else(|| demo_highlight_attrs(cell.highlight));
-                let (mut foreground, mut background) =
-                    highlight_colors(&self.model, cell.highlight);
-                let is_cursor_cell = block_cursor_colors.is_some_and(|_| {
-                    cursor_position
-                        .is_some_and(|position| visual_cell_overlaps_cursor(&cell, position))
-                });
-                if is_cursor_cell {
-                    let (cursor_foreground, cursor_background) =
-                        block_cursor_colors.expect("cursor colors are available");
-                    foreground = cursor_foreground;
-                    background = Some(cursor_background);
-                }
-                if attrs.blink {
-                    has_blinking_text = true;
-                }
-                let line = if cell.text.is_empty()
-                    || cell.text == " "
-                    || is_kitty_placeholder(&cell.text)
-                    || attrs.conceal
-                    || (attrs.blink
-                        && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
-                {
-                    None
+        for cell in builder.build_grid(&self.model) {
+            let attrs = self
+                .model
+                .highlight(cell.highlight)
+                .unwrap_or_else(|| demo_highlight_attrs(cell.highlight));
+            let (mut foreground, mut background) = highlight_colors(&self.model, cell.highlight);
+            let is_cursor_cell = block_cursor_colors.is_some_and(|_| {
+                cursor_position.is_some_and(|position| visual_cell_overlaps_cursor(&cell, position))
+            });
+            if is_cursor_cell {
+                let (cursor_foreground, cursor_background) =
+                    block_cursor_colors.expect("cursor colors are available");
+                foreground = cursor_foreground;
+                background = Some(cursor_background);
+            }
+            if attrs.blink {
+                has_blinking_text = true;
+            }
+            let style = if cell.text.is_empty()
+                || is_kitty_placeholder(&cell.text)
+                || attrs.conceal
+                || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
+            {
+                None
+            } else {
+                let (cell_font, cell_font_size) =
+                    self.font_for_cell(window, &cell, &normal_font, normal_font_size);
+                let cell_font = if attrs.italic {
+                    cell_font.italic()
                 } else {
-                    let text: SharedString = cell.text.clone().into();
-                    let (cell_font, cell_font_size) = if cell.kind == VisualCellKind::WideCharacter
-                    {
-                        self.wide_font
-                            .as_ref()
-                            .map(|(family, size)| (font(family.clone()), *size))
-                            .unwrap_or_else(|| (normal_font.clone(), normal_font_size))
-                    } else {
-                        (normal_font.clone(), normal_font_size)
-                    };
-                    let cell_font = if attrs.italic {
-                        cell_font.italic()
-                    } else {
-                        cell_font
-                    };
-                    let cell_font = if attrs.bold {
-                        cell_font.bold()
-                    } else {
-                        cell_font
-                    };
-                    let underline = (attrs.underline
-                        || attrs.undercurl
-                        || attrs.underdouble
-                        || attrs.underdotted
-                        || attrs.underdashed)
-                        .then(|| UnderlineStyle {
-                            thickness: px(1.0),
-                            color: attrs
-                                .special
-                                .or(attrs.foreground)
-                                .map(|color| rgb(color).into()),
-                            wavy: attrs.undercurl,
-                        });
-                    let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
+                    cell_font
+                };
+                let cell_font = if attrs.bold {
+                    cell_font.bold()
+                } else {
+                    cell_font
+                };
+                let underline = (attrs.underline
+                    || attrs.undercurl
+                    || attrs.underdouble
+                    || attrs.underdotted
+                    || attrs.underdashed)
+                    .then(|| UnderlineStyle {
                         thickness: px(1.0),
                         color: attrs
                             .special
                             .or(attrs.foreground)
                             .map(|color| rgb(color).into()),
+                        wavy: attrs.undercurl,
                     });
-                    Some(shaping_cache.shape_line(
-                        window,
-                        text,
-                        ShapingStyle {
-                            font: cell_font,
-                            font_size: cell_font_size,
-                            foreground,
-                            underline,
-                            strikethrough,
-                        },
-                    ))
-                };
-                let origin = point(
-                    bounds.origin.x + cell_width * cell.grid_start,
-                    bounds.origin.y + self.line_height * cell.row,
-                );
-                let cell_bounds =
-                    Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
-                let overline = attrs.overline.then(|| {
-                    let overline_color = attrs
+                let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: attrs
                         .special
-                        .map(|color| rgb(color).into())
-                        .unwrap_or(foreground);
-                    (
-                        Bounds::new(
-                            point(cell_bounds.origin.x, cell_bounds.origin.y + px(1.0)),
-                            size(cell_bounds.size.width, px(1.0)),
-                        ),
-                        overline_color,
-                    )
+                        .or(attrs.foreground)
+                        .map(|color| rgb(color).into()),
                 });
-                // Terminal cells are positioned from their leading edge. Do
-                // not center a shaped glyph inside the cell: the extra
-                // padding creates visible gaps between adjacent ASCII-art
-                // glyphs, whose raster width is often smaller than the cell
-                // advance.
-                PaintedCell {
-                    line,
-                    origin,
-                    background: background.map(|color| (cell_bounds, color)),
-                    overline,
+                Some(ShapingStyle {
+                    font: cell_font,
+                    font_size: cell_font_size,
+                    foreground,
+                    underline,
+                    strikethrough,
+                })
+            };
+            let origin = point(
+                bounds.origin.x + cell_width * cell.grid_start,
+                bounds.origin.y + self.line_height * cell.row,
+            );
+            let cell_bounds =
+                Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
+            let overline = attrs.overline.then(|| {
+                let overline_color = attrs
+                    .special
+                    .map(|color| rgb(color).into())
+                    .unwrap_or(foreground);
+                (
+                    Bounds::new(
+                        point(cell_bounds.origin.x, cell_bounds.origin.y + px(1.0)),
+                        size(cell_bounds.size.width, px(1.0)),
+                    ),
+                    overline_color,
+                )
+            });
+
+            if let Some(style) = style {
+                let can_merge = cell.kind == VisualCellKind::Text
+                    && cell.grid_len == 1
+                    && pending_text.as_ref().is_some_and(|pending| {
+                        pending.row == cell.row && pending.grid_end == cell.grid_start
+                    });
+                if can_merge {
+                    let pending = pending_text
+                        .as_mut()
+                        .expect("a mergeable cell must have pending text");
+                    pending.text.push_str(&cell.text);
+                    pending.grid_end = cell.grid_start + cell.grid_len;
+                    let text_len = cell.text.len();
+                    match pending.runs.last_mut() {
+                        Some(last) if last.style == style => last.len += text_len,
+                        _ => pending.runs.push(StyledTextRun {
+                            len: text_len,
+                            style,
+                        }),
+                    }
+                } else {
+                    if let Some(pending) = pending_text.take() {
+                        text_groups.push(pending);
+                    }
+                    pending_text = Some(PendingText {
+                        row: cell.row,
+                        grid_start: cell.grid_start,
+                        grid_end: cell.grid_start + cell.grid_len,
+                        text: cell.text.clone(),
+                        runs: vec![StyledTextRun {
+                            len: cell.text.len(),
+                            style,
+                        }],
+                    });
                 }
+            } else if let Some(pending) = pending_text.take() {
+                text_groups.push(pending);
+            }
+
+            // Terminal cells are positioned from their leading edge. Do
+            // not center a shaped glyph inside the cell: the extra
+            // padding creates visible gaps between adjacent ASCII-art
+            // glyphs, whose raster width is often smaller than the cell
+            // advance.
+            cells.push(PaintedCell {
+                background: background.map(|color| (cell_bounds, color)),
+                overline,
+            });
+        }
+
+        if let Some(pending) = pending_text {
+            text_groups.push(pending);
+        }
+
+        let texts = text_groups
+            .into_iter()
+            .map(|pending| {
+                let origin = point(
+                    bounds.origin.x + cell_width * pending.grid_start,
+                    bounds.origin.y + self.line_height * pending.row,
+                );
+                let text: SharedString = pending.text.into();
+                let line = self
+                    .shaping_cache
+                    .borrow_mut()
+                    .shape_line(window, text, pending.runs);
+                PaintedText { line, origin }
             })
             .collect();
 
@@ -1167,7 +1338,11 @@ impl Element for GridElement {
             window.request_animation_frame();
         }
 
-        GridPrepaintState { cells, cursor }
+        GridPrepaintState {
+            cells,
+            texts,
+            cursor,
+        }
     }
 
     fn paint(
@@ -1208,11 +1383,10 @@ impl Element for GridElement {
         // turn that overhang into visible seams at grid boundaries. The Grid
         // itself remains clipped so text cannot escape the Neovim viewport.
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for painted_cell in prepaint.cells.drain(..) {
-                let Some(line) = painted_cell.line else {
-                    continue;
-                };
-                line.paint(painted_cell.origin, self.line_height, window, cx)
+            for painted_text in prepaint.texts.drain(..) {
+                painted_text
+                    .line
+                    .paint(painted_text.origin, self.line_height, window, cx)
                     .expect("failed to paint grid text");
             }
         });

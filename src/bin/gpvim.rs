@@ -203,10 +203,25 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 }
 
 fn find_nvim_command() -> Option<PathBuf> {
-    env::var_os("NVIM_GPUI_NVIM")
+    project_environment_is_active()
+        .then(|| env::var_os("NVIM_GPUI_NVIM"))
+        .flatten()
         .map(PathBuf::from)
         .filter(|path| is_executable(path))
         .or_else(|| find_executable("nvim"))
+}
+
+fn project_environment_is_active() -> bool {
+    let Some(config_dir) = env::var_os("NVIM_GPUI_CONFIG_DIR") else {
+        return false;
+    };
+    let Some(project_root) = Path::new(&config_dir).parent() else {
+        return false;
+    };
+    let Ok(current_directory) = env::current_dir() else {
+        return false;
+    };
+    current_directory.starts_with(project_root)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -231,8 +246,10 @@ fn is_executable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_nvim_command, has_remote_connection, is_information_request};
-    use std::ffi::OsString;
+    use super::{
+        forwarded_arguments, has_nvim_command, has_remote_connection, is_information_request,
+    };
+    use std::{env, ffi::OsString};
 
     #[test]
     fn helper_recognizes_fixed_application_options() {
@@ -258,5 +275,16 @@ mod tests {
         ];
         assert!(!has_remote_connection(&arguments));
         assert!(!has_nvim_command(&arguments));
+    }
+
+    #[test]
+    fn helper_forwards_the_callers_current_directory_without_explicit_cwd() {
+        let forwarded = forwarded_arguments(&[OsString::from("README.md")]);
+        let current_directory = env::current_dir().expect("test should have a current directory");
+
+        assert_eq!(
+            &forwarded[..2],
+            [OsString::from("--cwd"), current_directory.into_os_string()]
+        );
     }
 }

@@ -3397,8 +3397,13 @@ version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
  "base64",
+ "core-graphics 0.24.0",
+ "foreign-types",
  "gpui",
  "image",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rmpv",
 ]
 

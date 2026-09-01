@@ -12,11 +12,11 @@ The rendering slice keeps Neovim's logical grid separate from visual spans:
 
 - `GridCell` represents one logical cell and can be a wide-character lead,
   continuation, blank, or ordinary text cell.
-- `VisualSpanBuilder` merges adjacent cells with the same highlight, maps a
-  wide-character pair to one shaped span, and optionally merges a Nerd Font
-  symbol followed by a same-highlight space.
-- `GridElement` uses GPUI's text system for shaping and paints each span at its
-  logical grid position.
+- `VisualCellBuilder` maps a wide-character pair to one visual span and
+  optionally merges a Nerd Font symbol followed by a same-highlight space.
+- `GridElement` keeps one logical cell per character, coalesces adjacent normal
+  cells into multi-run shaped lines, and paints each line from its logical grid
+  position. Wide characters and Nerd symbols retain their two-cell placement.
 
 The initial transport, redraw synchronization, and `guifont` selection are
 now in place. An explicitly configured `guifont` is used as-is; when it is
@@ -104,8 +104,12 @@ shaping-affecting options immediately. Highlight attributes cover the
 foreground/background, reverse, dim/blend, text styles, conceal, blink,
 overline, and underline variants; `altfont` and `url` are retained as metadata
 for the future font and mouse layers. `set_icon` is decoded and retained by the
-client model. GPUI 0.2.2 has no cross-platform runtime window-icon setter, so
-it does not yet replace the macOS Dock/Finder icon.
+client model. Before the first window opens, the app registers the bundled
+`Symbols Nerd Font` with GPUI and installs the bundled icon as the macOS Dock
+icon. The icon source is `assets/neovim-gpui.png`;
+`assets/neovim-gpui-app-icon.png` adds a solid Catppuccin-like background and
+safe padding, while `assets/neovim-gpui.icns` contains the standard 1x/2x
+macOS sizes. `just icon` regenerates the ICNS from the checked-in PNG.
 
 The UI advertises `stdout_tty` and consumes Neovim `ui_send` redraw events.
 `ImageStore` now parses the Kitty APC graphics stream, including tmux-wrapped
@@ -121,9 +125,17 @@ In Insert and Command-line modes, the focused grid registers GPUI's system
 input handler; marked text stays in the local IME state and committed text is
 forwarded to Neovim. The first `guifont` family and `:hN` size are applied to
 the grid; when no font is configured, a verified system monospace family is
-selected instead. The font's monospace advance is used as the logical cell
-width and the row height scales with the requested size. Rime remains an
-optional future backend.
+selected instead. The first `guifontwide` family is used for wide CJK cells.
+When `ENABLE_BUNDLED_NERD_FONT` in `src/app.rs` is enabled, `auto` Nerd Font
+mode checks each detected private-use Nerd glyph against the requested primary
+font through a cached GPUI glyph-coverage probe. Missing glyphs receive an
+explicit fallback cascade containing the bundled `Symbols Nerd Font`, while
+the primary font remains responsible for ordinary text. It is currently
+disabled deliberately to provide a rendering-performance baseline; disabling
+it also means no bundled font registration or glyph-coverage probe occurs.
+Normal neighboring cells are still merged into multi-run shaped lines. The
+font's monospace advance is used as the logical cell width and the row height
+scales with the requested size. Rime remains an optional future backend.
 
 Useful tasks are listed with `just --list`. `just ci` runs formatting,
 Clippy, and tests.
@@ -157,9 +169,12 @@ gpvim --connect tcp:127.0.0.1:6666
 
 `--connect` attaches to an existing Neovim and therefore does not accept local
 Neovim arguments. Embed mode uses `--nvim-command PATH` first, then
-`NVIM_GPUI_NVIM`, and finally `nvim` from `PATH`. `gpvim` also passes its
-current directory as the internal `--cwd` option because LaunchServices may
-start an AppBundle with `/` as its process working directory.
+`NVIM_GPUI_NVIM`, and finally `nvim` from `PATH`. When macOS launches the
+AppBundle through `open` or Finder without an explicit `--cwd`, nvim-gpui uses
+`Contents/MacOS` inside that AppBundle as its working directory. `gpvim` passes
+the caller's current directory explicitly because LaunchServices may start an
+AppBundle with `/` as its process working directory. Use `--cwd PATH` when a
+project directory is desired.
 
 On macOS, `just bundle` builds both Rust binaries and creates
 `.cache/macos/nvim-gpui.app` with a valid `Info.plist`. The `gpvim` helper is
@@ -168,6 +183,14 @@ LaunchServices (`open -n`) instead of directly creating a window, so it starts
 a separate application instance. Before opening it, `gpvim` resolves the
 current shell's `nvim` to an absolute path; this is important for Nix-wrapped
 Neovim. Set `NVIM_GPUI_APP` when the bundle has been moved to another location.
+
+The AppBundle registers `public.text`, `public.plain-text`,
+`public.source-code`, common script/source UTIs, and a broad list of common
+source/configuration extensions as editable documents. The document type uses
+`LSHandlerRank=Alternate`, so nvim-gpui appears in Open With without taking
+over the existing default editor. No `CFBundleTypeIconFile` or document icon
+key is declared; the Finder icons of source files therefore remain owned by
+their existing document type rather than changing to the nvim-gpui app icon.
 
 `gpvim` is a Rust binary rather than a shell script, so the same helper can be
 shipped inside the AppBundle without depending on Bash or the caller's shell.
@@ -179,10 +202,12 @@ app continues to work and reports the installation error.
 A GUI application launched by Finder/LaunchServices does not inherit the
 interactive shell's complete environment. The AppBundle detects this launch
 context and imports the user's macOS login-shell environment before spawning
-Neovim, while preserving repository-specific `NVIM_APPNAME` and
-`NVIM_GPUI_*` values. The repository-local `XDG_*` paths are then injected
-only into the embedded Neovim child, rather than into the GUI process or the
-user's shell. This is also why a Nix-wrapped `nvim` can report missing
+Neovim. Repository-specific `NVIM_APPNAME` and `NVIM_GPUI_*` values are used
+only while the selected working directory is inside this repository; when the
+AppBundle is launched from another directory, stale development variables are
+discarded and the normal Neovim profile is used. The repository-local `XDG_*`
+paths are then injected only into the embedded Neovim child, rather than into
+the GUI process or the user's shell. This is also why a Nix-wrapped `nvim` can report missing
 runpaths or runtime files when launched by a GUI: the wrapper is not merely a
 binary; it supplies environment and runtime paths that are normally prepared
 by the shell. `NVIM_GPUI_NVIM` or `--nvim-command` makes the wrapper selection

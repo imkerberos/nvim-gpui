@@ -176,14 +176,26 @@ pub struct NvimProcess {
     events: Receiver<NvimEvent>,
 }
 
+/// Return the Neovim executable selected by the repository development shell.
+///
+/// The shell variables can outlive the repository directory when a user runs
+/// `nix develop` and then changes directories. Only honor that selection while
+/// the current working directory is still inside the repository that owns the
+/// configured `NVIM_GPUI_CONFIG_DIR`.
+pub fn configured_nvim_command() -> Option<OsString> {
+    let environment: HashMap<OsString, OsString> = std::env::vars_os().collect();
+    project_nvim_environment_is_active(&environment)
+        .then(|| environment.get(OsStr::new("NVIM_GPUI_NVIM")).cloned())
+        .flatten()
+}
+
 impl NvimProcess {
     pub fn spawn(
         width: u32,
         height: u32,
         nvim_args: impl IntoIterator<Item = OsString>,
     ) -> Result<Self, String> {
-        let nvim_command =
-            std::env::var_os("NVIM_GPUI_NVIM").unwrap_or_else(|| OsString::from("nvim"));
+        let nvim_command = configured_nvim_command().unwrap_or_else(|| OsString::from("nvim"));
         Self::spawn_with_command(width, height, nvim_command, nvim_args)
     }
 
@@ -482,25 +494,29 @@ fn connect_unix(path: &str) -> Result<RpcStreams, String> {
 
 fn apply_nvim_environment(command: &mut Command) {
     let mut environment: HashMap<OsString, OsString> = std::env::vars_os().collect();
+    let project_environment = project_nvim_environment_is_active(&environment);
 
     if should_import_login_environment() {
         if let Some(startup_environment) = login_shell_environment() {
             let current_environment = environment.clone();
-            let preserve_project_environment =
-                current_environment.contains_key(OsStr::new("DIRENV_IN_ENVRC"));
-            let mut protected = vec![
-                "NVIM_APPNAME",
-                "NVIM_GPUI_CACHE_DIR",
-                "NVIM_GPUI_CONFIG_DIR",
-                "NVIM_GPUI_ENVIRONMENT",
-                "NVIM_GPUI_NVIM",
-                "DIRENV_DIR",
-                "DIRENV_IN_ENVRC",
-            ];
-            if preserve_project_environment {
-                protected.extend(["PATH", "PWD", "TMPDIR", "CARGO_HOME", "CARGO_TARGET_DIR"]);
-            }
             environment.extend(startup_environment);
+            let mut protected = Vec::new();
+            if project_environment {
+                protected.extend([
+                    "NVIM_APPNAME",
+                    "NVIM_GPUI_CACHE_DIR",
+                    "NVIM_GPUI_CONFIG_DIR",
+                    "NVIM_GPUI_ENVIRONMENT",
+                    "NVIM_GPUI_NVIM",
+                    "DIRENV_DIR",
+                    "DIRENV_IN_ENVRC",
+                    "PATH",
+                    "PWD",
+                    "TMPDIR",
+                    "CARGO_HOME",
+                    "CARGO_TARGET_DIR",
+                ]);
+            }
             for key in protected {
                 if let Some(value) = current_environment.get(OsStr::new(key)) {
                     environment.insert(OsString::from(key), value.clone());
@@ -513,8 +529,55 @@ fn apply_nvim_environment(command: &mut Command) {
     // The development shell deliberately does not export XDG_* because those
     // variables are global to tools such as Git. Neovim still gets its
     // isolated config, data, state, and cache directories here.
-    apply_project_nvim_environment(&mut environment);
+    if project_environment {
+        apply_project_nvim_environment(&mut environment);
+    } else {
+        remove_project_nvim_environment(&mut environment);
+    }
     command.envs(environment);
+}
+
+fn project_nvim_environment_is_active(environment: &HashMap<OsString, OsString>) -> bool {
+    let Ok(current_directory) = std::env::current_dir() else {
+        return false;
+    };
+    project_nvim_environment_is_active_at(environment, &current_directory)
+}
+
+fn project_nvim_environment_is_active_at(
+    environment: &HashMap<OsString, OsString>,
+    current_directory: &Path,
+) -> bool {
+    let Some(config_dir) = environment.get(OsStr::new("NVIM_GPUI_CONFIG_DIR")) else {
+        return false;
+    };
+    let Some(project_root) = Path::new(config_dir).parent() else {
+        return false;
+    };
+    current_directory.starts_with(project_root)
+}
+
+fn remove_project_nvim_environment(environment: &mut HashMap<OsString, OsString>) {
+    for key in [
+        "NVIM_GPUI_CACHE_DIR",
+        "NVIM_GPUI_CONFIG_DIR",
+        "NVIM_GPUI_ENVIRONMENT",
+        "NVIM_GPUI_IMAGEMAGICK",
+        "NVIM_GPUI_LAZY",
+        "NVIM_GPUI_NVIM",
+        "NVIM_GPUI_SNACKS",
+        "NVIM_GPUI_TREESITTER",
+        "NVIM_GPUI_CELL_WIDTH",
+        "NVIM_GPUI_CELL_HEIGHT",
+        "DIRENV_DIR",
+        "DIRENV_IN_ENVRC",
+    ] {
+        environment.remove(OsStr::new(key));
+    }
+
+    if environment.get(OsStr::new("NVIM_APPNAME")) == Some(&OsString::from("nvim-gpui")) {
+        environment.remove(OsStr::new("NVIM_APPNAME"));
+    }
 }
 
 fn apply_project_nvim_environment(environment: &mut HashMap<OsString, OsString>) {
@@ -660,6 +723,10 @@ fn ui_attach_params(width: u32, height: u32) -> Value {
             (Value::from("rgb"), Value::Boolean(true)),
             (Value::from("ext_linegrid"), Value::Boolean(true)),
             (Value::from("ext_multigrid"), Value::Boolean(true)),
+            // GPUI supplies interactive keyboard input through nvim_input.
+            // Mark it as a TTY-like input so plugins such as Snacks Dashboard
+            // do not mistake this UI for a non-interactive/piped frontend.
+            (Value::from("stdin_tty"), Value::Boolean(true)),
             (Value::from("stdout_tty"), Value::Boolean(true)),
         ]),
     ])
@@ -1292,7 +1359,8 @@ fn bool_value(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_project_nvim_environment, handle_notification, parse_environment, read_message,
+        apply_project_nvim_environment, handle_notification, parse_environment,
+        project_nvim_environment_is_active_at, read_message, remove_project_nvim_environment,
         resize_request_frame, term_event_notification_frame, ui_attach_params, write_message,
         NvimEvent, NVIM_EXITED,
     };
@@ -1302,6 +1370,7 @@ mod tests {
         collections::HashMap,
         ffi::{OsStr, OsString},
         io::Cursor,
+        path::Path,
     };
 
     #[test]
@@ -1395,6 +1464,47 @@ mod tests {
             environment.get(OsStr::new("XDG_CACHE_HOME")),
             Some(&OsString::from("/repo/.cache/nvim-cache"))
         );
+    }
+
+    #[test]
+    fn project_nvim_environment_is_scoped_to_its_repository() {
+        let environment = HashMap::from([(
+            OsString::from("NVIM_GPUI_CONFIG_DIR"),
+            OsString::from("/repo/config"),
+        )]);
+
+        assert!(project_nvim_environment_is_active_at(
+            &environment,
+            Path::new("/repo")
+        ));
+        assert!(project_nvim_environment_is_active_at(
+            &environment,
+            Path::new("/repo/src")
+        ));
+        assert!(!project_nvim_environment_is_active_at(
+            &environment,
+            Path::new("/tmp")
+        ));
+    }
+
+    #[test]
+    fn stale_project_nvim_variables_are_removed_outside_the_repository() {
+        let mut environment = HashMap::from([
+            (OsString::from("NVIM_APPNAME"), OsString::from("nvim-gpui")),
+            (
+                OsString::from("NVIM_GPUI_CONFIG_DIR"),
+                OsString::from("/repo/config"),
+            ),
+            (
+                OsString::from("NVIM_GPUI_NVIM"),
+                OsString::from("/repo/nvim"),
+            ),
+            (OsString::from("DIRENV_IN_ENVRC"), OsString::from("1")),
+        ]);
+
+        remove_project_nvim_environment(&mut environment);
+
+        assert!(environment.is_empty());
     }
 
     #[test]
@@ -1746,6 +1856,13 @@ mod tests {
             options
                 .iter()
                 .find(|(key, _)| key.as_str() == Some("stdout_tty"))
+                .and_then(|(_, value)| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            options
+                .iter()
+                .find(|(key, _)| key.as_str() == Some("stdin_tty"))
                 .and_then(|(_, value)| value.as_bool()),
             Some(true)
         );
