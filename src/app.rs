@@ -53,6 +53,7 @@ const MIN_WINDOW_WIDTH: f32 = 80.0;
 const MIN_WINDOW_HEIGHT: f32 = 44.0;
 const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
 const DEFAULT_WINDOW_TITLE: &str = "gpvim";
+const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const LOGO_ASSET: &str = "neovim-gpui.png";
 const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
 const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
@@ -1484,11 +1485,16 @@ impl Render for SettingsWindow {
                 },
                 cli_available,
                 move |cx| {
-                    let result = helper::install();
-                    source.update(cx, |view, cx| {
-                        view.cli_install_error = result.err();
-                        cx.notify();
-                    });
+                    let source = source.clone();
+                    let task = cx.background_spawn(async move { helper::install() });
+                    cx.spawn(async move |cx| {
+                        let result = task.await;
+                        let _ = source.update(cx, |view, cx| {
+                            view.cli_install_error = result.err();
+                            cx.notify();
+                        });
+                    })
+                    .detach();
                 },
             ));
 
@@ -1537,7 +1543,7 @@ impl Render for SettingsWindow {
             ))
             .child(setting_row(
                 "Command-line helper",
-                "Install gpvim so files can be opened from a terminal.",
+                "Install gpvim and gpvimdiff so files can be opened or compared from a terminal.",
                 cli_options,
             ));
 
@@ -1620,7 +1626,8 @@ impl Render for AboutWindow {
                                 .text_sm()
                                 .text_color(rgb(MUTED_TEXT))
                                 .child("A GPUI graphical frontend for Neovim."),
-                        ),
+                        )
+                        .child(repository_link()),
                 );
         } else {
             root = root
@@ -1638,10 +1645,23 @@ impl Render for AboutWindow {
                         .text_sm()
                         .text_color(rgb(MUTED_TEXT))
                         .child("A GPUI graphical frontend for Neovim."),
-                );
+                )
+                .child(repository_link());
         }
         root
     }
+}
+
+fn repository_link() -> impl IntoElement {
+    div()
+        .id("about-repository")
+        .mt_1()
+        .text_sm()
+        .text_color(rgb(ACCENT))
+        .cursor_pointer()
+        .hover(|style| style.text_color(rgb(0xb4befe)))
+        .on_click(|_, _, cx| cx.open_url(REPOSITORY_URL))
+        .child(REPOSITORY_URL)
 }
 
 fn setting_option_button(

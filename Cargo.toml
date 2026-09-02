@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A GPUI-based graphical frontend for Neovim"
 license = "MIT"
+repository = "https://github.com/imkerberos/nvim-gpui"
 publish = false
 
 [dependencies]

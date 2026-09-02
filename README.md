@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icons/neovim-gpui.png" alt="nvim-gpui icon" width="128">
+</p>
+
 # nvim-gpui
 
 A Rust and GPUI graphical frontend for Neovim.
@@ -24,36 +28,37 @@ Neovim plugins such as <code>snacks.nvim</code>.
 - Kitty Graphics Protocol image transfers and placements for image plugins.
 - Native macOS AppBundle, Dock icon, <code>gpvim</code> helper, and DMG
   packaging.
-- Nix Flake and <code>just</code> based reproducible development workflow.
 
 ## Quick start
 
-The reproducible development environment is provided by Nix. <code>direnv</code>
-is optional but recommended:
+Install Neovim and nvim-gpui with Homebrew:
 
 ~~~sh
-git clone https://github.com/your-account/nvim-gpui.git
-cd nvim-gpui
-direnv allow                 # or: nix develop
-nix develop -c just run
+brew install neovim
+brew tap imkerberos/nvim-gpui https://github.com/imkerberos/nvim-gpui.git
+brew install --cask imkerberos/nvim-gpui/nvim-gpui
+gpvim
 ~~~
 
-To pass Neovim arguments, place them after the GUI arguments:
+The tap contains architecture-aware downloads for Apple Silicon and Intel.
+The Cask also installs the <code>gpvim</code> helper, which launches the
+AppBundle and preserves the caller's working directory. To pass Neovim
+arguments:
 
 ~~~sh
-nix develop -c just run -- --clean README.md
-nix develop -c just run -- --debug-window
+gpvim --clean README.md
+gpvim --debug-window
+gpvimdiff file1 file2
 ~~~
 
-On macOS, build and open the application bundle with:
+<code>gpvimdiff</code> is a symlink to the same helper as
+<code>gpvim</code>; its name enables Neovim's diff mode.
+
+To open the installed application directly:
 
 ~~~sh
-nix develop -c just bundle
-open .cache/macos/nvim-gpui.app
+open -a nvim-gpui
 ~~~
-
-The compressed installer is created with <code>just dmg</code>. It is an
-unsigned local build; signing and notarization are not configured yet.
 
 ## Required Neovim font configuration
 
@@ -191,30 +196,6 @@ without its runpath and environment setup.
 Unknown arguments are passed through to embedded Neovim. <code>gpvim</code>
 starts the macOS AppBundle through LaunchServices and forwards the caller's
 working directory.
-
-## CI/CD
-
-GitHub Actions currently runs the repository checks on macOS for pushes and
-pull requests. Linux is not tested or supported yet. Pushing a tag such as
-<code>v0.1.0</code> builds the macOS AppBundle and DMG, uploads both packages
-as workflow artifacts, and creates a GitHub Release. Release packages are
-currently unsigned and not notarized.
-
-## Development
-
-The contributor workflow, repository layout, protocol notes, debugging
-commands, and GitHub Actions details are in
-[<code>doc/DEVELOP.md</code>](doc/DEVELOP.md).
-
-The short command list is:
-
-~~~sh
-nix develop -c just fmt
-nix develop -c just check
-nix develop -c just clippy
-nix develop -c just test
-nix develop -c just ci
-~~~
 
 ## Current limitations
 

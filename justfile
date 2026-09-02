@@ -37,15 +37,23 @@ bundle:
     install -m 644 packaging/macos/Info.plist "$PWD/.cache/macos/nvim-gpui.app/Contents/Info.plist"
     install -m 644 assets/icons/neovim-gpui.png "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui.png"
     install -m 644 assets/icons/neovim-gpui_1024x1024_1024x1024.icns "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui_1024x1024_1024x1024.icns"
+    bash packaging/macos/verify-no-nix-deps.sh "$PWD/.cache/macos/nvim-gpui.app"
     echo "created $PWD/.cache/macos/nvim-gpui.app"
 
 # Build a compressed macOS installer disk image containing the AppBundle.
+# The output is .cache/macos/nvim-gpui-aarch64.dmg or
+# .cache/macos/nvim-gpui-x86_64.dmg, depending on the host architecture.
 dmg: bundle
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" != "Darwin" ]; then echo "dmg is only supported on macOS" >&2; exit 1; fi
+    case "$(uname -m)" in
+      arm64) arch="aarch64" ;;
+      x86_64) arch="x86_64" ;;
+      *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+    esac
     staging="$PWD/.cache/macos/nvim-gpui-dmg-staging"
-    output="$PWD/.cache/macos/nvim-gpui.dmg"
+    output="$PWD/.cache/macos/nvim-gpui-${arch}.dmg"
     rm -rf "$staging" "$output"
     mkdir -p "$staging"
     cp -R "$PWD/.cache/macos/nvim-gpui.app" "$staging/nvim-gpui.app"

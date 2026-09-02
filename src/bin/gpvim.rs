@@ -1,6 +1,6 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
@@ -33,7 +33,7 @@ fn run() -> Result<u8, String> {
         return run_command(&executable, &arguments);
     }
 
-    let forwarded = forwarded_arguments(&arguments);
+    let forwarded = forwarded_arguments(&arguments, is_diff_invocation());
 
     #[cfg(target_os = "macos")]
     {
@@ -54,7 +54,7 @@ fn run() -> Result<u8, String> {
     }
 }
 
-fn forwarded_arguments(arguments: &[OsString]) -> Vec<OsString> {
+fn forwarded_arguments(arguments: &[OsString], diff_mode: bool) -> Vec<OsString> {
     let mut forwarded = Vec::with_capacity(arguments.len() + 4);
     if !has_working_directory(arguments) {
         if let Ok(directory) = env::current_dir() {
@@ -69,8 +69,24 @@ fn forwarded_arguments(arguments: &[OsString]) -> Vec<OsString> {
             forwarded.push(nvim.into_os_string());
         }
     }
+    if diff_mode {
+        forwarded.push(OsString::from("--diff"));
+    }
     forwarded.extend_from_slice(arguments);
     forwarded
+}
+
+fn is_diff_invocation() -> bool {
+    env::args_os()
+        .next()
+        .is_some_and(|program| is_diff_program(&program))
+}
+
+fn is_diff_program(program: &OsStr) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name == "gpvimdiff" || name == "gpvimdiff.exe")
 }
 
 fn run_command(executable: &Path, arguments: &[OsString]) -> Result<u8, String> {
@@ -247,9 +263,13 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        forwarded_arguments, has_nvim_command, has_remote_connection, is_information_request,
+        forwarded_arguments, has_nvim_command, has_remote_connection, is_diff_program,
+        is_information_request,
     };
-    use std::{env, ffi::OsString};
+    use std::{
+        env,
+        ffi::{OsStr, OsString},
+    };
 
     #[test]
     fn helper_recognizes_fixed_application_options() {
@@ -279,12 +299,26 @@ mod tests {
 
     #[test]
     fn helper_forwards_the_callers_current_directory_without_explicit_cwd() {
-        let forwarded = forwarded_arguments(&[OsString::from("README.md")]);
+        let forwarded = forwarded_arguments(&[OsString::from("README.md")], false);
         let current_directory = env::current_dir().expect("test should have a current directory");
 
         assert_eq!(
             &forwarded[..2],
             [OsString::from("--cwd"), current_directory.into_os_string()]
         );
+    }
+
+    #[test]
+    fn helper_detects_the_diff_alias_by_its_program_name() {
+        assert!(is_diff_program(OsStr::new("/usr/local/bin/gpvimdiff")));
+        assert!(is_diff_program(OsStr::new("gpvimdiff.exe")));
+        assert!(!is_diff_program(OsStr::new("/usr/local/bin/gpvim")));
+    }
+
+    #[test]
+    fn diff_alias_adds_neovims_diff_argument() {
+        let forwarded = forwarded_arguments(&[OsString::from("left.txt")], true);
+
+        assert!(forwarded.iter().any(|argument| argument == "--diff"));
     }
 }

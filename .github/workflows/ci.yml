@@ -32,3 +32,6 @@ jobs:
 
       - name: Run repository checks
         run: nix develop --accept-flake-config -c just ci
+
+      - name: Build and verify macOS AppBundle
+        run: nix develop --accept-flake-config -c just bundle

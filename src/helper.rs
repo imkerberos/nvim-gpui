@@ -8,16 +8,30 @@ use std::{
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(target_os = "macos")]
+use std::process::Command;
+
+#[cfg(windows)]
+const HELPER_COMMAND_NAMES: &[&str] = &["gpvim.exe", "gpvimdiff.exe"];
+#[cfg(not(windows))]
+const HELPER_COMMAND_NAMES: &[&str] = &["gpvim", "gpvimdiff"];
 
 pub(crate) fn is_available_in_path() -> bool {
     let Some(path) = env::var_os("PATH") else {
         return false;
     };
-    let command_name = if cfg!(windows) { "gpvim.exe" } else { "gpvim" };
-    env::split_paths(&path).any(|directory| is_executable_path(&directory.join(command_name)))
+    HELPER_COMMAND_NAMES.iter().all(|command_name| {
+        env::split_paths(&path).any(|directory| is_executable_path(&directory.join(command_name)))
+    })
 }
 
 pub(crate) fn install() -> Result<(), String> {
+    install_internal(true)
+}
+
+fn install_internal(request_admin_authorization: bool) -> Result<(), String> {
+    let _ = request_admin_authorization;
+
     if is_available_in_path() {
         return Ok(());
     }
@@ -28,24 +42,37 @@ pub(crate) fn install() -> Result<(), String> {
 
     #[cfg(unix)]
     {
-        let preferred = PathBuf::from("/usr/local/bin/gpvim");
-        match install_link(&helper, &preferred) {
+        let preferred_directory = PathBuf::from("/usr/local/bin");
+        let preferred_links = command_paths(&preferred_directory);
+        match install_links(&helper, &preferred_links) {
             Ok(()) => Ok(()),
-            Err((_, error)) if error.kind() == ErrorKind::PermissionDenied => {
+            Err((failed_path, error)) if error.kind() == ErrorKind::PermissionDenied => {
+                #[cfg(target_os = "macos")]
+                if request_admin_authorization {
+                    return install_links_with_macos_authorization(&helper, &preferred_links)
+                        .map_err(|authorization_error| {
+                            format!(
+                                "could not install gpvim and gpvimdiff in {}: administrator authorization failed: {}",
+                                preferred_directory.display(),
+                                authorization_error,
+                            )
+                        });
+                }
+
                 let Some(directory) = user_path_directory() else {
                     return Err(format_link_error(
                         &helper,
-                        &(preferred, error),
+                        &(failed_path, error),
                         "add ~/.local/bin or ~/bin to PATH and retry",
                     ));
                 };
-                let fallback = directory.join(command_name());
-                install_link(&helper, &fallback).map_err(|fallback_error| {
+                let fallback_links = command_paths(&directory);
+                install_links(&helper, &fallback_links).map_err(|fallback_error| {
                     format!(
                         "{}; fallback failed: {}",
                         format_link_error(
                             &helper,
-                            &(PathBuf::from("/usr/local/bin/gpvim"), error),
+                            &(failed_path, error),
                             "add ~/.local/bin or ~/bin to PATH and retry",
                         ),
                         format_link_error(&helper, &fallback_error, "choose another PATH entry")
@@ -81,7 +108,9 @@ pub(crate) fn ensure_installed() -> Result<(), String> {
         return Ok(());
     }
 
-    install()
+    // Startup should not unexpectedly show an administrator prompt. It may
+    // still use an already-configured user-writable PATH directory.
+    install_internal(false)
 }
 
 fn bundled_path() -> Option<PathBuf> {
@@ -108,11 +137,6 @@ fn bundled_path() -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn command_name() -> &'static str {
-    "gpvim"
-}
-
-#[cfg(unix)]
 fn install_link(helper: &Path, link: &Path) -> Result<(), (PathBuf, io::Error)> {
     if fs::symlink_metadata(link).is_ok() {
         return Err((
@@ -124,6 +148,96 @@ fn install_link(helper: &Path, link: &Path) -> Result<(), (PathBuf, io::Error)> 
         fs::create_dir_all(parent).map_err(|error| (parent.to_owned(), error))?;
     }
     symlink(helper, link).map_err(|error| (link.to_owned(), error))
+}
+
+#[cfg(unix)]
+fn install_links(helper: &Path, links: &[PathBuf]) -> Result<(), (PathBuf, io::Error)> {
+    for link in links {
+        match install_link(helper, link) {
+            Ok(()) => {}
+            Err((path, error))
+                if error.kind() == ErrorKind::AlreadyExists
+                    && fs::read_link(&path).is_ok_and(|target| target == helper) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn command_paths(directory: &Path) -> Vec<PathBuf> {
+    HELPER_COMMAND_NAMES
+        .iter()
+        .map(|command_name| directory.join(command_name))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn install_links_with_macos_authorization(helper: &Path, links: &[PathBuf]) -> Result<(), String> {
+    let first_link = links
+        .first()
+        .ok_or_else(|| "no gpvim helper links were requested".to_owned())?;
+    let parent = first_link.parent().ok_or_else(|| {
+        format!(
+            "could not determine parent directory for {}",
+            first_link.display()
+        )
+    })?;
+    let parent = parent
+        .to_str()
+        .ok_or_else(|| "gpvim install path is not valid UTF-8".to_owned())?;
+    let helper = helper
+        .to_str()
+        .ok_or_else(|| "bundled gpvim path is not valid UTF-8".to_owned())?;
+
+    let mut shell_commands = vec![format!("/bin/mkdir -p {}", shell_quote(parent))];
+    for link in links {
+        let link = link
+            .to_str()
+            .ok_or_else(|| "gpvim install path is not valid UTF-8".to_owned())?;
+        let quoted_link = shell_quote(link);
+        shell_commands.push(format!(
+            "if [ -L {quoted_link} ]; then :; else /bin/ln -s {} {quoted_link}; fi",
+            shell_quote(helper),
+        ));
+    }
+    let shell_command = shell_commands.join(" && ");
+    let apple_script = format!(
+        "do shell script \"{}\" with administrator privileges",
+        escape_applescript_string(&shell_command),
+    );
+    let output = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(apple_script)
+        .output()
+        .map_err(|error| format!("could not start macOS authorization dialog: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        Err(format!(
+            "authorization process exited with {}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "a signal".to_owned(), |code| code.to_string())
+        ))
+    } else {
+        Err(stderr)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn escape_applescript_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(unix)]

@@ -56,6 +56,13 @@
 
             RUST_BACKTRACE = "1";
             NVIM_APPNAME = "nvim-gpui";
+            # Nix's Darwin linker environment can add libiconv even when the
+            # final binary has no iconv symbol references. Remove unused
+            # dylib load commands so distributable AppBundles do not depend
+            # on the Nix store.
+            RUSTFLAGS = pkgs.lib.optionalString
+              pkgs.stdenv.hostPlatform.isDarwin
+              "-C link-arg=-Wl,-dead_strip_dylibs";
 
             shellHook = ''
               export NVIM_GPUI_CACHE_DIR="$PWD/.cache"

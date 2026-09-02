@@ -57,8 +57,8 @@ just clippy       # Clippy with warnings denied
 just test         # all Rust tests
 just ci           # fmt-check, clippy, and test
 just run          # launch the development GUI
-just bundle       # build .cache/macos/nvim-gpui.app on macOS
-just dmg          # build the compressed macOS DMG on macOS
+just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
+just dmg          # build the arch-named compressed macOS DMG on macOS
 ```
 
 `Makefile` forwards the common tasks to `just` for environments where a Make
@@ -141,9 +141,12 @@ On macOS, `just bundle` creates:
 ```
 
 The checked-in rounded ICNS file is declared by `Info.plist`; no generated
-icon step is required. `just dmg` places the AppBundle and an
+icon step is required. The bundle step strips unused Nix dylib load commands
+on macOS and fails if an executable still references `/nix/store`. `just dmg`
+places the AppBundle and an
 `/Applications` shortcut into a compressed UDZO image at
-`.cache/macos/nvim-gpui.dmg`.
+`.cache/macos/nvim-gpui-aarch64.dmg` on Apple Silicon or
+`.cache/macos/nvim-gpui-x86_64.dmg` on Intel.
 
 The AppBundle declares source and text document types with
 `LSHandlerRank=Alternate`, so it can appear in Finder's Open With menu
@@ -165,11 +168,13 @@ than leaving the GUI process alive.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs `just ci` on macOS for pushes and pull
-requests. Linux is not tested or supported yet. `.github/workflows/release.yml`
-runs on `v*` tags, builds the macOS AppBundle and DMG, uploads the DMG as a
-workflow artifact, and attaches it to a GitHub Release. Release signing and
-notarization are intentionally not configured because they require
+`.github/workflows/ci.yml` runs `just ci` and builds/verifies the macOS
+AppBundle for pushes and pull requests. Linux is not tested or supported yet.
+`.github/workflows/release.yml` runs on `v*` tags, builds the macOS AppBundle
+and DMG on both Apple Silicon and Intel runners, verifies that the bundle has
+no Nix store runtime dependency, uploads arch-specific workflow artifacts, and
+attaches both DMGs and AppBundle archives to a GitHub Release. Release signing
+and notarization are intentionally not configured because they require
 project-specific Apple credentials.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
