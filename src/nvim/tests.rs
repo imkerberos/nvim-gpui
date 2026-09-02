@@ -1,0 +1,783 @@
+use super::environment::{
+    apply_project_nvim_environment, mark_embedded_gui_environment, parse_environment,
+    project_nvim_environment_is_active_at, remove_project_nvim_environment, NVIM_GPUI_ENV,
+    NVIM_GPUI_ENV_VALUE,
+};
+use super::protocol::{resize_request_frame, term_event_notification_frame, ui_attach_params};
+use super::session::{handle_notification, observe_startup_theme};
+use super::transport::{read_message, write_message};
+use super::version::parse_protocol_info;
+use super::{NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
+use async_channel::unbounded;
+use rmpv::Value;
+use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
+    io::Cursor,
+    path::Path,
+};
+
+#[test]
+fn request_frame_uses_msgpack_rpc_shape() {
+    let mut bytes = Vec::new();
+    write_message(
+        &mut bytes,
+        &Value::Array(vec![
+            Value::from(0),
+            Value::from(7),
+            Value::from("nvim_get_api_info"),
+            Value::Array(Vec::new()),
+        ]),
+    )
+    .expect("request should encode");
+
+    let decoded = rmpv::decode::read_value(&mut Cursor::new(bytes)).expect("request decodes");
+    assert_eq!(decoded[0].as_u64(), Some(0));
+    assert_eq!(decoded[1].as_u64(), Some(7));
+    assert_eq!(decoded[2].as_str(), Some("nvim_get_api_info"));
+}
+
+#[test]
+fn api_metadata_builds_version_and_ui_capabilities() {
+    let api_info = Value::Array(vec![
+        Value::from(1),
+        Value::Map(vec![
+            (
+                Value::from("version"),
+                Value::Map(vec![
+                    (Value::from("major"), Value::from(0)),
+                    (Value::from("minor"), Value::from(10)),
+                    (Value::from("patch"), Value::from(4)),
+                    (Value::from("api_level"), Value::from(12)),
+                    (Value::from("api_compatible"), Value::from(0)),
+                    (Value::from("api_prerelease"), Value::Boolean(false)),
+                ]),
+            ),
+            (
+                Value::from("ui_options"),
+                Value::Array(vec![Value::from("rgb"), Value::from("ext_linegrid")]),
+            ),
+            (
+                Value::from("ui_events"),
+                Value::Array(vec![
+                    Value::Map(vec![(Value::from("name"), Value::from("grid_line"))]),
+                    Value::from("flush"),
+                ]),
+            ),
+        ]),
+    ]);
+
+    let protocol = parse_protocol_info(&api_info).expect("API metadata should decode");
+
+    assert_eq!(protocol.version.major, 0);
+    assert_eq!(protocol.version.minor, 10);
+    assert_eq!(protocol.version.patch, 4);
+    assert_eq!(protocol.version.api_level, 12);
+    assert_eq!(protocol.version.api_compatible, 0);
+    assert!(protocol.version.supports_api(12));
+    assert!(protocol.capabilities.supports_ui_option("rgb"));
+    assert!(!protocol.capabilities.supports_ui_option("ext_hlstate"));
+    assert!(protocol.capabilities.supports_ui_event("grid_line"));
+    assert!(protocol.capabilities.supports_ui_event("flush"));
+}
+
+#[test]
+fn embedded_nvim_reports_protocol_metadata_before_ui_events() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let protocol = process
+        .protocol()
+        .expect("protocol metadata should be available after startup");
+
+    assert!(protocol.version.api_level > 0);
+    assert!(!protocol.capabilities.ui_options.is_empty());
+    assert!(!protocol.capabilities.ui_events.is_empty());
+    assert!(protocol.capabilities.ui_options.contains("ext_linegrid"));
+    assert!(protocol.capabilities.ui_events.contains("flush"));
+
+    let events = process.events();
+    assert!(matches!(
+        events.try_recv().expect("ApiReady should be queued"),
+        NvimEvent::ApiReady { .. }
+    ));
+}
+
+#[test]
+fn resize_request_frame_uses_the_nvim_ui_resize_method() {
+    let frame = resize_request_frame(42, 120, 40);
+
+    assert_eq!(frame[0].as_u64(), Some(0));
+    assert_eq!(frame[1].as_u64(), Some(42));
+    assert_eq!(frame[2].as_str(), Some("nvim_ui_try_resize"));
+    assert_eq!(frame[3][0].as_u64(), Some(120));
+    assert_eq!(frame[3][1].as_u64(), Some(40));
+}
+
+#[test]
+fn an_eof_is_classified_as_a_normal_nvim_exit() {
+    let mut reader = Cursor::new(Vec::<u8>::new());
+
+    assert_eq!(read_message(&mut reader), Err(NVIM_EXITED.to_owned()));
+}
+
+#[test]
+fn startup_environment_parser_keeps_nul_delimited_values() {
+    let environment = parse_environment(b"PATH=/nix/bin\0NVIM_APPNAME=nvim-gpui\0");
+
+    assert_eq!(
+        environment.get(std::ffi::OsStr::new("PATH")),
+        Some(&std::ffi::OsString::from("/nix/bin"))
+    );
+    assert_eq!(
+        environment.get(std::ffi::OsStr::new("NVIM_APPNAME")),
+        Some(&std::ffi::OsString::from("nvim-gpui"))
+    );
+}
+
+#[test]
+fn project_nvim_paths_are_applied_only_to_the_child_environment() {
+    let mut environment = HashMap::from([
+        (
+            OsString::from("XDG_CONFIG_HOME"),
+            OsString::from("/Users/me/.config"),
+        ),
+        (
+            OsString::from("XDG_DATA_HOME"),
+            OsString::from("/Users/me/.local/share"),
+        ),
+        (
+            OsString::from("NVIM_GPUI_CONFIG_DIR"),
+            OsString::from("/repo/config"),
+        ),
+        (
+            OsString::from("NVIM_GPUI_CACHE_DIR"),
+            OsString::from("/repo/.cache"),
+        ),
+    ]);
+
+    apply_project_nvim_environment(&mut environment);
+
+    assert_eq!(
+        environment.get(OsStr::new("XDG_CONFIG_HOME")),
+        Some(&OsString::from("/repo/config"))
+    );
+    assert_eq!(
+        environment.get(OsStr::new("XDG_DATA_HOME")),
+        Some(&OsString::from("/repo/.cache/nvim-data"))
+    );
+    assert_eq!(
+        environment.get(OsStr::new("XDG_STATE_HOME")),
+        Some(&OsString::from("/repo/.cache/nvim-state"))
+    );
+    assert_eq!(
+        environment.get(OsStr::new("XDG_CACHE_HOME")),
+        Some(&OsString::from("/repo/.cache/nvim-cache"))
+    );
+}
+
+#[test]
+fn embedded_gui_marker_is_available_to_startup_configuration() {
+    let mut environment = HashMap::new();
+
+    mark_embedded_gui_environment(&mut environment);
+
+    assert_eq!(
+        environment.get(OsStr::new(NVIM_GPUI_ENV)),
+        Some(&OsString::from(NVIM_GPUI_ENV_VALUE))
+    );
+}
+
+#[test]
+fn project_nvim_environment_is_scoped_to_its_repository() {
+    let environment = HashMap::from([(
+        OsString::from("NVIM_GPUI_CONFIG_DIR"),
+        OsString::from("/repo/config"),
+    )]);
+
+    assert!(project_nvim_environment_is_active_at(
+        &environment,
+        Path::new("/repo")
+    ));
+    assert!(project_nvim_environment_is_active_at(
+        &environment,
+        Path::new("/repo/src")
+    ));
+    assert!(!project_nvim_environment_is_active_at(
+        &environment,
+        Path::new("/tmp")
+    ));
+}
+
+#[test]
+fn stale_project_nvim_variables_are_removed_outside_the_repository() {
+    let mut environment = HashMap::from([
+        (OsString::from("NVIM_APPNAME"), OsString::from("nvim-gpui")),
+        (
+            OsString::from("NVIM_GPUI_CONFIG_DIR"),
+            OsString::from("/repo/config"),
+        ),
+        (
+            OsString::from("NVIM_GPUI_NVIM"),
+            OsString::from("/repo/nvim"),
+        ),
+        (OsString::from("DIRENV_IN_ENVRC"), OsString::from("1")),
+    ]);
+
+    remove_project_nvim_environment(&mut environment);
+
+    assert!(environment.is_empty());
+}
+
+#[test]
+fn redraw_option_set_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("option_set"),
+        Value::Array(vec![Value::from("guifont"), Value::from("Monaco:h12")]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::OptionSet {
+            name: "guifont".to_owned(),
+            value: "Monaco:h12".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn redraw_ui_send_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("ui_send"),
+        Value::Array(vec![Value::from("\x1b[>q")]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::UiSend {
+            data: "\x1b[>q".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn redraw_set_title_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("set_title"),
+        Value::Array(vec![Value::from("nvim-gpui — README.md")]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::SetTitle {
+            title: "nvim-gpui — README.md".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn redraw_hl_attr_define_decodes_rgb_attributes_and_styles() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("hl_attr_define"),
+        Value::Array(vec![
+            Value::from(12),
+            Value::Map(vec![
+                (Value::from("foreground"), Value::from(0xffcc00u64)),
+                (Value::from("background"), Value::from(0x112233u64)),
+                (Value::from("special"), Value::from(0x00ff00u64)),
+                (Value::from("bold"), Value::Boolean(true)),
+                (Value::from("undercurl"), Value::Boolean(true)),
+                (Value::from("blend"), Value::from(25u64)),
+                (Value::from("altfont"), Value::from(3u64)),
+                (Value::from("url"), Value::from("https://neovim.io")),
+            ]),
+            Value::Map(Vec::new()),
+            Value::Array(Vec::new()),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::HlAttrDefine {
+            id: crate::grid::HighlightId(12),
+            attrs: crate::grid::HighlightAttrs {
+                foreground: Some(0xffcc00),
+                background: Some(0x112233),
+                special: Some(0x00ff00),
+                bold: true,
+                undercurl: true,
+                blend: Some(25),
+                altfont: Some(3),
+                url: Some("https://neovim.io".to_owned()),
+                ..Default::default()
+            },
+        }
+    );
+}
+
+#[test]
+fn redraw_hl_attr_define_keeps_semantic_ui_name() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("hl_attr_define"),
+        Value::Array(vec![
+            Value::from(12),
+            Value::Map(vec![(Value::from("background"), Value::from(0x001419u64))]),
+            Value::Map(Vec::new()),
+            Value::Array(vec![Value::Map(vec![
+                (Value::from("kind"), Value::from("ui")),
+                (Value::from("ui_name"), Value::from("NormalFloat")),
+                (Value::from("hi_name"), Value::from("NormalFloat")),
+            ])]),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::HlAttrDefine {
+            id: crate::grid::HighlightId(12),
+            attrs: crate::grid::HighlightAttrs {
+                background: Some(0x001419),
+                ui_name: Some("NormalFloat".to_owned()),
+                ..Default::default()
+            },
+        }
+    );
+}
+
+#[test]
+fn redraw_set_icon_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("set_icon"),
+        Value::Array(vec![Value::from("nvim-gpui")]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::SetIcon {
+            icon: "nvim-gpui".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn redraw_grid_destroy_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("grid_destroy"),
+        Value::Array(vec![Value::from(1)]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::GridDestroy { grid: 1 }
+    );
+}
+
+#[test]
+fn redraw_mode_info_set_decodes_cursor_shapes_blink_and_attributes() {
+    let (sender, receiver) = unbounded();
+    let mode = |shape: &str, percentage: u64, attr_id: u64| {
+        Value::Map(vec![
+            (Value::from("cursor_shape"), Value::from(shape)),
+            (Value::from("cell_percentage"), Value::from(percentage)),
+            (Value::from("blinkwait"), Value::from(700u64)),
+            (Value::from("blinkon"), Value::from(400u64)),
+            (Value::from("blinkoff"), Value::from(250u64)),
+            (Value::from("attr_id"), Value::from(attr_id)),
+            (Value::from("attr_id_lm"), Value::from(0u64)),
+        ])
+    };
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("mode_info_set"),
+        Value::Array(vec![
+            Value::Boolean(true),
+            Value::Array(vec![
+                mode("block", 100, 0),
+                mode("horizontal", 25, 8),
+                mode("vertical", 20, 9),
+            ]),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::ModeInfoSet {
+            cursor_style_enabled: true,
+            modes: vec![
+                crate::grid::CursorModeInfo {
+                    shape: crate::grid::CursorShape::Block,
+                    cell_percentage: 100,
+                    blink_wait: 700,
+                    blink_on: 400,
+                    blink_off: 250,
+                    attr_id: Some(crate::grid::HighlightId(0)),
+                    attr_id_lm: Some(crate::grid::HighlightId(0)),
+                },
+                crate::grid::CursorModeInfo {
+                    shape: crate::grid::CursorShape::Horizontal,
+                    cell_percentage: 25,
+                    blink_wait: 700,
+                    blink_on: 400,
+                    blink_off: 250,
+                    attr_id: Some(crate::grid::HighlightId(8)),
+                    attr_id_lm: Some(crate::grid::HighlightId(0)),
+                },
+                crate::grid::CursorModeInfo {
+                    shape: crate::grid::CursorShape::Vertical,
+                    cell_percentage: 20,
+                    blink_wait: 700,
+                    blink_on: 400,
+                    blink_off: 250,
+                    attr_id: Some(crate::grid::HighlightId(9)),
+                    attr_id_lm: Some(crate::grid::HighlightId(0)),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn redraw_default_colors_set_decodes_rgb_defaults() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("default_colors_set"),
+        Value::Array(vec![
+            Value::from(0x101010u64),
+            Value::from(0xf0f0f0u64),
+            Value::from(0xff0000u64),
+            Value::from(15u64),
+            Value::from(0u64),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::DefaultColorsSet {
+            foreground: Some(0x101010),
+            background: Some(0xf0f0f0),
+            special: Some(0xff0000),
+        }
+    );
+}
+
+#[test]
+fn startup_theme_is_collected_before_the_first_flush_is_forwarded() {
+    let message = Value::Array(vec![
+        Value::from(2u64),
+        Value::from("redraw"),
+        Value::Array(vec![
+            Value::Array(vec![
+                Value::from("default_colors_set"),
+                Value::Array(vec![
+                    Value::from(0x101010u64),
+                    Value::from(0xf0f0f0u64),
+                    Value::from(0xff0000u64),
+                ]),
+            ]),
+            Value::Array(vec![
+                Value::from("hl_attr_define"),
+                Value::Array(vec![
+                    Value::from(1u64),
+                    Value::Map(vec![
+                        (Value::from("foreground"), Value::from(0x202020u64)),
+                        (Value::from("background"), Value::from(0xe0e0e0u64)),
+                    ]),
+                    Value::Map(Vec::new()),
+                    Value::Array(vec![Value::Map(vec![
+                        (Value::from("kind"), Value::from("ui")),
+                        (Value::from("ui_name"), Value::from("Normal")),
+                    ])]),
+                ]),
+            ]),
+            Value::Array(vec![Value::from("flush")]),
+        ]),
+    ]);
+    let mut theme = NvimTheme::default();
+
+    assert!(observe_startup_theme(&message, &mut theme));
+    assert_eq!(
+        theme,
+        NvimTheme {
+            default_foreground: Some(0x101010),
+            default_background: Some(0xf0f0f0),
+            normal_foreground: Some(0x202020),
+            normal_background: Some(0xe0e0e0),
+            normal_float_background: None,
+        }
+    );
+}
+
+#[test]
+fn redraw_grid_line_preserves_highlight_repeat_and_wrap() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("grid_line"),
+        Value::Array(vec![
+            Value::from(1),
+            Value::from(2),
+            Value::from(3),
+            Value::Array(vec![
+                Value::Array(vec![Value::from("界"), Value::from(9)]),
+                Value::Array(vec![Value::from(""), Value::from(9)]),
+                Value::Array(vec![Value::from("x"), Value::from(10), Value::from(2)]),
+            ]),
+            Value::Boolean(true),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::GridLine {
+            grid: 1,
+            row: 2,
+            col_start: 3,
+            cells: vec![
+                crate::grid::GridLineCell::new("界", crate::grid::HighlightId(9), 1),
+                crate::grid::GridLineCell::new("", crate::grid::HighlightId(9), 1),
+                crate::grid::GridLineCell::new("x", crate::grid::HighlightId(10), 2),
+            ],
+            wraps_to_next: true,
+        }
+    );
+}
+
+#[test]
+fn redraw_multigrid_window_events_are_decoded() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![
+        Value::Array(vec![
+            Value::from("win_pos"),
+            Value::Array(vec![
+                Value::from(2),
+                Value::Ext(1, vec![205, 3, 232]),
+                Value::from(3),
+                Value::from(4),
+                Value::from(40),
+                Value::from(10),
+            ]),
+        ]),
+        Value::Array(vec![
+            Value::from("win_float_pos"),
+            Value::Array(vec![
+                Value::from(3),
+                Value::Ext(1, vec![205, 3, 233]),
+                Value::from("NW"),
+                Value::from(1),
+                Value::from(0),
+                Value::from(0),
+                Value::Boolean(true),
+                Value::from(50),
+                Value::from(7),
+                Value::from(5),
+                Value::from(6),
+            ]),
+        ]),
+        Value::Array(vec![
+            Value::from("win_hide"),
+            Value::Array(vec![Value::from(3)]),
+        ]),
+    ]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("win_pos should be available"),
+        NvimEvent::WinPos {
+            grid: 2,
+            win: vec![205, 3, 232],
+            row: 3,
+            col: 4,
+            width: 40,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("win_float_pos should be available"),
+        NvimEvent::WinFloatPos {
+            grid: 3,
+            win: vec![205, 3, 233],
+            anchor: "NW".to_owned(),
+            anchor_grid: 1,
+            anchor_row: 0,
+            anchor_col: 0,
+            mouse_enabled: true,
+            zindex: 50,
+            compindex: 7,
+            screen_row: 5,
+            screen_col: 6,
+        }
+    );
+    assert_eq!(
+        receiver.try_recv().expect("win_hide should be available"),
+        NvimEvent::WinHide { grid: 3 }
+    );
+}
+
+#[test]
+fn redraw_viewport_events_are_decoded() {
+    let (sender, receiver) = unbounded();
+    let window = Value::Ext(1, vec![205, 3, 232]);
+    let params = Value::Array(vec![
+        Value::Array(vec![
+            Value::from("win_viewport"),
+            Value::Array(vec![
+                Value::from(2),
+                window.clone(),
+                Value::from(10),
+                Value::from(28),
+                Value::from(14),
+                Value::from(7),
+                Value::from(100),
+                Value::from(-2),
+            ]),
+        ]),
+        Value::Array(vec![
+            Value::from("win_viewport_margins"),
+            Value::Array(vec![
+                Value::from(2),
+                window,
+                Value::from(1),
+                Value::from(2),
+                Value::from(3),
+                Value::from(4),
+            ]),
+        ]),
+    ]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("win_viewport should be available"),
+        NvimEvent::WinViewport {
+            grid: 2,
+            win: vec![205, 3, 232],
+            topline: 10,
+            botline: 28,
+            curline: 14,
+            curcol: 7,
+            line_count: 100,
+            scroll_delta: -2,
+        }
+    );
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("win_viewport_margins should be available"),
+        NvimEvent::WinViewportMargins {
+            grid: 2,
+            win: vec![205, 3, 232],
+            top: 1,
+            bottom: 2,
+            left: 3,
+            right: 4,
+        }
+    );
+}
+
+#[test]
+fn redraw_msg_set_pos_is_decoded() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("msg_set_pos"),
+        Value::Array(vec![
+            Value::from(3),
+            Value::from(20),
+            Value::Boolean(true),
+            Value::from("─"),
+            Value::from(200),
+            Value::from(9),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("msg_set_pos should be available"),
+        NvimEvent::MsgSetPos {
+            grid: 3,
+            row: 20,
+            scrolled: true,
+            sep_char: "─".to_owned(),
+            zindex: 200,
+            compindex: 9,
+        }
+    );
+}
+
+#[test]
+fn ui_attach_enables_multigrid() {
+    let params = ui_attach_params(80, 24);
+    let options = params[2].as_map().expect("ui options should be a map");
+
+    assert_eq!(
+        options
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("ext_multigrid"))
+            .and_then(|(_, value)| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("ext_hlstate"))
+            .and_then(|(_, value)| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("stdout_tty"))
+            .and_then(|(_, value)| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        options
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("stdin_tty"))
+            .and_then(|(_, value)| value.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn term_event_notification_uses_the_nvim_ui_term_event_api() {
+    let frame = term_event_notification_frame(
+        "termresponse".to_owned(),
+        "\x1bP>|kitty 0.40.0\x1b\\".to_owned(),
+    );
+
+    assert_eq!(frame[0].as_u64(), Some(2));
+    assert_eq!(frame[1].as_str(), Some("nvim_ui_term_event"));
+    assert_eq!(frame[2][0].as_str(), Some("termresponse"));
+}

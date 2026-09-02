@@ -105,6 +105,8 @@ following redraw areas into the application model:
 - `win_viewport` and `win_viewport_margins` state for each window grid;
 - `mode_info_set`, `mode_change`, and cursor blink/shape information;
 - `hl_attr_define`, `default_colors_set`, and the main text attributes;
+- the initial `Normal`/`NormalFloat` theme snapshot and later theme changes,
+  applied to the main window background and custom titlebar at `flush`;
 - `option_set`, including `guifont`, `guifontwide`, and `linespace`;
 - `set_title`, `set_icon`, and `ui_send` for image data.
 

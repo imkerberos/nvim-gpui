@@ -1,0 +1,844 @@
+use super::*;
+
+impl NvimGpui {
+    pub(super) fn new(
+        nvim: Result<NvimProcess, String>,
+        cx: &mut Context<Self>,
+        nerd_font_registered: bool,
+        app_settings: settings::Settings,
+        initial_theme: Option<NvimTheme>,
+    ) -> Self {
+        let nvim_available = nvim.is_ok();
+        let mut this = Self {
+            focus_handle: Some(cx.focus_handle()),
+            grid: Rc::new(grid::GridModel::new(
+                DEFAULT_GRID_WIDTH as usize,
+                DEFAULT_GRID_HEIGHT as usize,
+            )),
+            grid_size: Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT)),
+            rpc_status: match &nvim {
+                Ok(_) => "rpc: connecting".to_owned(),
+                Err(error) => format!("rpc: {error}"),
+            },
+            nvim: nvim.ok(),
+            settings: app_settings,
+            theme: initial_theme.unwrap_or_default(),
+            ..Self::default()
+        };
+
+        this.bundled_nerd_font_registered = nerd_font_registered;
+        this.nvim_grid_ready = !nvim_available;
+        this.apply_runtime_settings();
+
+        if let Some(nvim) = this.nvim.as_ref() {
+            let events = nvim.events();
+            this.event_task = Some(cx.spawn(async move |weak, cx| {
+                while let Ok(event) = events.recv().await {
+                    // A single Neovim redraw notification can contain hundreds
+                    // of typed events. Drain the events that are already
+                    // available and invalidate GPUI once for the batch instead
+                    // of once per cell/window/style update.
+                    let mut batch = Vec::with_capacity(64);
+                    batch.push(event);
+                    while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
+                        match events.try_recv() {
+                            Ok(event) => batch.push(event),
+                            Err(async_channel::TryRecvError::Empty)
+                            | Err(async_channel::TryRecvError::Closed) => break,
+                        }
+                    }
+                    let disconnected = batch
+                        .iter()
+                        .any(|event| matches!(event, NvimEvent::Disconnected));
+                    if weak
+                        .update(cx, |this, cx| {
+                            for event in batch {
+                                this.apply_nvim_event(event);
+                            }
+                            cx.notify();
+                            if disconnected {
+                                cx.quit();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
+
+        this
+    }
+
+    pub(super) fn apply_runtime_settings(&mut self) {
+        self.nerd_font_family = self
+            .bundled_nerd_font_registered
+            .then(|| self.settings.nerd_font.family().to_owned());
+        self.shaping_cache.borrow_mut().clear();
+        self.glyph_coverage_cache.borrow_mut().clear();
+        for image in self
+            .image_store
+            .set_cache_size_mb(self.settings.image_cache_size_mb)
+        {
+            self.image_sources.remove(&image);
+        }
+    }
+
+    pub(super) fn update_settings(&mut self, next: settings::Settings) {
+        self.settings = next;
+        self.apply_runtime_settings();
+        self.settings_save_error = self.settings.save().err();
+    }
+
+    pub(super) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
+        if let Some(font) = &self.resolved_grid_font {
+            return font.clone();
+        }
+
+        let font = self
+            .guifont
+            .as_deref()
+            .filter(|spec| !spec.trim().is_empty())
+            .map(parse_guifont_spec)
+            .unwrap_or_else(|| GuiFontSpec::system(window));
+        self.resolved_grid_font = Some(font.clone());
+        font
+    }
+
+    pub(super) fn current_grid_wide_font(&mut self, window: &Window) -> GuiFontSpec {
+        if let Some(font) = &self.resolved_grid_wide_font {
+            return font.clone();
+        }
+
+        let font = if let Some(spec) = self
+            .guifontwide
+            .as_deref()
+            .filter(|spec| !spec.trim().is_empty())
+        {
+            parse_guifont_spec(spec)
+        } else {
+            self.current_grid_font(window)
+        };
+        self.resolved_grid_wide_font = Some(font.clone());
+        font
+    }
+
+    pub(super) fn current_cursor_mode(&self) -> grid::CursorModeInfo {
+        if !self.cursor_style_enabled {
+            return grid::CursorModeInfo::default();
+        }
+        self.cursor_modes
+            .get(self.cursor_mode_index)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn theme_background(&self) -> u32 {
+        self.theme
+            .normal_background
+            .or(self.theme.default_background)
+            .unwrap_or(BACKGROUND)
+    }
+
+    pub(super) fn theme_foreground(&self) -> u32 {
+        self.theme
+            .normal_foreground
+            .or(self.theme.default_foreground)
+            .unwrap_or(TEXT)
+    }
+
+    pub(super) fn pending_theme_mut(&mut self) -> &mut NvimTheme {
+        self.pending_theme.get_or_insert(self.theme)
+    }
+
+    pub(super) fn commit_pending_theme(&mut self) {
+        if let Some(theme) = self.pending_theme.take() {
+            self.theme = theme;
+        }
+    }
+
+    pub(super) fn update_startup_grid_ready(&mut self) {
+        if self.nvim_grid_ready || !self.startup_flush_seen {
+            return;
+        }
+
+        let Some(target) = self.startup_resize_target else {
+            return;
+        };
+        let committed_size = (self.grid.width() as u32, self.grid.height() as u32);
+        if committed_size == target {
+            self.nvim_grid_ready = true;
+        }
+    }
+
+    pub(super) fn sync_nvim_size(&mut self, window: &mut Window) {
+        let gui_font = self.current_grid_font(window);
+        let cell_width = gui_font.cell_width(window);
+        let line_height = gui_font.line_height(window, self.linespace);
+        let viewport = window.viewport_size();
+        let available_height = f32::from(viewport.height)
+            - if themed_titlebar_enabled() {
+                THEMED_TITLEBAR_HEIGHT
+            } else {
+                0.0
+            };
+        let width = (f32::from(viewport.width) / f32::from(cell_width))
+            .floor()
+            .max(1.0) as u32;
+        let height = (available_height / f32::from(line_height)).floor().max(1.0) as u32;
+        let size = (width, height);
+
+        if !self.nvim_grid_ready {
+            self.startup_resize_target = Some(size);
+            self.update_startup_grid_ready();
+            if self.nvim_grid_ready {
+                return;
+            }
+        }
+
+        let Some(nvim) = self.nvim.as_ref() else {
+            return;
+        };
+
+        if self.last_resize == Some(size) {
+            return;
+        }
+
+        match nvim.send_resize(width, height) {
+            Ok(()) => self.last_resize = Some(size),
+            Err(error) => self.rpc_status = format!("rpc resize error: {error}"),
+        }
+    }
+
+    pub(super) fn apply_nvim_event(&mut self, event: NvimEvent) {
+        match event {
+            NvimEvent::ApiReady {
+                version,
+                capabilities: _,
+            } => {
+                self.api_level = Some(version.api_level);
+                self.nvim_version = Some(version);
+                self.rpc_status = format!("rpc: Neovim {version} / API {}", version.api_level);
+            }
+            NvimEvent::UiAttached { width, height } => {
+                self.rpc_status = format!("rpc: attached {width}×{height}");
+            }
+            NvimEvent::GridResized {
+                grid,
+                width,
+                height,
+            } => {
+                if grid == 1 {
+                    self.pending_grid = Some(self.new_styled_grid(width as usize, height as usize));
+                    self.grid_size = Some((width, height));
+                } else {
+                    self.pending_grid_mut_for(grid)
+                        .resize(width as usize, height as usize);
+                }
+                self.pending_destroyed_grids.remove(&grid);
+            }
+            NvimEvent::GridLine {
+                grid,
+                row,
+                col_start,
+                cells,
+                wraps_to_next,
+            } => {
+                self.pending_grid_mut_for(grid).apply_grid_line(
+                    row as usize,
+                    col_start as usize,
+                    &cells,
+                    wraps_to_next,
+                );
+            }
+            NvimEvent::GridClear { grid } => {
+                self.pending_grid_mut_for(grid).clear();
+            }
+            NvimEvent::GridDestroy { grid } => {
+                if grid == 1 {
+                    self.pending_grid_mut().destroy();
+                    self.grid_size = None;
+                } else {
+                    self.pending_other_grids.remove(&grid);
+                    self.pending_destroyed_grids.insert(grid);
+                }
+            }
+            NvimEvent::GridCursorGoto { grid, row, col } => {
+                // `grid_cursor_goto` belongs to the current redraw batch. Do
+                // not expose it until `flush`, otherwise a partial redraw can
+                // paint the cursor over a different, already committed grid.
+                self.pending_cursor_grid = Some(grid);
+                self.pending_grid_mut_for(grid)
+                    .set_cursor(row as usize, col as usize);
+            }
+            NvimEvent::DefaultColorsSet {
+                foreground,
+                background,
+                special,
+            } => {
+                let theme = self.pending_theme_mut();
+                theme.default_foreground = foreground;
+                theme.default_background = background;
+                self.set_default_colors_on_all_grids(foreground, background, special);
+            }
+            NvimEvent::HlAttrDefine { id, attrs } => {
+                let theme = self.pending_theme_mut();
+                match attrs.ui_name.as_deref() {
+                    Some("Normal") => {
+                        theme.normal_foreground = attrs.foreground;
+                        theme.normal_background = attrs.background;
+                    }
+                    Some("NormalFloat") => {
+                        theme.normal_float_background = attrs.background;
+                    }
+                    _ => {}
+                }
+                self.set_highlight_on_all_grids(id, attrs);
+            }
+            NvimEvent::GridScroll {
+                grid,
+                top,
+                bot,
+                left,
+                right,
+                rows,
+                cols,
+            } => {
+                self.pending_grid_mut_for(grid).scroll(
+                    top as usize,
+                    bot as usize,
+                    left as usize,
+                    right as usize,
+                    rows as isize,
+                    cols as isize,
+                );
+            }
+            NvimEvent::WinPos {
+                grid,
+                win: _,
+                row,
+                col,
+                width,
+                height,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.row = row as i64;
+                placement.col = col as i64;
+                placement.width = width;
+                placement.height = height;
+                placement.z_index = 0;
+                placement.compindex = -1;
+                placement.visible = true;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinFloatPos {
+                grid,
+                win: _,
+                anchor: _,
+                anchor_grid: _,
+                anchor_row: _,
+                anchor_col: _,
+                mouse_enabled: _,
+                zindex,
+                compindex,
+                screen_row,
+                screen_col,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.row = screen_row;
+                placement.col = screen_col;
+                placement.z_index = zindex;
+                placement.compindex = compindex;
+                placement.visible = true;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinViewport {
+                grid,
+                win: _,
+                topline,
+                botline,
+                curline,
+                curcol,
+                line_count,
+                scroll_delta,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.viewport = Some(GridViewport {
+                    topline,
+                    botline,
+                    curline,
+                    curcol,
+                    line_count,
+                    scroll_delta,
+                });
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinViewportMargins {
+                grid,
+                win: _,
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.viewport_margins = Some(GridViewportMargins {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                });
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::MsgSetPos {
+                grid,
+                row,
+                scrolled,
+                sep_char,
+                zindex,
+                compindex,
+            } => {
+                // A message grid is not associated with a normal window, so
+                // Neovim positions it with msg_set_pos instead of win_pos.
+                // Keep it in the same placement table as window grids so its
+                // grid_line updates become visible and participate in the
+                // protocol compositing order.
+                let grid_width = self.pending_grid_mut_for(grid).width() as u64;
+                let mut placement = self.grid_placement(grid);
+                placement.row = row as i64;
+                placement.col = 0;
+                placement.width = grid_width;
+                placement.z_index = zindex;
+                placement.compindex = compindex;
+                placement.visible = true;
+                placement.message_scrolled = scrolled;
+                placement.message_separator = sep_char.chars().next();
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinExternalPos { grid, win: _ } => {
+                let mut placement = self.grid_placement(grid);
+                placement.visible = false;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinHide { grid } => {
+                let mut placement = self.grid_placement(grid);
+                placement.visible = false;
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinClose { grid } => {
+                if grid == 1 {
+                    self.pending_grid_mut().destroy();
+                    self.grid_size = None;
+                } else {
+                    self.pending_other_grids.remove(&grid);
+                    self.pending_destroyed_grids.insert(grid);
+                }
+            }
+            NvimEvent::OptionSet { name, value } => {
+                self.ui_options.insert(name.clone(), value.clone());
+                match name.as_str() {
+                    "guifont" => {
+                        self.guifont = Some(value);
+                        self.resolved_grid_font = None;
+                        self.resolved_grid_wide_font = None;
+                        self.last_resize = None;
+                        self.shaping_cache.borrow_mut().clear();
+                    }
+                    "guifontwide" => {
+                        self.guifontwide = Some(value);
+                        self.resolved_grid_wide_font = None;
+                        self.last_resize = None;
+                        self.shaping_cache.borrow_mut().clear();
+                    }
+                    "linespace" => {
+                        self.linespace = parse_non_negative_float(&value).unwrap_or(0.0);
+                        self.last_resize = None;
+                    }
+                    "arabicshape" | "ambiwidth" | "emoji" | "termguicolors" => {
+                        self.shaping_cache.borrow_mut().clear();
+                    }
+                    _ => {}
+                }
+            }
+            NvimEvent::SetTitle { title } => {
+                if !title.is_empty() {
+                    self.window_title = title;
+                }
+            }
+            NvimEvent::SetIcon { icon } => {
+                self.window_icon = icon;
+            }
+            NvimEvent::ModeInfoSet {
+                cursor_style_enabled,
+                modes,
+            } => {
+                self.cursor_style_enabled = cursor_style_enabled;
+                self.cursor_modes = modes;
+                self.cursor_blink_started_at = Instant::now();
+            }
+            NvimEvent::ModeChanged { mode, mode_idx } => {
+                self.input_router.set_nvim_mode(&mode);
+                if self.input_router.target() != InputTarget::SystemIme {
+                    self.system_ime.clear();
+                }
+                self.state.mode = mode.to_ascii_uppercase();
+                self.cursor_mode_index = mode_idx as usize;
+                self.cursor_blink_started_at = Instant::now();
+            }
+            NvimEvent::UiSend { data } => self.apply_ui_send(&data),
+            NvimEvent::Flush => {
+                self.commit_pending_grid();
+                self.commit_pending_theme();
+                self.startup_flush_seen = true;
+                self.update_startup_grid_ready();
+            }
+            NvimEvent::Error(error) => {
+                self.rpc_status = format!("rpc error: {error}");
+            }
+            NvimEvent::Disconnected => {
+                self.rpc_status = "rpc: disconnected".to_owned();
+            }
+        }
+    }
+
+    pub(super) fn apply_ui_send(&mut self, data: &str) {
+        let events = self.image_store.consume_ui_data(
+            data,
+            GridId(self.pending_cursor_grid.unwrap_or(self.cursor_grid)),
+        );
+        for event in events {
+            match event {
+                KittyEvent::AssetUpdated { image, .. } => {
+                    if let Some(asset) = self.image_store.asset(image) {
+                        let source =
+                            Image::from_bytes(asset.format.gpui_format(), asset.encoded.clone());
+                        self.image_sources.insert(image, Arc::new(source));
+                    }
+                }
+                KittyEvent::AssetDeleted { image } => {
+                    self.image_sources.remove(&image);
+                }
+                KittyEvent::AssetsCleared => {
+                    self.image_sources.clear();
+                }
+                KittyEvent::TerminalResponse(response) => {
+                    if let Some(nvim) = self.nvim.as_ref() {
+                        if let Err(error) = nvim.send_term_event("termresponse", response) {
+                            self.rpc_status = format!("rpc terminal response error: {error}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn pending_grid_mut(&mut self) -> &mut grid::GridModel {
+        let pending = self
+            .pending_grid
+            .get_or_insert_with(|| Rc::clone(&self.grid));
+        Rc::make_mut(pending)
+    }
+
+    pub(super) fn new_styled_grid(&self, width: usize, height: usize) -> Rc<grid::GridModel> {
+        let source = self.pending_grid.as_deref().unwrap_or(self.grid.as_ref());
+        let mut next_grid = grid::GridModel::new(width, height);
+        for (id, attrs) in source.highlights() {
+            next_grid.set_highlight(*id, attrs.clone());
+        }
+        let (foreground, background, special) = source.default_colors();
+        next_grid.set_default_colors(foreground, background, special);
+        Rc::new(next_grid)
+    }
+
+    pub(super) fn pending_grid_mut_for(&mut self, grid: u64) -> &mut grid::GridModel {
+        if grid == 1 {
+            return self.pending_grid_mut();
+        }
+
+        if !self.pending_other_grids.contains_key(&grid) {
+            let model = self
+                .other_grids
+                .get(&grid)
+                .cloned()
+                .unwrap_or_else(|| self.new_styled_grid(0, 0));
+            self.pending_other_grids.insert(grid, model);
+        }
+
+        let pending = self
+            .pending_other_grids
+            .get_mut(&grid)
+            .expect("pending grid was inserted");
+        Rc::make_mut(pending)
+    }
+
+    pub(super) fn set_default_colors_on_all_grids(
+        &mut self,
+        foreground: Option<u32>,
+        background: Option<u32>,
+        special: Option<u32>,
+    ) {
+        self.pending_grid_mut()
+            .set_default_colors(foreground, background, special);
+        for model in self.other_grids.values_mut() {
+            Rc::make_mut(model).set_default_colors(foreground, background, special);
+        }
+        for model in self.pending_other_grids.values_mut() {
+            Rc::make_mut(model).set_default_colors(foreground, background, special);
+        }
+    }
+
+    pub(super) fn set_highlight_on_all_grids(
+        &mut self,
+        id: grid::HighlightId,
+        attrs: grid::HighlightAttrs,
+    ) {
+        self.pending_grid_mut().set_highlight(id, attrs.clone());
+        for model in self.other_grids.values_mut() {
+            Rc::make_mut(model).set_highlight(id, attrs.clone());
+        }
+        for model in self.pending_other_grids.values_mut() {
+            Rc::make_mut(model).set_highlight(id, attrs.clone());
+        }
+    }
+
+    pub(super) fn set_grid_placement(&mut self, grid: u64, placement: GridPlacement) {
+        self.pending_grid_placements.insert(grid, placement);
+        self.pending_destroyed_grids.remove(&grid);
+    }
+
+    pub(super) fn grid_placement(&self, grid: u64) -> GridPlacement {
+        self.pending_grid_placements
+            .get(&grid)
+            .copied()
+            .or_else(|| self.grid_placements.get(&grid).copied())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn commit_pending_grid(&mut self) {
+        if let Some(grid) = self.pending_grid.take() {
+            let previous_cursor = self.grid.cursor_visual_position();
+            let next_cursor = grid.cursor_visual_position();
+            if previous_cursor != next_cursor {
+                self.cursor_animation = match (previous_cursor, next_cursor) {
+                    (Some(from), Some(target)) => self
+                        .cursor_animation
+                        .map(|animation| animation.retarget(target))
+                        .or_else(|| Some(grid::CursorAnimation::new(from, target))),
+                    _ => None,
+                };
+            }
+
+            if let Some(cursor) = grid.cursor() {
+                self.state.line = cursor.row + 1;
+                self.state.column = cursor.col + 1;
+            }
+            self.grid = grid;
+        }
+
+        for (grid, model) in std::mem::take(&mut self.pending_other_grids) {
+            if !self.pending_destroyed_grids.contains(&grid) {
+                self.other_grids.insert(grid, model);
+            }
+        }
+
+        for (grid, placement) in std::mem::take(&mut self.pending_grid_placements) {
+            if !self.pending_destroyed_grids.contains(&grid) {
+                self.grid_placements.insert(grid, placement);
+            }
+        }
+
+        for grid in std::mem::take(&mut self.pending_destroyed_grids) {
+            self.other_grids.remove(&grid);
+            self.grid_placements.remove(&grid);
+        }
+
+        if let Some(grid) = self.pending_cursor_grid.take() {
+            self.cursor_grid = grid;
+        }
+    }
+
+    pub(super) fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {
+        let mut layers = self
+            .other_grids
+            .iter()
+            .filter_map(|(grid, model)| {
+                let placement = self.grid_placements.get(grid).copied()?;
+                placement
+                    .visible
+                    .then(|| (*grid, Rc::clone(model), placement))
+            })
+            .collect::<Vec<_>>();
+        layers.sort_by(|left, right| {
+            left.2
+                .compindex
+                .cmp(&right.2.compindex)
+                .then_with(|| left.2.z_index.cmp(&right.2.z_index))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        layers
+    }
+
+    pub(super) fn visible_image_layers(&self) -> Vec<ImageLayer> {
+        let mut layers = Vec::new();
+
+        for placement in self.image_store.placements() {
+            if placement.is_virtual_placeholder()
+                || self.image_store.asset(placement.key.image).is_none()
+                || !self.grid_is_visible(placement.anchor.grid.0)
+            {
+                continue;
+            }
+            layers.push(ImageLayer {
+                image: placement.key.image,
+                grid: placement.anchor.grid.0,
+                row: placement.anchor.row as usize,
+                column: placement.anchor.column as usize,
+                columns: placement.columns,
+                rows: placement.rows,
+                z_index: placement.z_index,
+            });
+        }
+
+        // Most frames have no Kitty placeholder at all. Avoid walking every
+        // visible grid in that common case. Build the lookup once as well so
+        // placeholder cells do not rescan every image placement individually.
+        if !self.image_store.has_virtual_placements() {
+            layers.sort_by(|left, right| {
+                left.z_index
+                    .cmp(&right.z_index)
+                    .then_with(|| left.grid.cmp(&right.grid))
+                    .then_with(|| left.row.cmp(&right.row))
+                    .then_with(|| left.column.cmp(&right.column))
+            });
+            return layers;
+        }
+
+        let virtual_image_sizes = self
+            .image_store
+            .virtual_placements()
+            .filter_map(|placement| {
+                self.image_store
+                    .asset(placement.key.image)
+                    .is_some()
+                    .then_some((
+                        placement.key.image,
+                        (placement.columns, placement.rows, placement.z_index),
+                    ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut models = vec![(1, self.grid.as_ref())];
+        models.extend(self.other_grids.iter().filter_map(|(grid, model)| {
+            self.grid_is_visible(*grid)
+                .then_some((*grid, model.as_ref()))
+        }));
+
+        let mut virtual_layer_keys = HashSet::new();
+
+        for (grid, model) in &models {
+            for (row, grid_row) in model.rows().iter().enumerate() {
+                for (column, cell) in grid_row.cells().iter().enumerate() {
+                    let Some((row_offset, column_offset)) =
+                        image_store::placeholder_position(&cell.text)
+                    else {
+                        continue;
+                    };
+                    let Some(image) = model
+                        .highlight(cell.highlight)
+                        .and_then(|attrs| attrs.foreground)
+                        .map(ImageId)
+                    else {
+                        continue;
+                    };
+                    let Some(&(columns, rows, z_index)) = virtual_image_sizes.get(&image) else {
+                        continue;
+                    };
+
+                    // A placeholder is rendered through a Neovim virtual
+                    // text/line. Another decoration (for example Markview's
+                    // concealed title text) can cover the first placeholder
+                    // cell while leaving the rest of the image intact. Do
+                    // not require the (1, 1) marker: every marker encodes its
+                    // own offset, so any visible cell can recover the image
+                    // anchor.
+                    let Some(row) = row.checked_sub(row_offset.saturating_sub(1) as usize) else {
+                        continue;
+                    };
+                    let Some(column) = column.checked_sub(column_offset.saturating_sub(1) as usize)
+                    else {
+                        continue;
+                    };
+                    // Snacks intentionally hides an inline image while the
+                    // cursor is on the source line (hybrid/conceal mode).
+                    // With `virt_lines`, the Kitty placeholder begins on the
+                    // line immediately below that source line.
+                    // The placeholder cells can remain in the redraw model
+                    // because another decoration may cover only their first
+                    // cell, so use Neovim's cursor row as the visibility
+                    // signal instead of treating a partial placeholder as a
+                    // complete preview.
+                    let source_row = row.saturating_sub(1);
+                    if self.cursor_grid == *grid
+                        && model
+                            .cursor()
+                            .is_some_and(|cursor| cursor.row == source_row)
+                    {
+                        continue;
+                    }
+                    if !virtual_layer_keys.insert((image, *grid, row, column)) {
+                        continue;
+                    }
+                    layers.push(ImageLayer {
+                        image,
+                        grid: *grid,
+                        row,
+                        column,
+                        columns,
+                        rows,
+                        z_index,
+                    });
+                }
+            }
+        }
+
+        layers.sort_by(|left, right| {
+            left.z_index
+                .cmp(&right.z_index)
+                .then_with(|| left.grid.cmp(&right.grid))
+                .then_with(|| left.row.cmp(&right.row))
+                .then_with(|| left.column.cmp(&right.column))
+        });
+        layers
+    }
+
+    pub(super) fn grid_is_visible(&self, grid: u64) -> bool {
+        grid == 1
+            || self
+                .grid_placements
+                .get(&grid)
+                .is_some_and(|placement| placement.visible)
+    }
+
+    pub(super) fn on_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let target = self.input_router.target();
+        if !should_route_key_to_neovim(target, &event.keystroke) {
+            return;
+        }
+
+        if let Some(nvim) = self.nvim.as_ref() {
+            if let Err(error) = nvim.send_input(key_to_nvim_input(&event.keystroke)) {
+                self.rpc_status = format!("rpc input error: {error}");
+            }
+        }
+        // Prevent GPUI's default key action from competing with Neovim for
+        // editor-owned shortcuts such as Ctrl-W, Cmd-W, and function keys.
+        // This only applies after the event reaches this window; OS-global
+        // shortcuts remain owned by the operating system.
+        window.prevent_default();
+    }
+}
