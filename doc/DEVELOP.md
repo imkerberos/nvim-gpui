@@ -170,12 +170,12 @@ than leaving the GUI process alive.
 
 `.github/workflows/ci.yml` runs `just ci` and builds/verifies the macOS
 AppBundle for pushes and pull requests. Linux is not tested or supported yet.
-`.github/workflows/release.yml` runs on `v*` tags, builds the macOS AppBundle
-and DMG on both Apple Silicon and Intel runners, verifies that the bundle has
-no Nix store runtime dependency, uploads arch-specific workflow artifacts, and
-attaches both DMGs and AppBundle archives to a GitHub Release. Release signing
-and notarization are intentionally not configured because they require
-project-specific Apple credentials.
+`.github/workflows/release.yml` runs on `v*` tags, builds both macOS targets on
+Apple Silicon runners (the Intel target uses the `x86_64-darwin` Nix shell
+under Rosetta), verifies that each bundle has no Nix store runtime dependency,
+uploads arch-specific workflow artifacts, and attaches both DMGs and AppBundle
+archives to a GitHub Release. Release signing and notarization are intentionally
+not configured because they require project-specific Apple credentials.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also

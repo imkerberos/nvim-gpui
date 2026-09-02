@@ -16,9 +16,14 @@ jobs:
       matrix:
         include:
           - arch: aarch64
-            runner: macos-14
+            runner: macos-15
+            nix_system: aarch64-darwin
           - arch: x86_64
-            runner: macos-15-intel
+            # Determinate Nix no longer installs on Intel macOS. Build the
+            # Intel artifact on Apple Silicon and let macOS/Rosetta execute
+            # any x86_64 tools that are needed during the build.
+            runner: macos-15
+            nix_system: x86_64-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
@@ -32,19 +37,16 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Verify runner architecture
-        env:
-          EXPECTED_ARCH: ${{ matrix.arch }}
+      - name: Verify Apple Silicon runner
         run: |
-          case "$(uname -m)" in
-            arm64) actual_arch="aarch64" ;;
-            x86_64) actual_arch="x86_64" ;;
-            *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          test "$actual_arch" = "$EXPECTED_ARCH"
+          test "$(uname -m)" = "arm64"
+
+      - name: Enable Rosetta 2 for Intel tools
+        if: matrix.arch == 'x86_64'
+        run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
 
       - name: Build AppBundle and DMG
-        run: nix develop --accept-flake-config -c just dmg
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just dmg
 
       - name: Archive AppBundle
         env:
@@ -64,7 +66,7 @@ jobs:
   publish:
     name: Publish macOS packages
     needs: build
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 15
 
     steps:

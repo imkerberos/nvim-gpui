@@ -17,7 +17,9 @@ concurrency:
 jobs:
   checks:
     name: Checks (macOS)
-    runs-on: macos-latest
+    # Determinate Nix currently supports macOS on Apple Silicon. Keep this
+    # label explicit instead of following macos-latest to a future image.
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
@@ -31,7 +33,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Run repository checks
-        run: nix develop --accept-flake-config -c just ci
+        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just ci
 
       - name: Build and verify macOS AppBundle
-        run: nix develop --accept-flake-config -c just bundle
+        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just bundle
