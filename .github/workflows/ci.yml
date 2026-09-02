@@ -16,17 +16,9 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks (${{ matrix.os-name }})
-    runs-on: ${{ matrix.os }}
+    name: Checks (macOS)
+    runs-on: macos-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            os-name: Linux
-          - os: macos-latest
-            os-name: macOS
 
     steps:
       - name: Check out source

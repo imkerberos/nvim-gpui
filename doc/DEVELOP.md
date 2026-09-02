@@ -165,11 +165,12 @@ than leaving the GUI process alive.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs `just ci` on Linux and macOS for pushes and
-pull requests. `.github/workflows/release.yml` runs on `v*` tags, builds the
-macOS AppBundle and DMG, uploads the DMG as a workflow artifact, and attaches
-it to a GitHub Release. Release signing and notarization are intentionally not
-configured because they require project-specific Apple credentials.
+`.github/workflows/ci.yml` runs `just ci` on macOS for pushes and pull
+requests. Linux is not tested or supported yet. `.github/workflows/release.yml`
+runs on `v*` tags, builds the macOS AppBundle and DMG, uploads the DMG as a
+workflow artifact, and attaches it to a GitHub Release. Release signing and
+notarization are intentionally not configured because they require
+project-specific Apple credentials.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also

@@ -194,10 +194,11 @@ working directory.
 
 ## CI/CD
 
-GitHub Actions runs the repository checks on Linux and macOS for pushes and
-pull requests. Pushing a tag such as <code>v0.1.0</code> builds the macOS
-AppBundle and DMG, uploads both packages as workflow artifacts, and creates a
-GitHub Release. Release packages are currently unsigned and not notarized.
+GitHub Actions currently runs the repository checks on macOS for pushes and
+pull requests. Linux is not tested or supported yet. Pushing a tag such as
+<code>v0.1.0</code> builds the macOS AppBundle and DMG, uploads both packages
+as workflow artifacts, and creates a GitHub Release. Release packages are
+currently unsigned and not notarized.
 
 ## Development
 
