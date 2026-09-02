@@ -900,7 +900,9 @@ impl NvimGpui {
                 .then_some((*grid, model.as_ref()))
         }));
 
-        for (grid, model) in models {
+        let mut virtual_layer_keys = HashSet::new();
+
+        for (grid, model) in &models {
             for (row, grid_row) in model.rows().iter().enumerate() {
                 for (column, cell) in grid_row.cells().iter().enumerate() {
                     let Some((row_offset, column_offset)) =
@@ -908,9 +910,6 @@ impl NvimGpui {
                     else {
                         continue;
                     };
-                    if row_offset != 1 || column_offset != 1 {
-                        continue;
-                    }
                     let Some(image) = model
                         .highlight(cell.highlight)
                         .and_then(|attrs| attrs.foreground)
@@ -921,9 +920,44 @@ impl NvimGpui {
                     let Some(&(columns, rows, z_index)) = virtual_image_sizes.get(&image) else {
                         continue;
                     };
+
+                    // A placeholder is rendered through a Neovim virtual
+                    // text/line. Another decoration (for example Markview's
+                    // concealed title text) can cover the first placeholder
+                    // cell while leaving the rest of the image intact. Do
+                    // not require the (1, 1) marker: every marker encodes its
+                    // own offset, so any visible cell can recover the image
+                    // anchor.
+                    let Some(row) = row.checked_sub(row_offset.saturating_sub(1) as usize) else {
+                        continue;
+                    };
+                    let Some(column) = column.checked_sub(column_offset.saturating_sub(1) as usize)
+                    else {
+                        continue;
+                    };
+                    // Snacks intentionally hides an inline image while the
+                    // cursor is on the source line (hybrid/conceal mode).
+                    // With `virt_lines`, the Kitty placeholder begins on the
+                    // line immediately below that source line.
+                    // The placeholder cells can remain in the redraw model
+                    // because another decoration may cover only their first
+                    // cell, so use Neovim's cursor row as the visibility
+                    // signal instead of treating a partial placeholder as a
+                    // complete preview.
+                    let source_row = row.saturating_sub(1);
+                    if self.cursor_grid == *grid
+                        && model
+                            .cursor()
+                            .is_some_and(|cursor| cursor.row == source_row)
+                    {
+                        continue;
+                    }
+                    if !virtual_layer_keys.insert((image, *grid, row, column)) {
+                        continue;
+                    }
                     layers.push(ImageLayer {
                         image,
-                        grid,
+                        grid: *grid,
                         row,
                         column,
                         columns,
@@ -1180,6 +1214,28 @@ impl Render for NvimGpui {
                     }),
             );
 
+        let image_layers = self.visible_image_layers();
+
+        // Images belong to a Neovim grid. Paint the main-grid images before
+        // floating grids, then paint each floating grid's images directly
+        // after that grid. Keeping this order is important for multigrid:
+        // otherwise an image from the main grid, appended at the very end,
+        // would cover a Snacks picker or another opaque floating window.
+        for layer in image_layers.iter().filter(|layer| layer.grid == 1) {
+            let Some(source) = self.image_sources.get(&layer.image).cloned() else {
+                continue;
+            };
+            editor = editor.child(
+                img(source)
+                    .absolute()
+                    .left(px(layer.column as f32 * f32::from(cell_width)))
+                    .top(px(layer.row as f32 * f32::from(line_height)))
+                    .w(px(layer.columns as f32 * f32::from(cell_width)))
+                    .h(px(layer.rows as f32 * f32::from(line_height)))
+                    .object_fit(gpui::ObjectFit::Fill),
+            );
+        }
+
         for (grid_id, model, placement) in self.visible_grid_layers() {
             let width = placement.width.max(model.width() as u64);
             let height = placement.height.max(model.height() as u64);
@@ -1214,33 +1270,26 @@ impl Render for NvimGpui {
                         .with_nerd_font_mode(true),
                 );
             editor = editor.child(layer);
-        }
-
-        for layer in self.visible_image_layers() {
-            let Some(source) = self.image_sources.get(&layer.image).cloned() else {
-                continue;
-            };
-            let (grid_row, grid_col) = if layer.grid == 1 {
-                (0, 0)
-            } else {
-                self.grid_placements
-                    .get(&layer.grid)
-                    .map(|placement| (placement.row.max(0), placement.col.max(0)))
-                    .unwrap_or((0, 0))
-            };
-            editor = editor.child(
-                img(source)
-                    .absolute()
-                    .left(px(
-                        (layer.column as f32 + grid_col as f32) * f32::from(cell_width)
-                    ))
-                    .top(px(
-                        (layer.row as f32 + grid_row as f32) * f32::from(line_height)
-                    ))
-                    .w(px(layer.columns as f32 * f32::from(cell_width)))
-                    .h(px(layer.rows as f32 * f32::from(line_height)))
-                    .object_fit(gpui::ObjectFit::Fill),
-            );
+            for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
+                let Some(source) = self.image_sources.get(&image_layer.image).cloned() else {
+                    continue;
+                };
+                let grid_row = placement.row.max(0);
+                let grid_col = placement.col.max(0);
+                editor = editor.child(
+                    img(source)
+                        .absolute()
+                        .left(px(
+                            (image_layer.column as f32 + grid_col as f32) * f32::from(cell_width)
+                        ))
+                        .top(px(
+                            (image_layer.row as f32 + grid_row as f32) * f32::from(line_height)
+                        ))
+                        .w(px(image_layer.columns as f32 * f32::from(cell_width)))
+                        .h(px(image_layer.rows as f32 * f32::from(line_height)))
+                        .object_fit(gpui::ObjectFit::Fill),
+                );
+            }
         }
 
         root.child(editor)
@@ -2076,14 +2125,16 @@ pub(crate) fn run(options: CliOptions) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_guifont_spec, EditorState, NvimGpui, DEFAULT_WINDOW_TITLE};
+    use super::{parse_guifont_spec, EditorState, GridPlacement, NvimGpui, DEFAULT_WINDOW_TITLE};
     use crate::{
         grid::{CursorModeInfo, CursorShape, GridLineCell, HighlightAttrs, HighlightId},
+        image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
         nvim::NvimEvent,
         parse_cli, CliAction, CliOptions, NvimConnection,
     };
     use gpui::px;
     use std::ffi::OsString;
+    use std::rc::Rc;
 
     #[test]
     fn cli_keeps_unknown_arguments_for_neovim() {
@@ -2492,6 +2543,72 @@ mod tests {
         app.apply_nvim_event(NvimEvent::WinClose { grid: 2 });
         app.apply_nvim_event(NvimEvent::Flush);
         assert!(!app.other_grids.contains_key(&2));
+    }
+
+    #[test]
+    fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
+        let image = ImageId(17);
+        let mut app = NvimGpui::default();
+        app.image_store
+            .insert_asset_with_format(image, vec![1, 2, 3], ImageFormatKind::Png);
+        app.image_store.place(ImagePlacement {
+            key: PlacementKey {
+                image,
+                placement: 4,
+            },
+            anchor: GridAnchor {
+                grid: GridId(0),
+                row: 0,
+                column: 0,
+            },
+            columns: 3,
+            rows: 2,
+            z_index: 0,
+            virtual_placeholder: true,
+        });
+
+        let mut model = crate::grid::GridModel::new(6, 3);
+        let highlight = HighlightId(1839);
+        model.set_highlight(
+            highlight,
+            HighlightAttrs {
+                foreground: Some(image.0),
+                ..Default::default()
+            },
+        );
+        // The (1, 1) cell is covered by another decoration. The following
+        // marker still identifies the image and encodes its (1, 2) offset.
+        let marker = format!("{}{}{}", '\u{10eeee}', '\u{0305}', '\u{030d}');
+        model.apply_grid_line(1, 1, &[GridLineCell::new(marker, highlight, 1)], false);
+        model.set_cursor(2, 0);
+        app.other_grids.insert(2, Rc::new(model));
+        app.grid_placements.insert(
+            2,
+            GridPlacement {
+                width: 6,
+                height: 3,
+                visible: true,
+                ..Default::default()
+            },
+        );
+        app.cursor_grid = 2;
+
+        let layers = app.visible_image_layers();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(
+            (
+                layers[0].image,
+                layers[0].grid,
+                layers[0].row,
+                layers[0].column
+            ),
+            (image, 2, 1, 0)
+        );
+
+        let mut hidden_model = (*app.other_grids[&2]).clone();
+        hidden_model.set_cursor(0, 0);
+        app.other_grids.insert(2, Rc::new(hidden_model));
+        assert!(app.visible_image_layers().is_empty());
     }
 
     #[test]
