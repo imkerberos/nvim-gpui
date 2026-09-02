@@ -2152,6 +2152,25 @@ mod tests {
     }
 
     #[test]
+    fn highlight_blend_uses_neovims_zero_to_hundred_transparency_scale() {
+        let mut model = GridModel::new(1, 1);
+        model.set_highlight(
+            HighlightId(42),
+            HighlightAttrs {
+                foreground: Some(0xffffff),
+                background: Some(0x112233),
+                blend: Some(25),
+                ..Default::default()
+            },
+        );
+
+        let (foreground, background) = highlight_colors(&model, HighlightId(42), None);
+
+        assert!((foreground.a - 0.75).abs() < f32::EPSILON);
+        assert!((background.expect("highlight background").a - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn default_cursor_attribute_swaps_the_current_cell_colors() {
         let mut model = GridModel::new(1, 1);
         model.set_default_colors(Some(0xffffff), Some(0x112233), None);

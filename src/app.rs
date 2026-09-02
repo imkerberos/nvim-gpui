@@ -164,13 +164,39 @@ impl Default for EditorState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridViewport {
+    topline: u64,
+    botline: u64,
+    curline: u64,
+    curcol: u64,
+    line_count: u64,
+    scroll_delta: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridViewportMargins {
+    top: u64,
+    bottom: u64,
+    left: u64,
+    right: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GridPlacement {
     row: i64,
     col: i64,
     width: u64,
     height: u64,
+    /// Configured float stacking level. `compindex` remains the primary
+    /// render key because Neovim computes it as the exact compositing order;
+    /// `z_index` is retained for the protocol's same-order/group semantics.
+    z_index: i64,
     compindex: i64,
     visible: bool,
+    viewport: Option<GridViewport>,
+    viewport_margins: Option<GridViewportMargins>,
+    message_scrolled: bool,
+    message_separator: Option<char>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,8 +217,13 @@ impl Default for GridPlacement {
             col: 0,
             width: 0,
             height: 0,
+            z_index: 0,
             compindex: -1,
             visible: false,
+            viewport: None,
+            viewport_margins: None,
+            message_scrolled: false,
+            message_separator: None,
         }
     }
 }
@@ -554,17 +585,15 @@ impl NvimGpui {
                 width,
                 height,
             } => {
-                self.set_grid_placement(
-                    grid,
-                    GridPlacement {
-                        row: row as i64,
-                        col: col as i64,
-                        width,
-                        height,
-                        compindex: -1,
-                        visible: true,
-                    },
-                );
+                let mut placement = self.grid_placement(grid);
+                placement.row = row as i64;
+                placement.col = col as i64;
+                placement.width = width;
+                placement.height = height;
+                placement.z_index = 0;
+                placement.compindex = -1;
+                placement.visible = true;
+                self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinFloatPos {
                 grid,
@@ -574,40 +603,89 @@ impl NvimGpui {
                 anchor_row: _,
                 anchor_col: _,
                 mouse_enabled: _,
-                zindex: _,
+                zindex,
                 compindex,
                 screen_row,
                 screen_col,
             } => {
-                let mut placement = self
-                    .pending_grid_placements
-                    .get(&grid)
-                    .copied()
-                    .or_else(|| self.grid_placements.get(&grid).copied())
-                    .unwrap_or_default();
+                let mut placement = self.grid_placement(grid);
                 placement.row = screen_row;
                 placement.col = screen_col;
+                placement.z_index = zindex;
                 placement.compindex = compindex;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
             }
+            NvimEvent::WinViewport {
+                grid,
+                win: _,
+                topline,
+                botline,
+                curline,
+                curcol,
+                line_count,
+                scroll_delta,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.viewport = Some(GridViewport {
+                    topline,
+                    botline,
+                    curline,
+                    curcol,
+                    line_count,
+                    scroll_delta,
+                });
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::WinViewportMargins {
+                grid,
+                win: _,
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                let mut placement = self.grid_placement(grid);
+                placement.viewport_margins = Some(GridViewportMargins {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                });
+                self.set_grid_placement(grid, placement);
+            }
+            NvimEvent::MsgSetPos {
+                grid,
+                row,
+                scrolled,
+                sep_char,
+                zindex,
+                compindex,
+            } => {
+                // A message grid is not associated with a normal window, so
+                // Neovim positions it with msg_set_pos instead of win_pos.
+                // Keep it in the same placement table as window grids so its
+                // grid_line updates become visible and participate in the
+                // protocol compositing order.
+                let grid_width = self.pending_grid_mut_for(grid).width() as u64;
+                let mut placement = self.grid_placement(grid);
+                placement.row = row as i64;
+                placement.col = 0;
+                placement.width = grid_width;
+                placement.z_index = zindex;
+                placement.compindex = compindex;
+                placement.visible = true;
+                placement.message_scrolled = scrolled;
+                placement.message_separator = sep_char.chars().next();
+                self.set_grid_placement(grid, placement);
+            }
             NvimEvent::WinExternalPos { grid, win: _ } => {
-                let mut placement = self
-                    .pending_grid_placements
-                    .get(&grid)
-                    .copied()
-                    .or_else(|| self.grid_placements.get(&grid).copied())
-                    .unwrap_or_default();
+                let mut placement = self.grid_placement(grid);
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinHide { grid } => {
-                let mut placement = self
-                    .pending_grid_placements
-                    .get(&grid)
-                    .copied()
-                    .or_else(|| self.grid_placements.get(&grid).copied())
-                    .unwrap_or_default();
+                let mut placement = self.grid_placement(grid);
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }
@@ -783,6 +861,14 @@ impl NvimGpui {
         self.pending_destroyed_grids.remove(&grid);
     }
 
+    fn grid_placement(&self, grid: u64) -> GridPlacement {
+        self.pending_grid_placements
+            .get(&grid)
+            .copied()
+            .or_else(|| self.grid_placements.get(&grid).copied())
+            .unwrap_or_default()
+    }
+
     fn commit_pending_grid(&mut self) {
         if let Some(grid) = self.pending_grid.take() {
             let previous_cursor = self.grid.cursor_visual_position();
@@ -841,6 +927,7 @@ impl NvimGpui {
             left.2
                 .compindex
                 .cmp(&right.2.compindex)
+                .then_with(|| left.2.z_index.cmp(&right.2.z_index))
                 .then_with(|| left.0.cmp(&right.0))
         });
         layers
@@ -2125,7 +2212,10 @@ pub(crate) fn run(options: CliOptions) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_guifont_spec, EditorState, GridPlacement, NvimGpui, DEFAULT_WINDOW_TITLE};
+    use super::{
+        parse_guifont_spec, EditorState, GridPlacement, GridViewport, GridViewportMargins,
+        NvimGpui, DEFAULT_WINDOW_TITLE,
+    };
     use crate::{
         grid::{CursorModeInfo, CursorShape, GridLineCell, HighlightAttrs, HighlightId},
         image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
@@ -2543,6 +2633,149 @@ mod tests {
         app.apply_nvim_event(NvimEvent::WinClose { grid: 2 });
         app.apply_nvim_event(NvimEvent::Flush);
         assert!(!app.other_grids.contains_key(&2));
+    }
+
+    #[test]
+    fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
+        let mut app = NvimGpui::default();
+
+        for grid in [2, 3, 4] {
+            app.apply_nvim_event(NvimEvent::GridResized {
+                grid,
+                width: 8,
+                height: 3,
+            });
+        }
+        app.apply_nvim_event(NvimEvent::WinFloatPos {
+            grid: 2,
+            win: Vec::new(),
+            anchor: "NW".to_owned(),
+            anchor_grid: 1,
+            anchor_row: 0,
+            anchor_col: 0,
+            mouse_enabled: false,
+            zindex: 100,
+            compindex: 2,
+            screen_row: 1,
+            screen_col: 1,
+        });
+        app.apply_nvim_event(NvimEvent::WinFloatPos {
+            grid: 3,
+            win: Vec::new(),
+            anchor: "NW".to_owned(),
+            anchor_grid: 1,
+            anchor_row: 0,
+            anchor_col: 0,
+            mouse_enabled: false,
+            zindex: 40,
+            compindex: 1,
+            screen_row: 2,
+            screen_col: 2,
+        });
+
+        // Margins can arrive before win_pos (as they do during initial
+        // multigrid setup), so applying win_pos must merge with the existing
+        // window state instead of replacing it.
+        app.apply_nvim_event(NvimEvent::WinViewportMargins {
+            grid: 4,
+            win: Vec::new(),
+            top: 1,
+            bottom: 2,
+            left: 3,
+            right: 4,
+        });
+        app.apply_nvim_event(NvimEvent::WinViewport {
+            grid: 4,
+            win: Vec::new(),
+            topline: 10,
+            botline: 30,
+            curline: 12,
+            curcol: 5,
+            line_count: 100,
+            scroll_delta: -3,
+        });
+        app.apply_nvim_event(NvimEvent::WinPos {
+            grid: 4,
+            win: Vec::new(),
+            row: 4,
+            col: 5,
+            width: 8,
+            height: 3,
+        });
+        app.apply_nvim_event(NvimEvent::Flush);
+
+        let layers = app.visible_grid_layers();
+        assert_eq!(
+            layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
+            vec![4, 3, 2]
+        );
+        assert_eq!(layers[0].2.z_index, 0);
+        assert_eq!(layers[1].2.z_index, 40);
+        assert_eq!(layers[2].2.z_index, 100);
+
+        let placement = app.grid_placements.get(&4).expect("grid 4 placement");
+        assert_eq!(
+            placement.viewport,
+            Some(GridViewport {
+                topline: 10,
+                botline: 30,
+                curline: 12,
+                curcol: 5,
+                line_count: 100,
+                scroll_delta: -3,
+            })
+        );
+        assert_eq!(
+            placement.viewport_margins,
+            Some(GridViewportMargins {
+                top: 1,
+                bottom: 2,
+                left: 3,
+                right: 4,
+            })
+        );
+        assert_eq!((placement.row, placement.col), (4, 5));
+    }
+
+    #[test]
+    fn message_grid_position_makes_native_cmdline_grid_visible() {
+        let mut app = NvimGpui::default();
+
+        app.apply_nvim_event(NvimEvent::GridResized {
+            grid: 3,
+            width: 80,
+            height: 4,
+        });
+        app.apply_nvim_event(NvimEvent::GridLine {
+            grid: 3,
+            row: 0,
+            col_start: 0,
+            cells: vec![GridLineCell::new(":echo", HighlightId(1), 1)],
+            wraps_to_next: false,
+        });
+        app.apply_nvim_event(NvimEvent::MsgSetPos {
+            grid: 3,
+            row: 20,
+            scrolled: false,
+            sep_char: " ".to_owned(),
+            zindex: 200,
+            compindex: 11,
+        });
+        app.apply_nvim_event(NvimEvent::Flush);
+
+        let layers = app.visible_grid_layers();
+        assert_eq!(
+            layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(layers[0].2.row, 20);
+        assert_eq!(layers[0].2.col, 0);
+        assert_eq!(layers[0].2.width, 80);
+        assert_eq!(layers[0].2.z_index, 200);
+        assert_eq!(layers[0].2.compindex, 11);
+        assert!(!layers[0].2.message_scrolled);
+        assert_eq!(layers[0].2.message_separator, Some(' '));
+        assert_eq!(app.other_grids[&3].rows()[0].cells()[0].text, ":echo");
     }
 
     #[test]

@@ -135,6 +135,32 @@ pub enum NvimEvent {
         screen_row: i64,
         screen_col: i64,
     },
+    WinViewport {
+        grid: u64,
+        win: Vec<u8>,
+        topline: u64,
+        botline: u64,
+        curline: u64,
+        curcol: u64,
+        line_count: u64,
+        scroll_delta: i64,
+    },
+    WinViewportMargins {
+        grid: u64,
+        win: Vec<u8>,
+        top: u64,
+        bottom: u64,
+        left: u64,
+        right: u64,
+    },
+    MsgSetPos {
+        grid: u64,
+        row: u64,
+        scrolled: bool,
+        sep_char: String,
+        zindex: i64,
+        compindex: i64,
+    },
     WinExternalPos {
         grid: u64,
         win: Vec<u8>,
@@ -1009,6 +1035,15 @@ fn handle_notification(
                 "win_float_pos" if args.len() >= 11 => {
                     send_event(events, parse_win_float_pos(args)?)?;
                 }
+                "win_viewport" if args.len() >= 8 => {
+                    send_event(events, parse_win_viewport(args)?)?;
+                }
+                "win_viewport_margins" if args.len() >= 6 => {
+                    send_event(events, parse_win_viewport_margins(args)?)?;
+                }
+                "msg_set_pos" if args.len() >= 6 => {
+                    send_event(events, parse_msg_set_pos(args)?)?;
+                }
                 "win_external_pos" if args.len() >= 2 => {
                     send_event(
                         events,
@@ -1182,13 +1217,16 @@ fn parse_highlight_attrs(value: &Value) -> Result<HighlightAttrs, String> {
                 )
             }
             "blend" => {
-                attrs.blend = value
-                    .as_u64()
-                    .and_then(|blend| u8::try_from(blend).ok())
-                    .or_else(|| (value.as_i64() == Some(-1)).then_some(0));
-                if attrs.blend.is_none() {
-                    return Err("hl_attr_define has an invalid blend level".to_owned());
-                }
+                // Neovim uses -1 internally for "no explicit blend" before
+                // applying a floating window's winblend. If it reaches a UI,
+                // preserve that sentinel as None instead of turning it into
+                // opaque blend=0. Positive values are the final per-cell
+                // blend level (winblend is already folded into the attr).
+                attrs.blend = if value.as_i64() == Some(-1) {
+                    None
+                } else {
+                    Some(parse_percentage(value, "blend")?)
+                };
             }
             _ => {}
         }
@@ -1293,6 +1331,43 @@ fn parse_win_float_pos(args: &[Value]) -> Result<NvimEvent, String> {
         compindex: parse_i64_value(&args[8], "win_float_pos composition index")?,
         screen_row: parse_i64_value(&args[9], "win_float_pos screen row")?,
         screen_col: parse_i64_value(&args[10], "win_float_pos screen column")?,
+    })
+}
+
+fn parse_win_viewport(args: &[Value]) -> Result<NvimEvent, String> {
+    Ok(NvimEvent::WinViewport {
+        grid: parse_u64_value(&args[0], "win_viewport grid")?,
+        win: parse_window_id(&args[1])?,
+        topline: parse_u64_value(&args[2], "win_viewport topline")?,
+        botline: parse_u64_value(&args[3], "win_viewport botline")?,
+        curline: parse_u64_value(&args[4], "win_viewport curline")?,
+        curcol: parse_u64_value(&args[5], "win_viewport curcol")?,
+        line_count: parse_u64_value(&args[6], "win_viewport line_count")?,
+        scroll_delta: parse_i64_value(&args[7], "win_viewport scroll delta")?,
+    })
+}
+
+fn parse_win_viewport_margins(args: &[Value]) -> Result<NvimEvent, String> {
+    Ok(NvimEvent::WinViewportMargins {
+        grid: parse_u64_value(&args[0], "win_viewport_margins grid")?,
+        win: parse_window_id(&args[1])?,
+        top: parse_u64_value(&args[2], "win_viewport_margins top")?,
+        bottom: parse_u64_value(&args[3], "win_viewport_margins bottom")?,
+        left: parse_u64_value(&args[4], "win_viewport_margins left")?,
+        right: parse_u64_value(&args[5], "win_viewport_margins right")?,
+    })
+}
+
+fn parse_msg_set_pos(args: &[Value]) -> Result<NvimEvent, String> {
+    Ok(NvimEvent::MsgSetPos {
+        grid: parse_u64_value(&args[0], "msg_set_pos grid")?,
+        row: parse_u64_value(&args[1], "msg_set_pos row")?,
+        scrolled: bool_value(&args[2])
+            .ok_or_else(|| "msg_set_pos has an invalid scrolled flag".to_owned())?,
+        sep_char: string_value(&args[3])
+            .ok_or_else(|| "msg_set_pos has an invalid separator character".to_owned())?,
+        zindex: parse_i64_value(&args[4], "msg_set_pos z-index")?,
+        compindex: parse_i64_value(&args[5], "msg_set_pos composition index")?,
     })
 }
 
@@ -1909,6 +1984,101 @@ mod tests {
         assert_eq!(
             receiver.try_recv().expect("win_hide should be available"),
             NvimEvent::WinHide { grid: 3 }
+        );
+    }
+
+    #[test]
+    fn redraw_viewport_events_are_decoded() {
+        let (sender, receiver) = unbounded();
+        let window = Value::Ext(1, vec![205, 3, 232]);
+        let params = Value::Array(vec![
+            Value::Array(vec![
+                Value::from("win_viewport"),
+                Value::Array(vec![
+                    Value::from(2),
+                    window.clone(),
+                    Value::from(10),
+                    Value::from(28),
+                    Value::from(14),
+                    Value::from(7),
+                    Value::from(100),
+                    Value::from(-2),
+                ]),
+            ]),
+            Value::Array(vec![
+                Value::from("win_viewport_margins"),
+                Value::Array(vec![
+                    Value::from(2),
+                    window,
+                    Value::from(1),
+                    Value::from(2),
+                    Value::from(3),
+                    Value::from(4),
+                ]),
+            ]),
+        ]);
+
+        handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("win_viewport should be available"),
+            NvimEvent::WinViewport {
+                grid: 2,
+                win: vec![205, 3, 232],
+                topline: 10,
+                botline: 28,
+                curline: 14,
+                curcol: 7,
+                line_count: 100,
+                scroll_delta: -2,
+            }
+        );
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("win_viewport_margins should be available"),
+            NvimEvent::WinViewportMargins {
+                grid: 2,
+                win: vec![205, 3, 232],
+                top: 1,
+                bottom: 2,
+                left: 3,
+                right: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn redraw_msg_set_pos_is_decoded() {
+        let (sender, receiver) = unbounded();
+        let params = Value::Array(vec![Value::Array(vec![
+            Value::from("msg_set_pos"),
+            Value::Array(vec![
+                Value::from(3),
+                Value::from(20),
+                Value::Boolean(true),
+                Value::from("─"),
+                Value::from(200),
+                Value::from(9),
+            ]),
+        ])]);
+
+        handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("msg_set_pos should be available"),
+            NvimEvent::MsgSetPos {
+                grid: 3,
+                row: 20,
+                scrolled: true,
+                sep_char: "─".to_owned(),
+                zindex: 200,
+                compindex: 9,
+            }
         );
     }
 

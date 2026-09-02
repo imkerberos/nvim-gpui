@@ -97,7 +97,12 @@ following redraw areas into the application model:
 
 - grid creation, resize, clear, destroy, line updates, scrolling, and cursor
   movement;
-- normal split positions and floating-grid positions/visibility;
+- normal split positions and floating-grid positions/visibility, including
+  Neovim's exact `compindex` order and configured `zindex`;
+- native message/cmdline grid positioning through `msg_set_pos`;
+- floating-window `blend` attributes, including the `winblend` value that
+  Neovim folds into the final highlight attributes;
+- `win_viewport` and `win_viewport_margins` state for each window grid;
 - `mode_info_set`, `mode_change`, and cursor blink/shape information;
 - `hl_attr_define`, `default_colors_set`, and the main text attributes;
 - `option_set`, including `guifont`, `guifontwide`, and `linespace`;
