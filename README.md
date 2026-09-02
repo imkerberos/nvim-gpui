@@ -60,6 +60,26 @@ To open the installed application directly:
 open -a nvim-gpui
 ~~~
 
+## Temporary trust for unsigned builds
+
+The current macOS builds are unsigned because the project does not yet have an
+Apple Developer ID certificate and notarization setup. When an unsigned app is
+downloaded from GitHub, macOS may report that it is damaged or cannot be
+verified.
+
+Only do this for a build downloaded from a source you trust. After moving the
+app to `/Applications`, remove its download quarantine attribute and launch it:
+
+~~~sh
+xattr -dr com.apple.quarantine /Applications/nvim-gpui.app
+open /Applications/nvim-gpui.app
+~~~
+
+Replace the path if you installed the app elsewhere. This is a temporary
+Gatekeeper override, not a code signature; it may need to be repeated after
+installing a newer build. Proper public distribution will require Developer
+ID signing and Apple notarization.
+
 ## Required Neovim font configuration
 
 For predictable cell width and CJK alignment, configure both
