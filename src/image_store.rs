@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::{collections::HashMap, fs, io::Cursor, path::Path};
 
 const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_IMAGE_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const KITTY_PLACEHOLDER: char = '\u{10eeee}';
 
 /// An identifier assigned by the Kitty graphics protocol.
@@ -109,11 +110,29 @@ pub enum KittyEvent {
     TerminalResponse(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ImageStore {
     assets: HashMap<ImageId, ImageAsset>,
     placements: HashMap<PlacementKey, ImagePlacement>,
+    asset_last_used: HashMap<ImageId, u64>,
+    asset_bytes: usize,
+    next_asset_use: u64,
+    max_asset_bytes: usize,
     parser: KittyGraphicsParser,
+}
+
+impl Default for ImageStore {
+    fn default() -> Self {
+        Self {
+            assets: HashMap::new(),
+            placements: HashMap::new(),
+            asset_last_used: HashMap::new(),
+            asset_bytes: 0,
+            next_asset_use: 0,
+            max_asset_bytes: MAX_IMAGE_CACHE_BYTES,
+            parser: KittyGraphicsParser::default(),
+        }
+    }
 }
 
 impl ImageStore {
@@ -121,9 +140,17 @@ impl ImageStore {
         Self::default()
     }
 
+    pub fn set_cache_size_mb(&mut self, megabytes: u32) -> Vec<ImageId> {
+        let bytes = usize::try_from(megabytes)
+            .unwrap_or(128)
+            .saturating_mul(1024 * 1024);
+        self.max_asset_bytes = bytes.max(16 * 1024 * 1024);
+        self.prune_unplaced_assets(None)
+    }
+
     pub fn insert_asset(&mut self, id: ImageId, encoded: Vec<u8>) {
         let format = ImageFormatKind::detect(&encoded);
-        self.insert_asset_with_format(id, encoded, format);
+        let _ = self.insert_asset_with_format(id, encoded, format);
     }
 
     pub fn insert_asset_with_format(
@@ -131,8 +158,15 @@ impl ImageStore {
         id: ImageId,
         encoded: Vec<u8>,
         format: ImageFormatKind,
-    ) {
-        self.assets.insert(id, ImageAsset { encoded, format });
+    ) -> Vec<ImageId> {
+        if let Some(previous) = self.assets.insert(id, ImageAsset { encoded, format }) {
+            self.asset_bytes = self.asset_bytes.saturating_sub(previous.encoded.len());
+        }
+        self.asset_bytes = self
+            .asset_bytes
+            .saturating_add(self.assets.get(&id).map_or(0, |asset| asset.encoded.len()));
+        self.touch_asset(id);
+        self.prune_unplaced_assets(Some(id))
     }
 
     pub fn asset(&self, id: ImageId) -> Option<&ImageAsset> {
@@ -140,6 +174,7 @@ impl ImageStore {
     }
 
     pub fn place(&mut self, placement: ImagePlacement) {
+        self.touch_asset(placement.key.image);
         self.placements.insert(placement.key, placement);
     }
 
@@ -151,10 +186,16 @@ impl ImageStore {
         self.placements.values()
     }
 
-    pub fn virtual_placements_for(&self, image: ImageId) -> impl Iterator<Item = &ImagePlacement> {
-        self.placements.values().filter(move |placement| {
-            placement.key.image == image && placement.is_virtual_placeholder()
-        })
+    pub fn virtual_placements(&self) -> impl Iterator<Item = &ImagePlacement> {
+        self.placements
+            .values()
+            .filter(|placement| placement.is_virtual_placeholder())
+    }
+
+    pub fn has_virtual_placements(&self) -> bool {
+        self.placements
+            .values()
+            .any(ImagePlacement::is_virtual_placeholder)
     }
 
     pub fn remove_placement(&mut self, key: PlacementKey) -> Option<ImagePlacement> {
@@ -164,7 +205,66 @@ impl ImageStore {
     pub fn clear(&mut self) {
         self.assets.clear();
         self.placements.clear();
+        self.asset_last_used.clear();
+        self.asset_bytes = 0;
+        self.next_asset_use = 0;
         self.parser = KittyGraphicsParser::default();
+    }
+
+    fn touch_asset(&mut self, id: ImageId) {
+        self.next_asset_use = self.next_asset_use.saturating_add(1);
+        self.asset_last_used.insert(id, self.next_asset_use);
+    }
+
+    fn has_placements(&self, image: ImageId) -> bool {
+        self.placements
+            .keys()
+            .any(|placement| placement.image == image)
+    }
+
+    fn remove_asset(&mut self, image: ImageId) -> bool {
+        let Some(asset) = self.assets.remove(&image) else {
+            return false;
+        };
+        self.asset_bytes = self.asset_bytes.saturating_sub(asset.encoded.len());
+        self.asset_last_used.remove(&image);
+        true
+    }
+
+    fn clear_assets_and_placements(&mut self) {
+        self.assets.clear();
+        self.placements.clear();
+        self.asset_last_used.clear();
+        self.asset_bytes = 0;
+        self.next_asset_use = 0;
+    }
+
+    /// Evict the least recently used images that no longer have a placement.
+    /// `protected` is used for a just-transmitted image so an oversized upload
+    /// is not immediately removed before its AssetUpdated event is delivered.
+    fn prune_unplaced_assets(&mut self, protected: Option<ImageId>) -> Vec<ImageId> {
+        let mut evicted = Vec::new();
+        while self.asset_bytes > self.max_asset_bytes {
+            let candidate = self
+                .assets
+                .keys()
+                .copied()
+                .filter(|image| Some(*image) != protected && !self.has_placements(*image))
+                .min_by_key(|image| self.asset_last_used.get(image).copied().unwrap_or(0));
+            let Some(image) = candidate else {
+                break;
+            };
+            if self.remove_asset(image) {
+                evicted.push(image);
+            }
+        }
+        evicted
+    }
+
+    fn prune_after_delete(&mut self, events: &mut Vec<KittyEvent>) {
+        for image in self.prune_unplaced_assets(None) {
+            events.push(KittyEvent::AssetDeleted { image });
+        }
     }
 
     /// Consume arbitrary chunks of terminal data sent by Neovim.
@@ -423,7 +523,10 @@ impl KittyGraphicsParser {
         else {
             return;
         };
-        store.insert_asset_with_format(transfer.image, bytes, format);
+        let evicted = store.insert_asset_with_format(transfer.image, bytes, format);
+        for image in evicted {
+            events.push(KittyEvent::AssetDeleted { image });
+        }
         events.push(KittyEvent::AssetUpdated {
             image: transfer.image,
             format,
@@ -478,17 +581,53 @@ impl KittyGraphicsParser {
         let delete_kind = controls.get("d").map(String::as_str).unwrap_or("a");
         match delete_kind {
             "a" => {
-                store.assets.clear();
+                // Lowercase delete commands remove visible placements but
+                // keep image data cached for a later `a=p`. Snacks relies on
+                // this when it closes the last preview placement and then
+                // reuses the same image id when the preview is opened again.
                 store.placements.clear();
-                events.push(KittyEvent::AssetsCleared);
+                store.prune_after_delete(events);
             }
             "i" => {
                 let Some(image) = parse_control_u32(controls, "i").map(ImageId) else {
                     return;
                 };
-                store.assets.remove(&image);
-                store.placements.retain(|key, _| key.image != image);
-                events.push(KittyEvent::AssetDeleted { image });
+                if controls.contains_key("p") {
+                    // Kitty's lowercase `d=i,p=<placement>` removes only
+                    // that placement and keeps the transmitted image data.
+                    // Snacks reuses the same image id when a picker preview
+                    // is shown again, so deleting the asset here makes the
+                    // later `a=p` silently fail.
+                    let Some(placement) = parse_control_u32(controls, "p") else {
+                        return;
+                    };
+                    store.remove_placement(PlacementKey { image, placement });
+                } else {
+                    // Lowercase `d=i` is a soft delete: remove all
+                    // placements for the image, but retain its data.
+                    store.placements.retain(|key, _| key.image != image);
+                }
+                store.prune_after_delete(events);
+            }
+            "A" => {
+                store.clear_assets_and_placements();
+                events.push(KittyEvent::AssetsCleared);
+            }
+            "I" => {
+                let Some(image) = parse_control_u32(controls, "i").map(ImageId) else {
+                    return;
+                };
+                if let Some(placement) = parse_control_u32(controls, "p") {
+                    store.remove_placement(PlacementKey { image, placement });
+                    if !store.has_placements(image) && store.remove_asset(image) {
+                        events.push(KittyEvent::AssetDeleted { image });
+                    }
+                } else {
+                    store.placements.retain(|key, _| key.image != image);
+                    if store.remove_asset(image) {
+                        events.push(KittyEvent::AssetDeleted { image });
+                    }
+                }
             }
             "p" => {
                 let Some(image) = parse_control_u32(controls, "i").map(ImageId) else {
@@ -622,8 +761,8 @@ const DIACRITICS: &str = "0305,030D,030E,0310,0312,033D,033E,033F,0346,034A,034B
 #[cfg(test)]
 mod tests {
     use super::{
-        placeholder_position, GridAnchor, GridId, ImageId, ImagePlacement, ImageStore, KittyEvent,
-        PlacementKey,
+        placeholder_position, GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement,
+        ImageStore, KittyEvent, PlacementKey,
     };
     use base64::Engine as _;
 
@@ -703,6 +842,72 @@ mod tests {
                 placement: 9
             })
             .is_some());
+    }
+
+    #[test]
+    fn deleting_a_placement_keeps_the_image_for_reuse() {
+        let mut store = ImageStore::new();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
+        let key = PlacementKey {
+            image: ImageId(7),
+            placement: 9,
+        };
+
+        store.consume_ui_data(
+            &format!("\x1b_Ga=T,f=100,t=d,i=7,m=0;{png}\x1b\\\x1b_Ga=p,U=1,i=7,p=9,c=3,r=2\x1b\\"),
+            GridId(1),
+        );
+        store.consume_ui_data("\x1b_Ga=d,d=i,i=7,p=9\x1b\\", GridId(1));
+
+        assert!(store.asset(ImageId(7)).is_some());
+        assert!(store.placement(key).is_none());
+
+        store.consume_ui_data("\x1b_Ga=p,U=1,i=7,p=9,c=3,r=2\x1b\\", GridId(1));
+        assert!(store.placement(key).is_some());
+    }
+
+    #[test]
+    fn soft_deleting_an_image_keeps_the_asset_for_reuse() {
+        let mut store = ImageStore::new();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
+        let key = PlacementKey {
+            image: ImageId(12),
+            placement: 14,
+        };
+
+        store.consume_ui_data(
+            &format!(
+                "\x1b_Ga=T,f=100,t=d,i=12,m=0;{png}\x1b\\\x1b_Ga=p,U=1,i=12,p=14,c=3,r=2\x1b\\"
+            ),
+            GridId(1),
+        );
+        store.consume_ui_data("\x1b_Ga=d,d=i,i=12\x1b\\", GridId(1));
+
+        assert!(store.asset(ImageId(12)).is_some());
+        assert!(store.placement(key).is_none());
+
+        store.consume_ui_data("\x1b_Ga=p,U=1,i=12,p=14,c=3,r=2\x1b\\", GridId(1));
+        assert!(store.placement(key).is_some());
+    }
+
+    #[test]
+    fn soft_deleted_assets_are_evicted_when_the_cache_is_full() {
+        let mut store = ImageStore::new();
+        store.max_asset_bytes = 2;
+        store.insert_asset_with_format(ImageId(21), vec![1, 2], ImageFormatKind::Png);
+        store.consume_ui_data("\x1b_Ga=p,U=1,i=21,p=1,c=1,r=1\x1b\\", GridId(1));
+        store.consume_ui_data("\x1b_Ga=d,d=i,i=21\x1b\\", GridId(1));
+
+        assert!(store.asset(ImageId(21)).is_some());
+        assert!(store
+            .placements()
+            .all(|placement| placement.key.image != ImageId(21)));
+
+        let evicted = store.insert_asset_with_format(ImageId(22), vec![3, 4], ImageFormatKind::Png);
+
+        assert_eq!(evicted, vec![ImageId(21)]);
+        assert!(store.asset(ImageId(21)).is_none());
+        assert!(store.asset(ImageId(22)).is_some());
     }
 
     #[test]

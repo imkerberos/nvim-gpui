@@ -2,7 +2,7 @@
 
 JUST ?= just
 
-.PHONY: check fmt fmt-check clippy build release icon bundle gpvim test run ci
+.PHONY: check fmt fmt-check clippy build release bundle dmg gpvim test run ci
 
 check:
 	$(JUST) check
@@ -22,11 +22,11 @@ build:
 release:
 	$(JUST) release
 
-icon:
-	$(JUST) icon
-
 bundle:
 	$(JUST) bundle
+
+dmg:
+	$(JUST) dmg
 
 gpvim:
 	$(JUST) gpvim -- $(ARGS)

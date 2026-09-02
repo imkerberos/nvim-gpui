@@ -1,10 +1,11 @@
-use crate::image_store::is_kitty_placeholder;
+use crate::{image_store::is_kitty_placeholder, settings::FallbackMode};
 use gpui::{
     fill, font, point, px, rgb, size, App, Bounds, Corners, Element, ElementId, Font,
     FontFallbacks, GlobalElementId, Hsla, IntoElement, LayoutId, Pixels, ShapedLine, SharedString,
     StrikethroughStyle, Style, TextRun, UnderlineStyle, Window,
 };
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     f32::consts::PI,
@@ -53,6 +54,10 @@ pub struct HighlightAttrs {
     pub blend: Option<u8>,
     pub altfont: Option<u32>,
     pub url: Option<String>,
+    /// The semantic UI highlight name sent when `ext_hlstate` is enabled.
+    /// This is metadata, not a styling attribute; it lets multigrid render a
+    /// floating window's implicit background correctly.
+    pub ui_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -114,7 +119,7 @@ pub enum CellKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GridCell {
-    pub text: String,
+    pub text: SharedString,
     pub highlight: HighlightId,
     pub kind: CellKind,
 }
@@ -122,7 +127,7 @@ pub struct GridCell {
 impl GridCell {
     pub fn text(text: impl Into<String>, highlight: HighlightId) -> Self {
         Self {
-            text: text.into(),
+            text: text.into().into(),
             highlight,
             kind: CellKind::Text,
         }
@@ -130,7 +135,7 @@ impl GridCell {
 
     pub fn blank(highlight: HighlightId) -> Self {
         Self {
-            text: " ".to_owned(),
+            text: SharedString::new_static(" "),
             highlight,
             kind: CellKind::Blank,
         }
@@ -138,7 +143,7 @@ impl GridCell {
 
     pub fn wide_lead(text: impl Into<String>, highlight: HighlightId) -> Self {
         Self {
-            text: text.into(),
+            text: text.into().into(),
             highlight,
             kind: CellKind::WideLead,
         }
@@ -146,7 +151,7 @@ impl GridCell {
 
     pub fn wide_continuation(highlight: HighlightId) -> Self {
         Self {
-            text: String::new(),
+            text: SharedString::new_static(""),
             highlight,
             kind: CellKind::WideContinuation,
         }
@@ -249,7 +254,10 @@ impl From<CursorVisualPosition> for CursorVisualPositionF {
 }
 
 impl CursorAnimation {
-    const DURATION: Duration = Duration::from_millis(145);
+    // Keep this short enough that normal cursor movement still feels direct,
+    // while leaving enough frames for the elastic shape and two tail layers
+    // to be visible at 60 Hz.
+    const DURATION: Duration = Duration::from_millis(180);
 
     pub fn new(from: CursorVisualPosition, target: CursorVisualPosition) -> Self {
         Self {
@@ -286,12 +294,16 @@ impl CursorAnimation {
     }
 
     fn position_at(&self, now: Instant) -> CursorVisualPositionF {
-        let progress = ease_out_cubic(self.progress(now));
+        let progress = jelly_progress(self.progress(now));
         CursorVisualPositionF {
             row: lerp(self.from.row, self.to.row, progress),
             col: lerp(self.from.col, self.to.col, progress),
             width: lerp(self.from.width, self.to.width, progress),
         }
+    }
+
+    fn is_active(&self, now: Instant) -> bool {
+        self.progress(now) < 1.0
     }
 }
 
@@ -398,6 +410,11 @@ impl GridModel {
                 }
 
                 let cell = if update.text.is_empty() {
+                    // Neovim's line-grid protocol reserves an empty text
+                    // entry for the right half of the preceding double-width
+                    // character. Do not infer this from Unicode width: Nvim
+                    // has already applied its `ambiwidth` and display-width
+                    // rules before emitting the event.
                     GridCell::wide_continuation(update.highlight)
                 } else if is_wide_lead {
                     GridCell::wide_lead(update.text.clone(), update.highlight)
@@ -440,6 +457,10 @@ impl GridModel {
 
     pub fn highlight(&self, id: HighlightId) -> Option<HighlightAttrs> {
         self.highlights.get(&id).cloned()
+    }
+
+    fn highlight_ref(&self, id: HighlightId) -> Option<&HighlightAttrs> {
+        self.highlights.get(&id)
     }
 
     pub fn highlights(&self) -> &std::collections::HashMap<HighlightId, HighlightAttrs> {
@@ -567,7 +588,7 @@ pub struct VisualCell {
     pub row: usize,
     pub grid_start: usize,
     pub grid_len: usize,
-    pub text: String,
+    pub text: SharedString,
     pub highlight: HighlightId,
     pub kind: VisualCellKind,
 }
@@ -591,29 +612,31 @@ impl VisualCellBuilder {
         Self { nerd_font_mode }
     }
 
-    pub fn build_grid(&self, model: &GridModel) -> Vec<VisualCell> {
-        model
-            .rows()
-            .iter()
-            .enumerate()
-            .flat_map(|(row, grid_row)| self.build_row(row, grid_row))
-            .collect()
+    pub fn for_each_cell(&self, model: &GridModel, mut f: impl FnMut(VisualCell)) {
+        for (row, grid_row) in model.rows().iter().enumerate() {
+            self.for_each_row(row, grid_row, &mut f);
+        }
     }
 
     pub fn build_row(&self, row: usize, grid_row: &GridRow) -> Vec<VisualCell> {
-        let cells = grid_row.cells();
         let mut visual_cells = Vec::new();
+        self.for_each_row(row, grid_row, &mut |cell| visual_cells.push(cell));
+        visual_cells
+    }
+
+    fn for_each_row(&self, row: usize, grid_row: &GridRow, f: &mut impl FnMut(VisualCell)) {
+        let cells = grid_row.cells();
         let mut col = 0;
 
         while col < cells.len() {
             let cell = &cells[col];
 
             if cell.kind == CellKind::WideContinuation {
-                visual_cells.push(VisualCell {
+                f(VisualCell {
                     row,
                     grid_start: col,
                     grid_len: 1,
-                    text: " ".to_owned(),
+                    text: SharedString::new_static(" "),
                     highlight: cell.highlight,
                     kind: VisualCellKind::Text,
                 });
@@ -628,7 +651,7 @@ impl VisualCellBuilder {
                 let is_nerd_symbol =
                     self.nerd_font_mode && is_nerd_symbol(&cell.text) && has_continuation;
 
-                visual_cells.push(VisualCell {
+                f(VisualCell {
                     row,
                     grid_start: col,
                     grid_len: if has_continuation { 2 } else { 1 },
@@ -655,7 +678,7 @@ impl VisualCellBuilder {
                 });
 
             if has_symbol_padding {
-                visual_cells.push(VisualCell {
+                f(VisualCell {
                     row,
                     grid_start: col,
                     grid_len: 2,
@@ -667,7 +690,7 @@ impl VisualCellBuilder {
                 continue;
             }
 
-            visual_cells.push(VisualCell {
+            f(VisualCell {
                 row,
                 grid_start: col,
                 grid_len: 1,
@@ -681,8 +704,6 @@ impl VisualCellBuilder {
             });
             col += 1;
         }
-
-        visual_cells
     }
 }
 
@@ -717,24 +738,36 @@ fn demo_highlight_attrs(highlight: HighlightId) -> HighlightAttrs {
     }
 }
 
-fn highlight_colors(model: &GridModel, highlight: HighlightId) -> (Hsla, Option<Hsla>) {
+fn highlight_colors(
+    model: &GridModel,
+    highlight: HighlightId,
+    background_override: Option<u32>,
+) -> (Hsla, Option<Hsla>) {
     let attrs = model
-        .highlight(highlight)
-        .unwrap_or_else(|| demo_highlight_attrs(highlight));
+        .highlight_ref(highlight)
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Owned(demo_highlight_attrs(highlight)));
     let (default_foreground, default_background, _) = model.default_colors();
     let foreground = attrs
         .foreground
         .or(default_foreground)
         .unwrap_or(DEFAULT_FOREGROUND);
-    // A terminal paints every cell, including a blank cell whose highlight
-    // does not specify an explicit background. Keeping this as `None` makes
-    // a multigrid float transparent, so the text behind a Noice/cmdline
-    // window leaks through. Neovim's missing background means the current
-    // default background, not transparent pixels.
-    let background = attrs
-        .background
-        .or(default_background)
-        .unwrap_or(DEFAULT_BACKGROUND);
+    // A terminal paints every cell, including a blank cell. In a multigrid
+    // float, Neovim can use the default highlight id for an implicit cell
+    // even though that id already contains the main grid's explicit
+    // background. Prefer the float surface for that id; explicit non-default
+    // highlights still retain their own background.
+    let background = if highlight == DEFAULT_HIGHLIGHT {
+        background_override
+            .or(attrs.background)
+            .or(default_background)
+    } else {
+        attrs
+            .background
+            .or(background_override)
+            .or(default_background)
+    }
+    .unwrap_or(DEFAULT_BACKGROUND);
     let mut foreground: Hsla = rgb(foreground).into();
     if attrs.dim {
         foreground.a *= 0.6;
@@ -758,6 +791,26 @@ fn blend_alpha(blend: Option<u8>) -> f32 {
         .unwrap_or(1.0)
 }
 
+fn push_background(
+    backgrounds: &mut Vec<(Bounds<Pixels>, Hsla)>,
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+) {
+    if let Some((previous_bounds, previous_color)) = backgrounds.last_mut() {
+        let previous_right = previous_bounds.origin.x + previous_bounds.size.width;
+        if *previous_color == color
+            && previous_bounds.origin.y == bounds.origin.y
+            && previous_bounds.size.height == bounds.size.height
+            && previous_right == bounds.origin.x
+        {
+            previous_bounds.size.width += bounds.size.width;
+            return;
+        }
+    }
+
+    backgrounds.push((bounds, color));
+}
+
 const MAX_SHAPED_LINE_CACHE_ENTRIES: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -778,6 +831,10 @@ pub type SharedGlyphCoverageCache = Rc<RefCell<GlyphCoverageCache>>;
 impl GlyphCoverageCache {
     pub fn shared() -> SharedGlyphCoverageCache {
         Rc::new(RefCell::new(Self::default()))
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
 
     fn contains(&mut self, window: &Window, font: &Font, character: char) -> bool {
@@ -882,17 +939,16 @@ impl ShapedLineCache {
     }
 }
 
-pub struct PaintedCell {
-    background: Option<(Bounds<Pixels>, Hsla)>,
-    overline: Option<(Bounds<Pixels>, Hsla)>,
-}
-
 struct PendingText {
     row: usize,
     grid_start: usize,
     grid_end: usize,
     text: String,
     runs: Vec<StyledTextRun>,
+    // A Nerd/wide cell must remain a shaping boundary on both sides. Its
+    // fallback glyph advance is not necessarily the terminal cell advance,
+    // so ordinary text after it must start a fresh shaped line.
+    mergeable: bool,
 }
 
 struct PaintedText {
@@ -901,26 +957,30 @@ struct PaintedText {
 }
 
 pub struct GridPrepaintState {
-    cells: Vec<PaintedCell>,
+    backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
+    overlines: Vec<(Bounds<Pixels>, Hsla)>,
     texts: Vec<PaintedText>,
-    cursor: Option<PaintedCursor>,
+    cursors: Vec<PaintedCursor>,
 }
 
 struct PaintedCursor {
     bounds: Bounds<Pixels>,
     color: Hsla,
+    opacity: f32,
 }
 
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
 
 pub struct GridElement {
-    model: GridModel,
+    model: Rc<GridModel>,
     nerd_font_mode: bool,
+    nerd_fallback_mode: FallbackMode,
     cell_width: Pixels,
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
     wide_font: Option<(String, Pixels)>,
     nerd_fallback_font: Option<(String, Pixels)>,
+    default_background_override: Option<u32>,
     glyph_coverage_cache: SharedGlyphCoverageCache,
     cursor_animation: Option<CursorAnimation>,
     cursor_mode: CursorModeInfo,
@@ -930,15 +990,17 @@ pub struct GridElement {
 }
 
 impl GridElement {
-    pub fn new(model: GridModel) -> Self {
+    pub fn with_shared_model(model: Rc<GridModel>) -> Self {
         Self {
             model,
             nerd_font_mode: false,
+            nerd_fallback_mode: FallbackMode::Auto,
             cell_width: px(10.0),
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
             wide_font: None,
             nerd_fallback_font: None,
+            default_background_override: None,
             glyph_coverage_cache: GlyphCoverageCache::shared(),
             cursor_animation: None,
             cursor_mode: CursorModeInfo::default(),
@@ -950,6 +1012,11 @@ impl GridElement {
 
     pub fn with_nerd_font_mode(mut self, enabled: bool) -> Self {
         self.nerd_font_mode = enabled;
+        self
+    }
+
+    pub fn with_nerd_fallback_mode(mut self, mode: FallbackMode) -> Self {
+        self.nerd_fallback_mode = mode;
         self
     }
 
@@ -969,6 +1036,15 @@ impl GridElement {
         if !family.is_empty() {
             self.nerd_fallback_font = Some((family, size));
         }
+        self
+    }
+
+    /// Use this background for cells in this grid whose highlight does not
+    /// specify one. Multigrid floating windows need this because Neovim can
+    /// represent their implicit `NormalFloat` fill with the default highlight
+    /// id while still expecting the window surface to remain opaque.
+    pub fn with_default_background(mut self, background: Option<u32>) -> Self {
+        self.default_background_override = background;
         self
     }
 
@@ -1049,12 +1125,18 @@ impl GridElement {
             return (base_font, size);
         };
 
-        if self
-            .glyph_coverage_cache
-            .borrow_mut()
-            .contains(window, &base_font, character)
-        {
-            return (base_font, size);
+        match self.nerd_fallback_mode {
+            FallbackMode::None => return (base_font, size),
+            FallbackMode::Auto => {
+                if self
+                    .glyph_coverage_cache
+                    .borrow_mut()
+                    .contains(window, &base_font, character)
+                {
+                    return (base_font, size);
+                }
+            }
+            FallbackMode::Force => {}
         }
 
         // Keep the primary font as the requested face. GPUI's macOS and
@@ -1116,6 +1198,7 @@ impl Element for GridElement {
         let normal_font = text_style.font();
         let cell_width = self.effective_cell_width(window);
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
+        let model = Rc::clone(&self.model);
         let now = Instant::now();
         let mut has_blinking_text = false;
         let cursor_position = self
@@ -1129,16 +1212,21 @@ impl Element for GridElement {
                     .map(|position| cursor_colors(&self.model, position, self.cursor_mode))
             })
             .flatten();
-        let mut cells = Vec::new();
+        let mut backgrounds = Vec::new();
+        let mut overlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
 
-        for cell in builder.build_grid(&self.model) {
-            let attrs = self
-                .model
-                .highlight(cell.highlight)
-                .unwrap_or_else(|| demo_highlight_attrs(cell.highlight));
-            let (mut foreground, mut background) = highlight_colors(&self.model, cell.highlight);
+        builder.for_each_cell(model.as_ref(), |cell| {
+            let attrs = model
+                .highlight_ref(cell.highlight)
+                .map(Cow::Borrowed)
+                .unwrap_or_else(|| Cow::Owned(demo_highlight_attrs(cell.highlight)));
+            let (mut foreground, mut background) = highlight_colors(
+                model.as_ref(),
+                cell.highlight,
+                self.default_background_override,
+            );
             let is_cursor_cell = block_cursor_colors.is_some_and(|_| {
                 cursor_position.is_some_and(|position| visual_cell_overlaps_cursor(&cell, position))
             });
@@ -1222,7 +1310,9 @@ impl Element for GridElement {
                 let can_merge = cell.kind == VisualCellKind::Text
                     && cell.grid_len == 1
                     && pending_text.as_ref().is_some_and(|pending| {
-                        pending.row == cell.row && pending.grid_end == cell.grid_start
+                        pending.mergeable
+                            && pending.row == cell.row
+                            && pending.grid_end == cell.grid_start
                     });
                 if can_merge {
                     let pending = pending_text
@@ -1246,11 +1336,12 @@ impl Element for GridElement {
                         row: cell.row,
                         grid_start: cell.grid_start,
                         grid_end: cell.grid_start + cell.grid_len,
-                        text: cell.text.clone(),
+                        text: cell.text.to_string(),
                         runs: vec![StyledTextRun {
                             len: cell.text.len(),
                             style,
                         }],
+                        mergeable: cell.kind == VisualCellKind::Text,
                     });
                 }
             } else if let Some(pending) = pending_text.take() {
@@ -1262,11 +1353,13 @@ impl Element for GridElement {
             // padding creates visible gaps between adjacent ASCII-art
             // glyphs, whose raster width is often smaller than the cell
             // advance.
-            cells.push(PaintedCell {
-                background: background.map(|color| (cell_bounds, color)),
-                overline,
-            });
-        }
+            if let Some(background) = background {
+                push_background(&mut backgrounds, cell_bounds, background);
+            }
+            if let Some(overline) = overline {
+                overlines.push(overline);
+            }
+        });
 
         if let Some(pending) = pending_text {
             text_groups.push(pending);
@@ -1292,56 +1385,73 @@ impl Element for GridElement {
             window.request_animation_frame();
         }
 
-        let cursor = cursor_position.and_then(|target| {
+        let cursors = cursor_position.map_or_else(Vec::new, |target| {
             if self.cursor_mode.blink_enabled()
                 && !self
                     .cursor_mode
                     .visible_at(self.cursor_blink_started_at, now)
             {
                 window.request_animation_frame();
-                return None;
+                return Vec::new();
             }
 
-            let target_bounds = cursor_bounds(
-                bounds,
-                cell_width,
-                self.line_height,
-                target,
-                self.cursor_mode,
-            );
-            let cursor_bounds = if self.cursor_mode.shape == CursorShape::Block {
-                let Some(animation) = self
-                    .cursor_animation
-                    .filter(|animation| animation.targets(target))
-                else {
-                    return Some(PaintedCursor {
-                        bounds: target_bounds,
-                        color: cursor_colors(&self.model, target, self.cursor_mode).1,
-                    });
-                };
+            let color = cursor_colors(&self.model, target, self.cursor_mode).1;
+            let animation = self
+                .cursor_animation
+                .filter(|animation| animation.targets(target));
 
-                if animation.progress(now) < 1.0 {
-                    window.request_animation_frame();
-                }
-                animated_cursor_bounds(bounds, cell_width, self.line_height, animation, now)
-            } else {
-                target_bounds
+            let Some(animation) = animation.filter(|animation| animation.is_active(now)) else {
+                return vec![PaintedCursor {
+                    bounds: cursor_bounds(
+                        bounds,
+                        cell_width,
+                        self.line_height,
+                        target,
+                        self.cursor_mode,
+                    ),
+                    color,
+                    opacity: 1.0,
+                }];
             };
 
-            Some(PaintedCursor {
-                bounds: cursor_bounds,
-                color: cursor_colors(&self.model, target, self.cursor_mode).1,
-            })
+            window.request_animation_frame();
+
+            // Two short-lived layers give the moving cursor a soft tail. They
+            // are painted from oldest to newest, then the opaque cursor body
+            // is painted last. This is a constant amount of work per grid,
+            // independent of the number of cells on screen.
+            const TRAIL: [(u64, f32); 3] = [(28, 0.12), (14, 0.22), (0, 1.0)];
+            TRAIL
+                .into_iter()
+                .map(|(age_ms, opacity)| {
+                    let sample_time = now
+                        .checked_sub(Duration::from_millis(age_ms))
+                        .unwrap_or(animation.started_at);
+                    PaintedCursor {
+                        bounds: animated_cursor_bounds(
+                            bounds,
+                            cell_width,
+                            self.line_height,
+                            animation,
+                            self.cursor_mode,
+                            sample_time,
+                        ),
+                        color,
+                        opacity,
+                    }
+                })
+                .collect()
         });
 
-        if self.cursor_mode.blink_enabled() {
+        if self.cursor_visible && cursor_position.is_some() && self.cursor_mode.blink_enabled() {
             window.request_animation_frame();
         }
 
         GridPrepaintState {
-            cells,
+            backgrounds,
+            overlines,
             texts,
-            cursor,
+            cursors,
         }
     }
 
@@ -1359,21 +1469,11 @@ impl Element for GridElement {
             input_handler(bounds, window, cx);
         }
 
-        for painted_cell in &prepaint.cells {
-            if let Some((bounds, background)) = painted_cell.background {
-                window.paint_quad(fill(bounds, background));
-            }
-            if let Some((bounds, color)) = painted_cell.overline {
-                window.paint_quad(fill(bounds, color));
-            }
+        for (bounds, background) in &prepaint.backgrounds {
+            window.paint_quad(fill(*bounds, *background));
         }
-
-        if let Some(cursor) = prepaint.cursor.take() {
-            let radius = px((f32::from(cursor.bounds.size.width)
-                .min(f32::from(cursor.bounds.size.height))
-                .mul_add(0.18, 0.0))
-            .clamp(2.0, 6.0));
-            window.paint_quad(fill(cursor.bounds, cursor.color).corner_radii(Corners::all(radius)));
+        for (bounds, color) in &prepaint.overlines {
+            window.paint_quad(fill(*bounds, *color));
         }
 
         // Keep the terminal's cell coordinates for placement, but do not clip
@@ -1381,8 +1481,20 @@ impl Element for GridElement {
         // extend past the logical cell (especially for ASCII art, Nerd Font
         // symbols, and fonts with a generous ascent/descent). Per-cell masks
         // turn that overhang into visible seams at grid boundaries. The Grid
-        // itself remains clipped so text cannot escape the Neovim viewport.
+        // itself remains clipped so text and an elastic cursor cannot escape
+        // the Neovim viewport.
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for cursor in prepaint.cursors.drain(..) {
+                let radius = px((f32::from(cursor.bounds.size.width)
+                    .min(f32::from(cursor.bounds.size.height))
+                    .mul_add(0.18, 0.0))
+                .clamp(2.0, 6.0));
+                window.paint_quad(
+                    fill(cursor.bounds, cursor.color.opacity(cursor.opacity))
+                        .corner_radii(Corners::all(radius)),
+                );
+            }
+
             for painted_text in prepaint.texts.drain(..) {
                 painted_text
                     .line
@@ -1400,23 +1512,7 @@ fn cursor_bounds(
     position: CursorVisualPosition,
     mode: CursorModeInfo,
 ) -> Bounds<Pixels> {
-    let percentage = f32::from(mode.cell_percentage) / 100.0;
-    let origin = point(
-        grid_bounds.origin.x + cell_width * position.col,
-        grid_bounds.origin.y + line_height * position.row,
-    );
-    let full_width = cell_width * position.width;
-
-    let (origin, size) = match mode.shape {
-        CursorShape::Block => (origin, size(full_width, line_height)),
-        CursorShape::Horizontal => (
-            point(origin.x, origin.y + line_height * (1.0 - percentage)),
-            size(full_width, line_height * percentage),
-        ),
-        CursorShape::Vertical => (origin, size(full_width * percentage, line_height)),
-    };
-
-    Bounds::new(origin, size)
+    cursor_bounds_at(grid_bounds, cell_width, line_height, position.into(), mode)
 }
 
 fn cursor_colors(
@@ -1424,7 +1520,7 @@ fn cursor_colors(
     position: CursorVisualPosition,
     mode: CursorModeInfo,
 ) -> (Hsla, Hsla) {
-    let default_colors = highlight_colors(model, DEFAULT_HIGHLIGHT);
+    let default_colors = highlight_colors(model, DEFAULT_HIGHLIGHT, None);
     let default_background = default_colors
         .1
         .unwrap_or_else(|| rgb(DEFAULT_BACKGROUND).into());
@@ -1439,11 +1535,11 @@ fn cursor_colors(
         // Neovim defines attr_id 0 as a request to swap the current cell's
         // foreground and background, rather than as a normal highlight id.
         Some(DEFAULT_HIGHLIGHT) => {
-            let (cell_foreground, cell_background) = highlight_colors(model, cell_highlight);
+            let (cell_foreground, cell_background) = highlight_colors(model, cell_highlight, None);
             (cell_background.unwrap_or(default_colors.0), cell_foreground)
         }
         Some(attr_id) => {
-            let (foreground, background) = highlight_colors(model, attr_id);
+            let (foreground, background) = highlight_colors(model, attr_id, None);
             (foreground, background.unwrap_or(default_background))
         }
         None => (default_background, rgb(BLUE_FOREGROUND).into()),
@@ -1478,56 +1574,100 @@ fn animated_cursor_bounds(
     cell_width: Pixels,
     line_height: Pixels,
     animation: CursorAnimation,
+    mode: CursorModeInfo,
     now: Instant,
 ) -> Bounds<Pixels> {
     let progress = animation.progress(now);
     let position = animation.position_at(now);
     let from = animation.from;
     let to = animation.to;
-    let delta_x = to.col - from.col;
-    let delta_y = to.row - from.row;
-    let distance = delta_x.abs().max(delta_y.abs());
-    let pulse = (PI * progress).sin();
-    let stretch_ratio = if distance > 0.0 {
-        (0.10 + distance.min(4.0) * 0.05).min(0.30) * pulse
-    } else {
-        0.0
-    };
 
-    let cell_width = f32::from(cell_width);
-    let line_height = f32::from(line_height);
-    let base_x = f32::from(grid_bounds.origin.x) + cell_width * position.col;
-    let base_y = f32::from(grid_bounds.origin.y) + line_height * position.row;
-    let base_width = cell_width * position.width.max(1.0);
-    let base_height = line_height;
+    let base = cursor_bounds_at(grid_bounds, cell_width, line_height, position, mode);
+    if progress >= 1.0 {
+        return base;
+    }
 
-    let (x, y, width, height) = if delta_x.abs() >= delta_y.abs() && delta_x != 0.0 {
-        let extra = cell_width * stretch_ratio;
-        let height = base_height * (1.0 - stretch_ratio * 0.12);
+    let delta_x = (to.col - from.col) * f32::from(cell_width);
+    let delta_y = (to.row - from.row) * f32::from(line_height);
+    let distance = (delta_x / f32::from(cell_width))
+        .abs()
+        .max((delta_y / f32::from(line_height)).abs());
+    if distance == 0.0 {
+        return base;
+    }
+
+    // A jelly cursor stretches most at launch and relaxes as it reaches the
+    // target. The small distance term makes a page-wise jump more elastic
+    // without letting a long redraw produce an enormous cursor.
+    let launch = (1.0 - progress).sqrt();
+    let settle = (PI * progress).sin().max(0.0);
+    let stretch_ratio =
+        ((0.055 + distance.min(6.0) * 0.025) * (0.35 + 0.65 * launch) + 0.025 * settle).min(0.28);
+
+    let base_width = f32::from(base.size.width);
+    let base_height = f32::from(base.size.height);
+    let (x, y, width, height) = if delta_x.abs() >= delta_y.abs() {
+        let extra = f32::from(cell_width) * stretch_ratio;
+        let height = (base_height * (1.0 - stretch_ratio * 0.42)).max(1.0);
         (
-            base_x - if delta_x > 0.0 { extra } else { 0.0 },
-            base_y + (base_height - height) / 2.0,
+            f32::from(base.origin.x) - if delta_x > 0.0 { extra } else { 0.0 },
+            f32::from(base.origin.y) + (base_height - height) / 2.0,
             base_width + extra,
             height,
         )
-    } else if delta_y != 0.0 {
-        let extra = line_height * stretch_ratio;
-        let width = base_width * (1.0 - stretch_ratio * 0.12);
+    } else {
+        let extra = f32::from(line_height) * stretch_ratio;
+        let width = (base_width * (1.0 - stretch_ratio * 0.42)).max(1.0);
         (
-            base_x + (base_width - width) / 2.0,
-            base_y - if delta_y > 0.0 { extra } else { 0.0 },
+            f32::from(base.origin.x) + (base_width - width) / 2.0,
+            f32::from(base.origin.y) - if delta_y > 0.0 { extra } else { 0.0 },
             width,
             base_height + extra,
         )
-    } else {
-        (base_x, base_y, base_width, base_height)
     };
 
     Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
 }
 
-fn ease_out_cubic(progress: f32) -> f32 {
-    1.0 - (1.0 - progress).powi(3)
+fn jelly_progress(progress: f32) -> f32 {
+    if progress >= 1.0 {
+        return 1.0;
+    }
+
+    // A restrained ease-out-back curve: the cursor settles a few percent
+    // past its destination and returns, which reads as a soft jelly motion
+    // rather than a rigid linear slide. The animation is still clamped to a
+    // small overshoot so a large cursor jump cannot leave the viewport.
+    let x = progress - 1.0;
+    let overshoot = 0.75;
+    let curve = 1.0 + (overshoot + 1.0) * x.powi(3) + overshoot * x.powi(2);
+    curve.clamp(0.0, 1.025)
+}
+
+fn cursor_bounds_at(
+    grid_bounds: Bounds<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    position: CursorVisualPositionF,
+    mode: CursorModeInfo,
+) -> Bounds<Pixels> {
+    let percentage = f32::from(mode.cell_percentage) / 100.0;
+    let origin = point(
+        grid_bounds.origin.x + cell_width * position.col,
+        grid_bounds.origin.y + line_height * position.row,
+    );
+    let full_width = cell_width * position.width.max(1.0);
+
+    let (origin, size) = match mode.shape {
+        CursorShape::Block => (origin, size(full_width, line_height)),
+        CursorShape::Horizontal => (
+            point(origin.x, origin.y + line_height * (1.0 - percentage)),
+            size(full_width, line_height * percentage),
+        ),
+        CursorShape::Vertical => (origin, size(full_width * percentage, line_height)),
+    };
+
+    Bounds::new(origin, size)
 }
 
 fn lerp(from: f32, to: f32, progress: f32) -> f32 {
@@ -1649,11 +1789,11 @@ fn long_unicode_cells(prefix: &str) -> Vec<GridCell> {
 #[cfg(test)]
 mod tests {
     use super::{
-        blink_visible, cursor_bounds, cursor_colors, cursor_geometry, highlight_colors, CellKind,
-        CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell, GridLineCell,
-        GridModel, GridRow, HighlightAttrs, HighlightId, VisualCell, VisualCellBuilder,
-        VisualCellKind, COMMENT_HIGHLIGHT, DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT,
-        LONG_TEXT_CHAR_COUNT,
+        blink_visible, cursor_bounds, cursor_colors, cursor_geometry, highlight_colors,
+        jelly_progress, CellKind, CursorAnimation, CursorModeInfo, CursorShape,
+        CursorVisualPosition, GridCell, GridLineCell, GridModel, GridRow, HighlightAttrs,
+        HighlightId, VisualCell, VisualCellBuilder, VisualCellKind, COMMENT_HIGHLIGHT,
+        DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT, LONG_TEXT_CHAR_COUNT,
     };
     use gpui::{point, px, size, Bounds};
     use std::time::{Duration, Instant};
@@ -1681,7 +1821,7 @@ mod tests {
             row: 3,
             grid_start: 5,
             grid_len: 1,
-            text: "x".to_owned(),
+            text: "x".into(),
             highlight: DEFAULT_HIGHLIGHT,
             kind: VisualCellKind::Text,
         };
@@ -1847,6 +1987,35 @@ mod tests {
     }
 
     #[test]
+    fn empty_grid_line_cell_is_the_protocol_wide_continuation() {
+        let mut model = GridModel::new(4, 1);
+
+        // The empty entry is the protocol marker for the second cell. The
+        // renderer must not reinterpret that marker from the code point's
+        // local Unicode-width classification (for example, box-drawing
+        // characters can be affected by Nvim's `ambiwidth`).
+        model.apply_grid_line(
+            0,
+            0,
+            &[
+                GridLineCell::new("│", DEFAULT_HIGHLIGHT, 1),
+                GridLineCell::new("", DEFAULT_HIGHLIGHT, 1),
+                GridLineCell::new("x", DEFAULT_HIGHLIGHT, 1),
+            ],
+            false,
+        );
+
+        assert_eq!(model.rows()[0].cells()[0].kind, CellKind::WideLead);
+        assert_eq!(model.rows()[0].cells()[1].kind, CellKind::WideContinuation);
+
+        let cells = VisualCellBuilder::new(false).build_row(0, &model.rows()[0]);
+        assert_eq!(cells[0].grid_start, 0);
+        assert_eq!(cells[0].grid_len, 2);
+        assert_eq!(cells[1].grid_start, 2);
+        assert_eq!(cells[1].text, "x");
+    }
+
+    #[test]
     fn grid_scroll_moves_rows_and_clears_the_scrolled_in_area() {
         let mut model = GridModel::from_rows(vec![
             GridRow::new(vec![GridCell::text("a", DEFAULT_HIGHLIGHT)]),
@@ -1921,6 +2090,15 @@ mod tests {
     }
 
     #[test]
+    fn cursor_animation_has_a_small_elastic_settle() {
+        assert_eq!(jelly_progress(0.0), 0.0);
+        assert!(jelly_progress(0.72) > 1.0);
+        assert!(jelly_progress(0.72) <= 1.025);
+        assert!(jelly_progress(0.92) < jelly_progress(0.72));
+        assert_eq!(jelly_progress(1.0), 1.0);
+    }
+
+    #[test]
     fn model_stores_neovim_highlight_attributes() {
         let mut model = GridModel::new(1, 1);
         let attrs = HighlightAttrs {
@@ -1940,9 +2118,37 @@ mod tests {
         model.set_default_colors(Some(0xffffff), Some(0x112233), None);
         model.set_highlight(HighlightId(42), HighlightAttrs::default());
 
-        let (_, background) = highlight_colors(&model, HighlightId(42));
+        let (_, background) = highlight_colors(&model, HighlightId(42), None);
 
         assert_eq!(background, Some(gpui::rgb(0x112233).into()));
+    }
+
+    #[test]
+    fn floating_grid_background_override_fills_implicit_cells() {
+        let mut model = GridModel::new(1, 1);
+        model.set_default_colors(Some(0xffffff), Some(0x000000), None);
+        model.set_highlight(HighlightId(42), HighlightAttrs::default());
+
+        let (_, background) = highlight_colors(&model, HighlightId(42), Some(0x001419));
+
+        assert_eq!(background, Some(gpui::rgb(0x001419).into()));
+    }
+
+    #[test]
+    fn floating_grid_background_override_replaces_explicit_default_background() {
+        let mut model = GridModel::new(1, 1);
+        model.set_default_colors(Some(0xffffff), Some(0x000000), None);
+        model.set_highlight(
+            DEFAULT_HIGHLIGHT,
+            HighlightAttrs {
+                background: Some(0x000000),
+                ..Default::default()
+            },
+        );
+
+        let (_, background) = highlight_colors(&model, DEFAULT_HIGHLIGHT, Some(0x001419));
+
+        assert_eq!(background, Some(gpui::rgb(0x001419).into()));
     }
 
     #[test]
@@ -1959,7 +2165,7 @@ mod tests {
         );
         model.apply_grid_line(0, 0, &[GridLineCell::new("x", HighlightId(42), 1)], false);
 
-        let normal = highlight_colors(&model, HighlightId(42));
+        let normal = highlight_colors(&model, HighlightId(42), None);
         let cursor = cursor_colors(
             &model,
             CursorVisualPosition {

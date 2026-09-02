@@ -127,7 +127,11 @@
 	<key>CFBundleIdentifier</key>
 	<string>dev.nvim-gpui</string>
 	<key>CFBundleIconFile</key>
-	<string>nvim-gpui.icns</string>
+	<string>neovim-gpui_1024x1024_1024x1024.icns</string>
+	<key>CFBundleIconFiles</key>
+	<array>
+		<string>neovim-gpui_1024x1024_1024x1024.icns</string>
+	</array>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

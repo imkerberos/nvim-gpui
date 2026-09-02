@@ -24,6 +24,9 @@ use std::thread;
 use std::os::unix::net::UnixStream;
 
 const CLIENT_NAME: &str = "nvim-gpui";
+const NVIM_GPUI_ENV: &str = "NVIM_GPUI";
+const NVIM_GPUI_ENV_VALUE: &str = "1";
+const NVIM_GPUI_STARTUP_COMMAND: &str = "let g:nvim_gpui = v:true";
 const NVIM_EXITED: &str = "nvim process exited";
 
 type RpcReader = BufReader<Box<dyn Read + Send>>;
@@ -207,7 +210,9 @@ impl NvimProcess {
     ) -> Result<Self, String> {
         let mut command = Command::new(nvim_command);
         apply_nvim_environment(&mut command);
-        command.arg("--embed").args(nvim_args);
+        command
+            .args(["--embed", "--cmd", NVIM_GPUI_STARTUP_COMMAND])
+            .args(nvim_args);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -534,7 +539,17 @@ fn apply_nvim_environment(command: &mut Command) {
     } else {
         remove_project_nvim_environment(&mut environment);
     }
+    mark_embedded_gui_environment(&mut environment);
     command.envs(environment);
+}
+
+fn mark_embedded_gui_environment(environment: &mut HashMap<OsString, OsString>) {
+    // This is intentionally set before nvim starts loading init.lua. An RPC
+    // global would be too late for startup-time theme selection.
+    environment.insert(
+        OsString::from(NVIM_GPUI_ENV),
+        OsString::from(NVIM_GPUI_ENV_VALUE),
+    );
 }
 
 fn project_nvim_environment_is_active(environment: &HashMap<OsString, OsString>) -> bool {
@@ -723,6 +738,10 @@ fn ui_attach_params(width: u32, height: u32) -> Value {
             (Value::from("rgb"), Value::Boolean(true)),
             (Value::from("ext_linegrid"), Value::Boolean(true)),
             (Value::from("ext_multigrid"), Value::Boolean(true)),
+            // Include semantic UI highlight names so the renderer can give
+            // floating grids their NormalFloat surface when a cell falls
+            // back to the default highlight id.
+            (Value::from("ext_hlstate"), Value::Boolean(true)),
             // GPUI supplies interactive keyboard input through nvim_input.
             // Mark it as a TTY-like input so plugins such as Snacks Dashboard
             // do not mistake this UI for a non-interactive/piped frontend.
@@ -1037,11 +1056,19 @@ fn parse_hl_attr_define(args: &[Value]) -> Result<NvimEvent, String> {
     let id = args[0]
         .as_u64()
         .ok_or_else(|| "hl_attr_define has an invalid highlight id".to_owned())?;
-    let attrs = parse_highlight_attrs(&args[1])?;
-
+    let mut attrs = parse_highlight_attrs(&args[1])?;
+    attrs.ui_name = args.get(3).and_then(parse_ui_highlight_name);
     Ok(NvimEvent::HlAttrDefine {
         id: HighlightId(id),
         attrs,
+    })
+}
+
+fn parse_ui_highlight_name(value: &Value) -> Option<String> {
+    value.as_array()?.iter().rev().find_map(|info| {
+        (map_value(info, "kind").and_then(string_value).as_deref() == Some("ui"))
+            .then(|| map_value(info, "ui_name").and_then(string_value))
+            .flatten()
     })
 }
 
@@ -1359,10 +1386,11 @@ fn bool_value(value: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_project_nvim_environment, handle_notification, parse_environment,
-        project_nvim_environment_is_active_at, read_message, remove_project_nvim_environment,
-        resize_request_frame, term_event_notification_frame, ui_attach_params, write_message,
-        NvimEvent, NVIM_EXITED,
+        apply_project_nvim_environment, handle_notification, mark_embedded_gui_environment,
+        parse_environment, project_nvim_environment_is_active_at, read_message,
+        remove_project_nvim_environment, resize_request_frame, term_event_notification_frame,
+        ui_attach_params, write_message, NvimEvent, NVIM_EXITED, NVIM_GPUI_ENV,
+        NVIM_GPUI_ENV_VALUE,
     };
     use async_channel::unbounded;
     use rmpv::Value;
@@ -1463,6 +1491,18 @@ mod tests {
         assert_eq!(
             environment.get(OsStr::new("XDG_CACHE_HOME")),
             Some(&OsString::from("/repo/.cache/nvim-cache"))
+        );
+    }
+
+    #[test]
+    fn embedded_gui_marker_is_available_to_startup_configuration() {
+        let mut environment = HashMap::new();
+
+        mark_embedded_gui_environment(&mut environment);
+
+        assert_eq!(
+            environment.get(OsStr::new(NVIM_GPUI_ENV)),
+            Some(&OsString::from(NVIM_GPUI_ENV_VALUE))
         );
     }
 
@@ -1599,6 +1639,38 @@ mod tests {
                     blend: Some(25),
                     altfont: Some(3),
                     url: Some("https://neovim.io".to_owned()),
+                    ..Default::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn redraw_hl_attr_define_keeps_semantic_ui_name() {
+        let (sender, receiver) = unbounded();
+        let params = Value::Array(vec![Value::Array(vec![
+            Value::from("hl_attr_define"),
+            Value::Array(vec![
+                Value::from(12),
+                Value::Map(vec![(Value::from("background"), Value::from(0x001419u64))]),
+                Value::Map(Vec::new()),
+                Value::Array(vec![Value::Map(vec![
+                    (Value::from("kind"), Value::from("ui")),
+                    (Value::from("ui_name"), Value::from("NormalFloat")),
+                    (Value::from("hi_name"), Value::from("NormalFloat")),
+                ])]),
+            ]),
+        ])]);
+
+        handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+        assert_eq!(
+            receiver.try_recv().expect("event should be available"),
+            NvimEvent::HlAttrDefine {
+                id: crate::grid::HighlightId(12),
+                attrs: crate::grid::HighlightAttrs {
+                    background: Some(0x001419),
+                    ui_name: Some("NormalFloat".to_owned()),
                     ..Default::default()
                 },
             }
@@ -1849,6 +1921,13 @@ mod tests {
             options
                 .iter()
                 .find(|(key, _)| key.as_str() == Some("ext_multigrid"))
+                .and_then(|(_, value)| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            options
+                .iter()
+                .find(|(key, _)| key.as_str() == Some("ext_hlstate"))
                 .and_then(|(_, value)| value.as_bool()),
             Some(true)
         );

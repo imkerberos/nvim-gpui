@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  macos:
+    name: macOS AppBundle and DMG
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build AppBundle and DMG
+        run: nix develop --accept-flake-config -c just dmg
+
+      - name: Archive AppBundle
+        run: ditto -c -k --sequesterRsrc --keepParent .cache/macos/nvim-gpui.app .cache/macos/nvim-gpui.app.zip
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-${{ github.ref_name }}-macos
+          path: |
+            .cache/macos/nvim-gpui.dmg
+            .cache/macos/nvim-gpui.app.zip
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" .cache/macos/nvim-gpui.dmg .cache/macos/nvim-gpui.app.zip --title "$GITHUB_REF_NAME" --generate-notes

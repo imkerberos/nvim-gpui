@@ -2,20 +2,30 @@ use gpui::App;
 use std::borrow::Cow;
 
 pub const SYMBOLS_NERD_FONT_FAMILY: &str = "Symbols Nerd Font";
+pub const SYMBOLS_NERD_FONT_MONO_FAMILY: &str = "Symbols Nerd Font Mono";
 
 const SYMBOLS_NERD_FONT: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFont-Regular.ttf");
-const APPLICATION_ICON_PNG: &[u8] = include_bytes!("../assets/neovim-gpui-app-icon.png");
+const SYMBOLS_NERD_FONT_MONO: &[u8] =
+    include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+const APPLICATION_ICON_ICNS: &[u8] =
+    include_bytes!("../assets/icons/neovim-gpui_1024x1024_1024x1024.icns");
 
 /// Register resources that must be available before the first Neovim redraw
 /// is rendered. GPUI keeps these fonts in its in-memory font source, so the
 /// user's system font installation is never modified.
 pub fn register_bundled_fonts(cx: &App) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    register_font_with_core_text(SYMBOLS_NERD_FONT)?;
+    {
+        register_font_with_core_text(SYMBOLS_NERD_FONT)?;
+        register_font_with_core_text(SYMBOLS_NERD_FONT_MONO)?;
+    }
 
     cx.text_system()
-        .add_fonts(vec![Cow::Borrowed(SYMBOLS_NERD_FONT)])
-        .map_err(|error| format!("failed to register Symbols Nerd Font: {error}"))
+        .add_fonts(vec![
+            Cow::Borrowed(SYMBOLS_NERD_FONT),
+            Cow::Borrowed(SYMBOLS_NERD_FONT_MONO),
+        ])
+        .map_err(|error| format!("failed to register bundled Nerd Fonts: {error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -51,9 +61,9 @@ pub fn install_dock_icon() -> Result<(), String> {
 
     let marker = MainThreadMarker::new()
         .ok_or_else(|| "Dock icon installation must run on the macOS main thread".to_owned())?;
-    let data = NSData::with_bytes(APPLICATION_ICON_PNG);
+    let data = NSData::with_bytes(APPLICATION_ICON_ICNS);
     let image = NSImage::initWithData(NSImage::alloc(), &data)
-        .ok_or_else(|| "macOS could not decode the application icon PNG".to_owned())?;
+        .ok_or_else(|| "macOS could not decode the application icon ICNS".to_owned())?;
 
     // AppKit's setter is unsafe because it accepts an optional image even
     // though NSApplication expects a valid icon for this operation.

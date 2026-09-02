@@ -1,7 +1,7 @@
 use crate::{
     grid,
     grid::GridElement,
-    image_store,
+    helper, image_store,
     image_store::{GridId, ImageId, KittyEvent},
     input,
     input::{
@@ -9,13 +9,13 @@ use crate::{
         InputTarget, SystemImeState,
     },
     nvim::{self, NvimEvent, NvimProcess},
-    platform, CliOptions, NvimConnection,
+    platform, settings, CliOptions, NvimConnection,
 };
 use gpui::{
-    div, font, img, point, prelude::*, px, rgb, size, svg, App, Application, AssetSource, Bounds,
+    div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
     Context, ElementInputHandler, Entity, FocusHandle, Focusable, Image, KeyDownEvent, MouseButton,
     Pixels, Render, SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowKind, WindowOptions,
+    WindowControlArea, WindowHandle, WindowKind, WindowOptions,
 };
 use std::{
     borrow::Cow,
@@ -53,10 +53,11 @@ const MIN_WINDOW_WIDTH: f32 = 80.0;
 const MIN_WINDOW_HEIGHT: f32 = 44.0;
 const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
 const DEFAULT_WINDOW_TITLE: &str = "gpvim";
-const LOGO_ASSET: &str = "nvim-gpui.svg";
-// Keep the bundled-font path available for comparison, but disable it while
-// measuring the baseline rendering cost. With this false, no bundled font is
-// registered and GridElement's glyph-coverage probe is never entered.
+const LOGO_ASSET: &str = "neovim-gpui.png";
+const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
+const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
+// Keep this as a single switch so the bundled font can be disabled for a
+// controlled performance comparison without changing the settings model.
 const ENABLE_BUNDLED_NERD_FONT: bool = true;
 
 struct AppAssets;
@@ -65,7 +66,7 @@ impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         if path == LOGO_ASSET {
             return Ok(Some(Cow::Borrowed(include_bytes!(
-                "../assets/nvim-gpui.svg"
+                "../assets/icons/neovim-gpui.png"
             ))));
         }
         Ok(None)
@@ -198,8 +199,8 @@ impl Default for GridPlacement {
 struct NvimGpui {
     focus_handle: Option<FocusHandle>,
     state: EditorState,
-    grid: grid::GridModel,
-    pending_grid: Option<grid::GridModel>,
+    grid: Rc<grid::GridModel>,
+    pending_grid: Option<Rc<grid::GridModel>>,
     nvim: Option<NvimProcess>,
     input_router: InputRouter,
     system_ime: SystemImeState,
@@ -223,16 +224,24 @@ struct NvimGpui {
     resolved_grid_wide_font: Option<GuiFontSpec>,
     shaping_cache: grid::SharedShapedLineCache,
     cursor_animation: Option<grid::CursorAnimation>,
-    other_grids: HashMap<u64, grid::GridModel>,
-    pending_other_grids: HashMap<u64, grid::GridModel>,
+    other_grids: HashMap<u64, Rc<grid::GridModel>>,
+    pending_other_grids: HashMap<u64, Rc<grid::GridModel>>,
     grid_placements: HashMap<u64, GridPlacement>,
     pending_grid_placements: HashMap<u64, GridPlacement>,
     pending_destroyed_grids: HashSet<u64>,
     cursor_grid: u64,
+    pending_cursor_grid: Option<u64>,
     image_store: image_store::ImageStore,
     image_sources: HashMap<ImageId, Arc<Image>>,
     nerd_font_family: Option<String>,
     glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    normal_float_background: Option<u32>,
+    settings: settings::Settings,
+    bundled_nerd_font_registered: bool,
+    settings_save_error: Option<String>,
+    cli_install_error: Option<String>,
+    settings_window: Option<WindowHandle<SettingsWindow>>,
+    about_window: Option<WindowHandle<AboutWindow>>,
 }
 
 impl Default for NvimGpui {
@@ -240,7 +249,7 @@ impl Default for NvimGpui {
         Self {
             focus_handle: None,
             state: EditorState::default(),
-            grid: grid::demo_grid(),
+            grid: Rc::new(grid::demo_grid()),
             pending_grid: None,
             nvim: None,
             input_router: InputRouter::default(),
@@ -271,10 +280,18 @@ impl Default for NvimGpui {
             pending_grid_placements: HashMap::new(),
             pending_destroyed_grids: HashSet::new(),
             cursor_grid: 1,
+            pending_cursor_grid: None,
             image_store: image_store::ImageStore::new(),
             image_sources: HashMap::new(),
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
+            normal_float_background: None,
+            settings: settings::Settings::default(),
+            bundled_nerd_font_registered: false,
+            settings_save_error: None,
+            cli_install_error: None,
+            settings_window: None,
+            about_window: None,
         }
     }
 }
@@ -284,31 +301,52 @@ impl NvimGpui {
         nvim: Result<NvimProcess, String>,
         cx: &mut Context<Self>,
         nerd_font_registered: bool,
+        app_settings: settings::Settings,
     ) -> Self {
         let mut this = Self {
             focus_handle: Some(cx.focus_handle()),
-            grid: grid::GridModel::new(DEFAULT_GRID_WIDTH as usize, DEFAULT_GRID_HEIGHT as usize),
+            grid: Rc::new(grid::GridModel::new(
+                DEFAULT_GRID_WIDTH as usize,
+                DEFAULT_GRID_HEIGHT as usize,
+            )),
             grid_size: Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT)),
             rpc_status: match &nvim {
                 Ok(_) => "rpc: connecting".to_owned(),
                 Err(error) => format!("rpc: {error}"),
             },
             nvim: nvim.ok(),
+            settings: app_settings,
             ..Self::default()
         };
 
-        if nerd_font_registered {
-            this.nerd_font_family = Some(platform::SYMBOLS_NERD_FONT_FAMILY.to_owned());
-        }
+        this.bundled_nerd_font_registered = nerd_font_registered;
+        this.apply_runtime_settings();
 
         if let Some(nvim) = this.nvim.as_ref() {
             let events = nvim.events();
             this.event_task = Some(cx.spawn(async move |weak, cx| {
                 while let Ok(event) = events.recv().await {
-                    let disconnected = matches!(&event, NvimEvent::Disconnected);
+                    // A single Neovim redraw notification can contain hundreds
+                    // of typed events. Drain the events that are already
+                    // available and invalidate GPUI once for the batch instead
+                    // of once per cell/window/style update.
+                    let mut batch = Vec::with_capacity(64);
+                    batch.push(event);
+                    while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
+                        match events.try_recv() {
+                            Ok(event) => batch.push(event),
+                            Err(async_channel::TryRecvError::Empty)
+                            | Err(async_channel::TryRecvError::Closed) => break,
+                        }
+                    }
+                    let disconnected = batch
+                        .iter()
+                        .any(|event| matches!(event, NvimEvent::Disconnected));
                     if weak
                         .update(cx, |this, cx| {
-                            this.apply_nvim_event(event);
+                            for event in batch {
+                                this.apply_nvim_event(event);
+                            }
                             cx.notify();
                             if disconnected {
                                 cx.quit();
@@ -323,6 +361,26 @@ impl NvimGpui {
         }
 
         this
+    }
+
+    fn apply_runtime_settings(&mut self) {
+        self.nerd_font_family = self
+            .bundled_nerd_font_registered
+            .then(|| self.settings.nerd_font.family().to_owned());
+        self.shaping_cache.borrow_mut().clear();
+        self.glyph_coverage_cache.borrow_mut().clear();
+        for image in self
+            .image_store
+            .set_cache_size_mb(self.settings.image_cache_size_mb)
+        {
+            self.image_sources.remove(&image);
+        }
+    }
+
+    fn update_settings(&mut self, next: settings::Settings) {
+        self.settings = next;
+        self.apply_runtime_settings();
+        self.settings_save_error = self.settings.save().err();
     }
 
     fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
@@ -449,7 +507,10 @@ impl NvimGpui {
                 }
             }
             NvimEvent::GridCursorGoto { grid, row, col } => {
-                self.cursor_grid = grid;
+                // `grid_cursor_goto` belongs to the current redraw batch. Do
+                // not expose it until `flush`, otherwise a partial redraw can
+                // paint the cursor over a different, already committed grid.
+                self.pending_cursor_grid = Some(grid);
                 self.pending_grid_mut_for(grid)
                     .set_cursor(row as usize, col as usize);
             }
@@ -461,6 +522,9 @@ impl NvimGpui {
                 self.set_default_colors_on_all_grids(foreground, background, special);
             }
             NvimEvent::HlAttrDefine { id, attrs } => {
+                if attrs.ui_name.as_deref() == Some("NormalFloat") {
+                    self.normal_float_background = attrs.background;
+                }
                 self.set_highlight_on_all_grids(id, attrs);
             }
             NvimEvent::GridScroll {
@@ -618,9 +682,10 @@ impl NvimGpui {
     }
 
     fn apply_ui_send(&mut self, data: &str) {
-        let events = self
-            .image_store
-            .consume_ui_data(data, GridId(self.cursor_grid));
+        let events = self.image_store.consume_ui_data(
+            data,
+            GridId(self.pending_cursor_grid.unwrap_or(self.cursor_grid)),
+        );
         for event in events {
             match event {
                 KittyEvent::AssetUpdated { image, .. } => {
@@ -648,18 +713,21 @@ impl NvimGpui {
     }
 
     fn pending_grid_mut(&mut self) -> &mut grid::GridModel {
-        self.pending_grid.get_or_insert_with(|| self.grid.clone())
+        let pending = self
+            .pending_grid
+            .get_or_insert_with(|| Rc::clone(&self.grid));
+        Rc::make_mut(pending)
     }
 
-    fn new_styled_grid(&self, width: usize, height: usize) -> grid::GridModel {
-        let source = self.pending_grid.as_ref().unwrap_or(&self.grid);
+    fn new_styled_grid(&self, width: usize, height: usize) -> Rc<grid::GridModel> {
+        let source = self.pending_grid.as_deref().unwrap_or(self.grid.as_ref());
         let mut next_grid = grid::GridModel::new(width, height);
         for (id, attrs) in source.highlights() {
             next_grid.set_highlight(*id, attrs.clone());
         }
         let (foreground, background, special) = source.default_colors();
         next_grid.set_default_colors(foreground, background, special);
-        next_grid
+        Rc::new(next_grid)
     }
 
     fn pending_grid_mut_for(&mut self, grid: u64) -> &mut grid::GridModel {
@@ -676,9 +744,11 @@ impl NvimGpui {
             self.pending_other_grids.insert(grid, model);
         }
 
-        self.pending_other_grids
+        let pending = self
+            .pending_other_grids
             .get_mut(&grid)
-            .expect("pending grid was inserted")
+            .expect("pending grid was inserted");
+        Rc::make_mut(pending)
     }
 
     fn set_default_colors_on_all_grids(
@@ -690,20 +760,20 @@ impl NvimGpui {
         self.pending_grid_mut()
             .set_default_colors(foreground, background, special);
         for model in self.other_grids.values_mut() {
-            model.set_default_colors(foreground, background, special);
+            Rc::make_mut(model).set_default_colors(foreground, background, special);
         }
         for model in self.pending_other_grids.values_mut() {
-            model.set_default_colors(foreground, background, special);
+            Rc::make_mut(model).set_default_colors(foreground, background, special);
         }
     }
 
     fn set_highlight_on_all_grids(&mut self, id: grid::HighlightId, attrs: grid::HighlightAttrs) {
         self.pending_grid_mut().set_highlight(id, attrs.clone());
         for model in self.other_grids.values_mut() {
-            model.set_highlight(id, attrs.clone());
+            Rc::make_mut(model).set_highlight(id, attrs.clone());
         }
         for model in self.pending_other_grids.values_mut() {
-            model.set_highlight(id, attrs.clone());
+            Rc::make_mut(model).set_highlight(id, attrs.clone());
         }
     }
 
@@ -749,15 +819,21 @@ impl NvimGpui {
             self.other_grids.remove(&grid);
             self.grid_placements.remove(&grid);
         }
+
+        if let Some(grid) = self.pending_cursor_grid.take() {
+            self.cursor_grid = grid;
+        }
     }
 
-    fn visible_grid_layers(&self) -> Vec<(u64, grid::GridModel, GridPlacement)> {
+    fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {
         let mut layers = self
             .other_grids
             .iter()
             .filter_map(|(grid, model)| {
                 let placement = self.grid_placements.get(grid).copied()?;
-                placement.visible.then(|| (*grid, model.clone(), placement))
+                placement
+                    .visible
+                    .then(|| (*grid, Rc::clone(model), placement))
             })
             .collect::<Vec<_>>();
         layers.sort_by(|left, right| {
@@ -790,12 +866,38 @@ impl NvimGpui {
             });
         }
 
-        let mut models = vec![(1, &self.grid)];
-        models.extend(
-            self.other_grids
-                .iter()
-                .filter_map(|(grid, model)| self.grid_is_visible(*grid).then_some((*grid, model))),
-        );
+        // Most frames have no Kitty placeholder at all. Avoid walking every
+        // visible grid in that common case. Build the lookup once as well so
+        // placeholder cells do not rescan every image placement individually.
+        if !self.image_store.has_virtual_placements() {
+            layers.sort_by(|left, right| {
+                left.z_index
+                    .cmp(&right.z_index)
+                    .then_with(|| left.grid.cmp(&right.grid))
+                    .then_with(|| left.row.cmp(&right.row))
+                    .then_with(|| left.column.cmp(&right.column))
+            });
+            return layers;
+        }
+
+        let virtual_image_sizes = self
+            .image_store
+            .virtual_placements()
+            .filter_map(|placement| {
+                self.image_store
+                    .asset(placement.key.image)
+                    .is_some()
+                    .then_some((
+                        placement.key.image,
+                        (placement.columns, placement.rows, placement.z_index),
+                    ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut models = vec![(1, self.grid.as_ref())];
+        models.extend(self.other_grids.iter().filter_map(|(grid, model)| {
+            self.grid_is_visible(*grid)
+                .then_some((*grid, model.as_ref()))
+        }));
 
         for (grid, model) in models {
             for (row, grid_row) in model.rows().iter().enumerate() {
@@ -815,8 +917,7 @@ impl NvimGpui {
                     else {
                         continue;
                     };
-                    let Some(placement) = self.image_store.virtual_placements_for(image).next()
-                    else {
+                    let Some(&(columns, rows, z_index)) = virtual_image_sizes.get(&image) else {
                         continue;
                     };
                     layers.push(ImageLayer {
@@ -824,9 +925,9 @@ impl NvimGpui {
                         grid,
                         row,
                         column,
-                        columns: placement.columns,
-                        rows: placement.rows,
-                        z_index: placement.z_index,
+                        columns,
+                        rows,
+                        z_index,
                     });
                 }
             }
@@ -1024,7 +1125,11 @@ impl Render for NvimGpui {
         }
 
         if themed_titlebar_enabled() {
-            root = root.child(themed_titlebar(self.window_title.clone(), BACKGROUND));
+            root = root.child(themed_titlebar(
+                self.window_title.clone(),
+                BACKGROUND,
+                Some(entity.clone()),
+            ));
         }
 
         let cell_width = gui_font.cell_width(window);
@@ -1036,7 +1141,7 @@ impl Render for NvimGpui {
             .text_size(px(gui_font.size))
             .line_height(line_height)
             .child(
-                GridElement::new(self.grid.clone())
+                GridElement::with_shared_model(Rc::clone(&self.grid))
                     .with_metrics(cell_width, line_height)
                     .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
                     .with_nerd_fallback_font(
@@ -1045,6 +1150,7 @@ impl Render for NvimGpui {
                     )
                     .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
                     .with_shaping_cache(Rc::clone(&shaping_cache))
+                    .with_nerd_fallback_mode(self.settings.fallback_mode)
                     .with_cursor_animation(self.cursor_animation)
                     .with_cursor_visible(self.cursor_grid == 1)
                     .with_cursor_mode(if self.cursor_grid == 1 {
@@ -1083,8 +1189,13 @@ impl Render for NvimGpui {
                 .w(px(width as f32 * f32::from(cell_width)))
                 .h(px(height as f32 * f32::from(line_height)))
                 .child(
-                    GridElement::new(model)
+                    GridElement::with_shared_model(model)
                         .with_metrics(cell_width, line_height)
+                        .with_default_background(
+                            (placement.compindex >= 0)
+                                .then_some(self.normal_float_background)
+                                .flatten(),
+                        )
                         .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
                         .with_nerd_fallback_font(
                             self.nerd_font_family.clone().unwrap_or_default(),
@@ -1092,6 +1203,7 @@ impl Render for NvimGpui {
                         )
                         .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
                         .with_shaping_cache(Rc::clone(&shaping_cache))
+                        .with_nerd_fallback_mode(self.settings.fallback_mode)
                         .with_cursor_visible(self.cursor_grid == grid_id)
                         .with_cursor_mode(if self.cursor_grid == grid_id {
                             cursor_mode
@@ -1173,34 +1285,475 @@ impl Render for DebugWindow {
         } else {
             format!("IME composing: {}", view.system_ime.text())
         };
-        let debug_message = format!(
-            "{}  ·  grid {grid_size}  ·  guifont {guifont}  ·  guifontwide {guifontwide}  ·  file {}  ·  {} {}:{}  ·  {ime_status}  ·  API {}",
-            view.rpc_status,
-            view.state.file,
-            view.state.mode,
-            view.state.line,
-            view.state.column,
-            view.api_level.unwrap_or_default()
-        );
+        let debug_row = |label: &'static str, value: String| {
+            div()
+                .w_full()
+                .flex()
+                .items_start()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(rgb(ACCENT))
+                        .child(format!("{label}: ")),
+                )
+                .child(div().flex_1().whitespace_normal().child(value))
+        };
 
         let debug_content = div()
             .flex_1()
             .flex()
-            .items_center()
+            .flex_col()
+            .justify_start()
             .overflow_hidden()
             .px_3()
+            .py_2()
             .bg(rgb(SURFACE))
             .text_color(rgb(MUTED_TEXT))
             .border_b_1()
             .border_color(rgb(SURFACE_BRIGHT))
-            .child(div().text_color(rgb(ACCENT)).child("DEBUG  nvim-gpui  ·  "))
-            .child(debug_message);
+            .child(
+                div()
+                    .w_full()
+                    .text_color(rgb(ACCENT))
+                    .child("DEBUG  nvim-gpui"),
+            )
+            .child(debug_row("RPC", view.rpc_status.clone()))
+            .child(debug_row("Grid", grid_size))
+            .child(debug_row("guifont", guifont))
+            .child(debug_row("guifontwide", guifontwide))
+            .child(debug_row("File", view.state.file.to_owned()))
+            .child(debug_row(
+                "State",
+                format!(
+                    "{} {}:{}",
+                    view.state.mode, view.state.line, view.state.column
+                ),
+            ))
+            .child(debug_row("Input", ime_status))
+            .child(debug_row(
+                "API",
+                view.api_level.unwrap_or_default().to_string(),
+            ));
         let mut root = div().size_full().flex().flex_col().bg(rgb(SURFACE));
         if themed_titlebar_enabled() {
-            root = root.child(themed_titlebar("nvim-gpui debug".to_owned(), SURFACE));
+            root = root.child(themed_titlebar("nvim-gpui debug".to_owned(), SURFACE, None));
         }
         root.child(debug_content)
     }
+}
+
+struct SettingsWindow {
+    source: Entity<NvimGpui>,
+    _source_subscription: Subscription,
+}
+
+impl SettingsWindow {
+    fn new(source: Entity<NvimGpui>, cx: &mut Context<Self>) -> Self {
+        let source_subscription = cx.observe(&source, |_, _, cx| cx.notify());
+        Self {
+            source,
+            _source_subscription: source_subscription,
+        }
+    }
+}
+
+impl Render for SettingsWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (current, save_error, cli_install_error) = {
+            let view = self.source.read(cx);
+            (
+                view.settings.clone(),
+                view.settings_save_error.clone(),
+                view.cli_install_error.clone(),
+            )
+        };
+        let source = self.source.clone();
+        let cli_available = helper::is_available_in_path();
+
+        let mut nerd_font_options = div().w_full().flex().items_center();
+        for (id, choice) in [
+            ("settings-nerd-symbols", settings::NerdFontChoice::Symbols),
+            (
+                "settings-nerd-symbols-mono",
+                settings::NerdFontChoice::SymbolsMono,
+            ),
+        ] {
+            let source = source.clone();
+            nerd_font_options = nerd_font_options.child(setting_option_button(
+                id,
+                choice.label(),
+                current.nerd_font == choice,
+                move |cx| {
+                    source.update(cx, |view, cx| {
+                        let mut next = view.settings.clone();
+                        next.nerd_font = choice;
+                        view.update_settings(next);
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+
+        let mut fallback_options = div().w_full().flex().items_center();
+        for (id, mode) in [
+            ("settings-fallback-none", settings::FallbackMode::None),
+            ("settings-fallback-auto", settings::FallbackMode::Auto),
+            ("settings-fallback-force", settings::FallbackMode::Force),
+        ] {
+            let source = source.clone();
+            fallback_options = fallback_options.child(setting_option_button(
+                id,
+                mode.label(),
+                current.fallback_mode == mode,
+                move |cx| {
+                    source.update(cx, |view, cx| {
+                        let mut next = view.settings.clone();
+                        next.fallback_mode = mode;
+                        view.update_settings(next);
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+
+        let mut cache_options = div().w_full().flex().items_center();
+        for megabytes in settings::IMAGE_CACHE_SIZE_OPTIONS_MB {
+            let source = source.clone();
+            let label = format!("{megabytes} MB");
+            cache_options = cache_options.child(setting_option_button(
+                ("settings-cache", *megabytes),
+                label,
+                current.image_cache_size_mb == *megabytes,
+                move |cx| {
+                    source.update(cx, |view, cx| {
+                        let mut next = view.settings.clone();
+                        next.image_cache_size_mb = *megabytes;
+                        view.update_settings(next);
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+
+        let source = self.source.clone();
+        let startup_options = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .child(setting_option_button(
+                "settings-startup-on",
+                "On",
+                current.startup_maximized,
+                {
+                    let source = source.clone();
+                    move |cx| {
+                        source.update(cx, |view, cx| {
+                            let mut next = view.settings.clone();
+                            next.startup_maximized = true;
+                            view.update_settings(next);
+                            cx.notify();
+                        });
+                    }
+                },
+            ))
+            .child(setting_option_button(
+                "settings-startup-off",
+                "Off",
+                !current.startup_maximized,
+                move |cx| {
+                    source.update(cx, |view, cx| {
+                        let mut next = view.settings.clone();
+                        next.startup_maximized = false;
+                        view.update_settings(next);
+                        cx.notify();
+                    });
+                },
+            ));
+
+        let source = self.source.clone();
+        let cli_options = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .child(setting_option_button(
+                "settings-cli-install",
+                if cli_available {
+                    "Installed"
+                } else {
+                    "Install CLI (gpvim)"
+                },
+                cli_available,
+                move |cx| {
+                    let result = helper::install();
+                    source.update(cx, |view, cx| {
+                        view.cli_install_error = result.err();
+                        cx.notify();
+                    });
+                },
+            ));
+
+        let mut content = div()
+            .id("settings-scroll")
+            .flex_1()
+            .overflow_y_scroll()
+            .px_6()
+            .py_5()
+            .bg(rgb(BACKGROUND))
+            .text_color(rgb(TEXT))
+            .child(div().text_lg().child("Settings"))
+            .child(div().mt_1().text_sm().text_color(rgb(MUTED_TEXT)).child(
+                "Changes apply immediately. Startup maximization applies on the next launch.",
+            ))
+            .child(div().h(px(12.0)))
+            .child(setting_row(
+                "Nerd font",
+                "Font used for bundled Nerd Font fallback glyphs.",
+                nerd_font_options,
+            ))
+            .child(setting_row(
+                "Fallback mode",
+                "Choose whether missing Nerd glyphs use the selected fallback font.",
+                fallback_options,
+            ))
+            .child(setting_row(
+                "Startup maximized",
+                "Open the main editor window in its maximized state.",
+                startup_options,
+            ))
+            .child(setting_row(
+                "Image cache size",
+                "Maximum unplaced Kitty Graphics Protocol image data kept in memory.",
+                cache_options,
+            ))
+            .child(setting_row(
+                "Input method",
+                "Reserved for the optional system/Rime input router.",
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(rgb(MUTED_TEXT))
+                    .child("Pending"),
+            ))
+            .child(setting_row(
+                "Command-line helper",
+                "Install gpvim so files can be opened from a terminal.",
+                cli_options,
+            ));
+
+        if let Some(error) = save_error {
+            content = content.child(
+                div()
+                    .mt_4()
+                    .text_sm()
+                    .text_color(rgb(0xf38ba8))
+                    .child(format!("Settings could not be saved: {error}")),
+            );
+        }
+
+        if let Some(error) = cli_install_error {
+            content = content.child(
+                div()
+                    .mt_4()
+                    .text_sm()
+                    .text_color(rgb(0xf38ba8))
+                    .child(format!("gpvim could not be installed: {error}")),
+            );
+        }
+
+        let mut root = div().size_full().flex().flex_col().bg(rgb(BACKGROUND));
+        if themed_titlebar_enabled() {
+            root = root.child(themed_titlebar(
+                "nvim-gpui settings".to_owned(),
+                BACKGROUND,
+                None,
+            ));
+        }
+        root.child(content)
+    }
+}
+
+struct AboutWindow;
+
+impl Render for AboutWindow {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut root = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .bg(rgb(BACKGROUND))
+            .text_color(rgb(TEXT));
+        if themed_titlebar_enabled() {
+            root = div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(rgb(BACKGROUND))
+                .child(themed_titlebar(
+                    "About nvim-gpui".to_owned(),
+                    BACKGROUND,
+                    None,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .text_color(rgb(TEXT))
+                        .child(img(logo_image()).w(px(96.0)).h(px(96.0)))
+                        .child(div().text_lg().child("nvim-gpui"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(MUTED_TEXT))
+                                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                        )
+                        .child(
+                            div()
+                                .mt_2()
+                                .text_sm()
+                                .text_color(rgb(MUTED_TEXT))
+                                .child("A GPUI graphical frontend for Neovim."),
+                        ),
+                );
+        } else {
+            root = root
+                .child(img(logo_image()).w(px(96.0)).h(px(96.0)))
+                .child(div().text_lg().child("nvim-gpui"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(MUTED_TEXT))
+                        .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                )
+                .child(
+                    div()
+                        .mt_2()
+                        .text_sm()
+                        .text_color(rgb(MUTED_TEXT))
+                        .child("A GPUI graphical frontend for Neovim."),
+                );
+        }
+        root
+    }
+}
+
+fn setting_option_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    on_click: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    div()
+        .id(id)
+        .mx(px(2.0))
+        .px_3()
+        .py_2()
+        .rounded_sm()
+        .text_sm()
+        .bg(rgb(if selected { ACCENT } else { SURFACE_BRIGHT }))
+        .text_color(rgb(if selected { BACKGROUND } else { TEXT }))
+        .hover(|style| style.bg(rgb(if selected { 0xa6c8ff } else { 0x45475a })))
+        .on_click(move |_, _, cx| on_click(cx))
+        .child(label)
+}
+
+fn logo_image() -> Arc<Image> {
+    Arc::new(Image::from_bytes(
+        gpui::ImageFormat::Png,
+        include_bytes!("../assets/icons/neovim-gpui.png").to_vec(),
+    ))
+}
+
+fn setting_row(
+    label: &'static str,
+    description: &'static str,
+    controls: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .items_start()
+        .py_3()
+        .border_b_1()
+        .border_color(rgb(SURFACE_BRIGHT))
+        .child(
+            div()
+                .flex_1()
+                .pr_4()
+                .child(div().text_base().child(label))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_sm()
+                        .text_color(rgb(MUTED_TEXT))
+                        .child(description),
+                ),
+        )
+        .child(div().w_full().mt_2().child(controls))
+}
+
+fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
+    let existing = source.read(cx).settings_window;
+    if let Some(handle) = existing {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
+
+    let bounds = Bounds::centered(None, size(px(720.0), px(560.0)), cx);
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(themed_titlebar_options("nvim-gpui settings")),
+                kind: WindowKind::Floating,
+                is_resizable: true,
+                window_min_size: Some(size(px(560.0), px(420.0))),
+                ..Default::default()
+            },
+            |_, cx| cx.new(|cx| SettingsWindow::new(source.clone(), cx)),
+        )
+        .expect("failed to open nvim-gpui settings window");
+    source.update(cx, |view, _| view.settings_window = Some(handle));
+}
+
+fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
+    let existing = source.read(cx).about_window;
+    if let Some(handle) = existing {
+        if handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            return;
+        }
+    }
+
+    let bounds = Bounds::centered(None, size(px(440.0), px(320.0)), cx);
+    let handle = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(themed_titlebar_options("About nvim-gpui")),
+                kind: WindowKind::Floating,
+                is_resizable: false,
+                ..Default::default()
+            },
+            |_, cx| cx.new(|_| AboutWindow),
+        )
+        .expect("failed to open nvim-gpui about window");
+    source.update(cx, |view, _| view.about_window = Some(handle));
 }
 
 fn is_monospace_family(window: &Window, family: &str, font_size: Pixels) -> bool {
@@ -1272,7 +1825,11 @@ fn themed_titlebar_options(title: &'static str) -> TitlebarOptions {
     }
 }
 
-fn themed_titlebar(title: String, background: u32) -> impl IntoElement {
+fn themed_titlebar(
+    title: String,
+    background: u32,
+    source: Option<Entity<NvimGpui>>,
+) -> impl IntoElement {
     let title_area = div()
         .flex_1()
         .h_full()
@@ -1295,17 +1852,35 @@ fn themed_titlebar(title: String, background: u32) -> impl IntoElement {
                 window.titlebar_double_click();
             }
         })
-        .child(svg().path(LOGO_ASSET).w(px(116.0)).h(px(28.0)))
-        .child(div().w(px(8.0)))
+        .child(img(logo_image()).w(px(20.0)).h(px(20.0)))
+        .child(div().w(px(6.0)))
         .child(title);
 
-    let titlebar = div()
+    let mut titlebar = div()
         .w_full()
         .h(px(THEMED_TITLEBAR_HEIGHT))
         .flex()
         .items_center()
         .bg(rgb(background))
         .child(title_area);
+
+    if let Some(source) = source {
+        let settings_source = source.clone();
+        let about_source = source;
+        let actions = div()
+            .h_full()
+            .flex()
+            .items_center()
+            .pr(px(8.0))
+            .child(titlebar_button("Settings", move |cx| {
+                open_settings_window(settings_source.clone(), cx);
+            }))
+            .child(div().w(px(4.0)))
+            .child(titlebar_button("About", move |cx| {
+                open_about_window(about_source.clone(), cx);
+            }));
+        titlebar = titlebar.child(actions);
+    }
 
     #[cfg(target_os = "windows")]
     let titlebar = titlebar
@@ -1328,6 +1903,21 @@ fn themed_titlebar(title: String, background: u32) -> impl IntoElement {
     titlebar
 }
 
+fn titlebar_button(label: &'static str, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
+    div()
+        .id(label)
+        .h(px(24.0))
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded_sm()
+        .text_sm()
+        .text_color(rgb(MUTED_TEXT))
+        .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(TEXT)))
+        .on_click(move |_, _, cx| on_click(cx))
+        .child(label)
+}
+
 #[cfg(target_os = "windows")]
 fn window_control_button(
     label: &'static str,
@@ -1347,6 +1937,8 @@ fn window_control_button(
 }
 
 pub(crate) fn run(options: CliOptions) {
+    let app_settings = settings::Settings::load();
+    let startup_maximized = app_settings.startup_maximized;
     let nvim = match options.connection {
         NvimConnection::Embed => {
             let nvim_command = options
@@ -1384,31 +1976,33 @@ pub(crate) fn run(options: CliOptions) {
                 eprintln!("[platform] {error}");
             }
 
-            // The debug window is auxiliary. Closing either top-level window ends
-            // the session and drops the shared Neovim process.
-            cx.on_window_closed(|cx| cx.quit()).detach();
-
             let main_bounds = Bounds::centered(
                 None,
                 size(px(INITIAL_WINDOW_WIDTH), px(INITIAL_WINDOW_HEIGHT)),
                 cx,
             );
-            let debug_y = if main_bounds.origin.y > px(104.0) {
-                main_bounds.origin.y - px(96.0)
+            let debug_height = px(DEBUG_WINDOW_HEIGHT);
+            let debug_y = if main_bounds.origin.y > debug_height + px(8.0) {
+                main_bounds.origin.y - debug_height - px(8.0)
             } else {
                 px(8.0)
             };
             let debug_bounds = Bounds::new(
                 point(main_bounds.origin.x, debug_y),
-                size(main_bounds.size.width, px(88.0)),
+                size(main_bounds.size.width, debug_height),
             );
 
-            let nvim_view = cx.new(|cx| NvimGpui::new(nvim, cx, nerd_font_registered));
+            let nvim_view =
+                cx.new(|cx| NvimGpui::new(nvim, cx, nerd_font_registered, app_settings.clone()));
 
             let main_window = cx
                 .open_window(
                     WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(main_bounds)),
+                        window_bounds: Some(if startup_maximized {
+                            WindowBounds::Maximized(main_bounds)
+                        } else {
+                            WindowBounds::Windowed(main_bounds)
+                        }),
                         titlebar: Some(themed_titlebar_options(DEFAULT_WINDOW_TITLE)),
                         is_resizable: true,
                         window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
@@ -1420,6 +2014,10 @@ pub(crate) fn run(options: CliOptions) {
 
             main_window
                 .update(cx, |view, window, cx| {
+                    window.on_window_should_close(cx, |_, cx| {
+                        cx.quit();
+                        true
+                    });
                     view.window_bounds_subscription =
                         Some(cx.observe_window_bounds(window, |view, window, _cx| {
                             view.sync_nvim_size(window)
@@ -1441,7 +2039,13 @@ pub(crate) fn run(options: CliOptions) {
                         is_resizable: false,
                         ..Default::default()
                     },
-                    |_, cx| cx.new(|cx| DebugWindow::new(nvim_view.clone(), cx)),
+                    |window, cx| {
+                        window.on_window_should_close(cx, |_, cx| {
+                            cx.quit();
+                            true
+                        });
+                        cx.new(|cx| DebugWindow::new(nvim_view.clone(), cx))
+                    },
                 )
                 .expect("failed to open nvim-gpui debug window");
             }
@@ -1663,6 +2267,30 @@ mod tests {
 
         assert_eq!(app.current_cursor_mode(), mode);
         assert_eq!(app.state.mode, "I");
+    }
+
+    #[test]
+    fn cursor_grid_is_committed_only_at_flush() {
+        let mut app = NvimGpui::default();
+
+        app.apply_nvim_event(NvimEvent::GridResized {
+            grid: 2,
+            width: 4,
+            height: 1,
+        });
+        app.apply_nvim_event(NvimEvent::GridCursorGoto {
+            grid: 2,
+            row: 0,
+            col: 1,
+        });
+
+        assert_eq!(app.cursor_grid, 1);
+        assert_eq!(app.pending_cursor_grid, Some(2));
+
+        app.apply_nvim_event(NvimEvent::Flush);
+
+        assert_eq!(app.cursor_grid, 2);
+        assert_eq!(app.pending_cursor_grid, None);
     }
 
     #[test]

@@ -1,256 +1,227 @@
 # nvim-gpui
 
-A GPUI-based graphical frontend for Neovim, written in Rust.
+A Rust and GPUI graphical frontend for Neovim.
 
-This repository starts with a deliberately small, runnable scaffold. The
-window starts an embedded Neovim process by default, consumes its initial UI
-redraw, and renders the resulting screen through a custom `GridElement` backed
-by a small screen-grid model. It can also attach to an already running Neovim
-through its MessagePack-RPC TCP or Unix socket endpoint.
+<code>nvim-gpui</code> is an early-stage Neovim GUI client. It connects to
+Neovim over MessagePack-RPC, renders its grid with GPUI, supports Unicode and
+wide CJK cells, and implements the Kitty Graphics Protocol for image-capable
+Neovim plugins such as <code>snacks.nvim</code>.
 
-The rendering slice keeps Neovim's logical grid separate from visual spans:
+> This project is experimental. It is useful for trying a native GPUI
+> frontend and for developing the rendering and protocol layers, but it is not
+> yet a drop-in replacement for Neovide or a terminal UI.
 
-- `GridCell` represents one logical cell and can be a wide-character lead,
-  continuation, blank, or ordinary text cell.
-- `VisualCellBuilder` maps a wide-character pair to one visual span and
-  optionally merges a Nerd Font symbol followed by a same-highlight space.
-- `GridElement` keeps one logical cell per character, coalesces adjacent normal
-  cells into multi-run shaped lines, and paints each line from its logical grid
-  position. Wide characters and Nerd symbols retain their two-cell placement.
+## Highlights
 
-The initial transport, redraw synchronization, and `guifont` selection are
-now in place. An explicitly configured `guifont` is used as-is; when it is
-empty or not set, the runtime font list is searched for a verified monospace
-family. `hl_attr_define` RGB attributes are stored by highlight id and applied
-during GPUI text shaping, including foreground,
-background, reverse video, bold, italic, underline, undercurl, and
-strikethrough. `default_colors_set` supplies the defaults used by incomplete
-highlight definitions. `grid_cursor_goto` paints a rounded block cursor with a
-short eased, direction-aware jelly transition; a cursor on a wide-character
-pair covers both logical cells. The animation is drawn as one additional quad
-inside `GridElement`, not as one element per cell.
+- Rust application built with [GPUI](https://gpui.rs/).
+- Embedded Neovim by default, with TCP and Unix-socket connections available.
+- Unicode-aware grid rendering with wide-character and grapheme support.
+- <code>guifont</code> and <code>guifontwide</code> aware cell metrics and
+  bundled Nerd Font fallbacks.
+- One custom <code>GridElement</code> instead of one UI element per cell.
+- Multigrid, split windows, floating windows, highlights, cursor styles, and
+  an elastic jelly cursor.
+- Kitty Graphics Protocol image transfers and placements for image plugins.
+- Native macOS AppBundle, Dock icon, <code>gpvim</code> helper, and DMG
+  packaging.
+- Nix Flake and <code>just</code> based reproducible development workflow.
 
-The current Neovim window is intentionally only the grid surface: the Explorer
-and bottom statusbar are removed. Debug information is shown in a separate
-top-level floating window, so it cannot change the grid's width. `GridElement`
-requests its exact logical size from the active font's monospace advance and
-the current RPC grid. Resizing the Neovim window converts its content size back
-into grid columns and rows through `nvim_ui_try_resize`.
+## Quick start
 
-The debug window is hidden by default; pass `--debug-window` when diagnosing
-RPC, font, IME, or grid state.
+The reproducible development environment is provided by Nix. <code>direnv</code>
+is optional but recommended:
 
-On macOS and Windows the native titlebar is made transparent and a themed
-top-level bar uses the same background as the grid. Windows also gets custom
-titlebar hit areas for dragging, minimizing, maximizing, and closing. Neovim's
-`set_title` redraw event updates both the native window title and this themed
-titlebar; the repository-local debug config enables `'title'` so this can be
-seen while testing.
+~~~sh
+git clone https://github.com/your-account/nvim-gpui.git
+cd nvim-gpui
+direnv allow                 # or: nix develop
+nix develop -c just run
+~~~
+
+To pass Neovim arguments, place them after the GUI arguments:
+
+~~~sh
+nix develop -c just run -- --clean README.md
+nix develop -c just run -- --debug-window
+~~~
+
+On macOS, build and open the application bundle with:
+
+~~~sh
+nix develop -c just bundle
+open .cache/macos/nvim-gpui.app
+~~~
+
+The compressed installer is created with <code>just dmg</code>. It is an
+unsigned local build; signing and notarization are not configured yet.
+
+## Required Neovim font configuration
+
+For predictable cell width and CJK alignment, configure both
+<code>guifont</code> and <code>guifontwide</code> in your Neovim
+configuration. Do not configure only <code>guifont</code>: the GUI needs an
+explicit wide-glyph face for CJK, full-width punctuation, and other two-cell
+characters.
+
+Add this to <code>init.lua</code>, replacing the families with fonts installed
+on your system:
+
+~~~lua
+vim.opt.guifont = "Iosevka Term Slab:h16"
+vim.opt.guifontwide = "LXGW WenKai:h16"
+~~~
+
+<code>guifont</code> supplies the normal monospace cell metrics.
+<code>guifontwide</code> supplies wide glyphs while preserving their two-cell
+logical footprint. The <code>:h16</code> suffix is the Neovim GUI font-size
+syntax; use the same size for both faces unless you have a deliberate reason
+not to.
+
+If <code>guifont</code> is empty, nvim-gpui can select a verified system
+monospace font, but explicit configuration is recommended for reproducible
+layout. If <code>guifontwide</code> is omitted, the normal face is used as a
+fallback and CJK glyph metrics may vary with the platform's font fallback.
+
+## Selecting a GUI-specific theme
+
+Neovim's UI protocol can report that a UI is attached, but that includes a
+terminal UI as well as a graphical UI. nvim-gpui therefore exposes both
+<code>vim.g.nvim_gpui = true</code> and <code>NVIM_GPUI=1</code> to its
+embedded Neovim process before <code>init.lua</code> is loaded. Use the global
+for startup-time theme selection:
+
+~~~lua
+local is_nvim_gpui = vim.g.nvim_gpui == true
+
+if is_nvim_gpui then
+  vim.cmd.colorscheme("your-gui-theme")
+else
+  vim.cmd.colorscheme("your-terminal-theme")
+end
+~~~
+
+The environment form is also available if you prefer not to rely on a global:
+
+~~~lua
+local is_nvim_gpui = vim.env.NVIM_GPUI == "1"
+~~~
+
+This marker is guaranteed for embedded sessions started by nvim-gpui. When
+using <code>--connect</code> with an already-running Neovim, startup has
+already happened, so choose the theme in that Neovim process or use a
+<code>UIEnter</code> hook for attach-time behavior.
+
+## Required snacks.image terminal (`TERM`) fallback
+
+nvim-gpui embeds Neovim instead of giving it a real terminal file descriptor.
+Therefore Snacks may not identify the Kitty-capable GUI through its normal
+terminal response query. Set the explicit Snacks terminal fallback **before
+Snacks initializes**:
+
+~~~lua
+-- Required for an embedded Neovim session in nvim-gpui.
+vim.env.SNACKS_KITTY = "1"
+
+require("lazy").setup({
+  {
+    "folke/snacks.nvim",
+    priority = 1000,
+    opts = {
+      image = {
+        enabled = true,
+        -- Keep this false: nvim-gpui advertises Kitty support explicitly.
+        force = false,
+        doc = {
+          enabled = true,
+          inline = true,
+          float = true,
+        },
+      },
+    },
+  },
+})
+~~~
+
+The equivalent shell fallback is:
+
+~~~sh
+SNACKS_KITTY=1 gpvim path/to/file.md
+~~~
+
+<code>SNACKS_KITTY=1</code> is Snacks' explicit terminal/`TERM` detection
+fallback; setting `TERM` alone is not sufficient for this embedded session.
+It is not a request to render images in an unsupported terminal. With a Nix
+development shell, the repository already exports this value for its test
+profile. Image formats other than PNG may also require ImageMagick on the
+Neovim side.
+
+See [Snacks' image documentation](https://github.com/folke/snacks.nvim/blob/main/docs/image.md)
+for the plugin's current options and supported document types.
+
+## Using your normal Neovim configuration
+
+The repository development shell has an isolated Neovim profile under
+<code>config/nvim-gpui</code>. To test your normal configuration, run the GUI
+from outside this repository, or select your Neovim wrapper explicitly:
+
+~~~sh
+NVIM_GPUI_NVIM="$(command -v nvim)" \
+  /path/to/nvim-gpui --embed
+~~~
+
+For a Nix-wrapped Neovim, use the absolute wrapper path with
+<code>--nvim-command</code> or <code>NVIM_GPUI_NVIM</code>. This preserves the
+wrapper's runtime environment and avoids launching the underlying store binary
+without its runpath and environment setup.
+
+## Command-line options
+
+~~~text
+--debug-window       Show the auxiliary debug window
+--no-debug-window    Hide the auxiliary debug window
+--embed              Start a local embedded Neovim (default)
+--connect ADDRESS    Connect to a Neovim RPC socket
+--nvim-command PATH  Select the local Neovim executable for embed mode
+--cwd PATH           Set Neovim's working directory
+--                  Pass all following arguments to Neovim
+~~~
+
+<code>ADDRESS</code> may be <code>HOST:PORT</code>,
+<code>tcp:HOST:PORT</code>, <code>unix:/path</code>, or a Unix socket path.
+Unknown arguments are passed through to embedded Neovim. <code>gpvim</code>
+starts the macOS AppBundle through LaunchServices and forwards the caller's
+working directory.
+
+## CI/CD
+
+GitHub Actions runs the repository checks on Linux and macOS for pushes and
+pull requests. Pushing a tag such as <code>v0.1.0</code> builds the macOS
+AppBundle and DMG, uploads both packages as workflow artifacts, and creates a
+GitHub Release. Release packages are currently unsigned and not notarized.
 
 ## Development
 
-All development tools are provided by the Nix flake:
+The contributor workflow, repository layout, protocol notes, debugging
+commands, and GitHub Actions details are in
+[<code>doc/DEVELOP.md</code>](doc/DEVELOP.md).
 
-```sh
-direnv allow
-nix develop
-just check
-just test
-just run
-just bundle       # macOS AppBundle
-gpvim file         # launch the AppBundle on macOS
-# The Makefile forwards to the same justfile tasks.
-make check
-```
+The short command list is:
 
-`.envrc` calls `use flake`, so after the one-time `direnv allow`, entering the
-repository automatically loads the locked Nix development environment. The
-explicit `nix develop` command remains useful for CI and non-interactive
-shells. The shell also adds the Cargo debug target directory to `PATH`, making
-the Rust `gpvim` helper available after the first build.
+~~~sh
+nix develop -c just fmt
+nix develop -c just check
+nix develop -c just clippy
+nix develop -c just test
+nix develop -c just ci
+~~~
 
-The same shell provides `lazy.nvim`, `snacks.nvim`, an `nvim-treesitter`
-package containing only the Markdown parser, and ImageMagick. The repository
-profile loads those plugins from the Nix store through Lazy without cloning or
-downloading plugins at runtime. `SNACKS_KITTY=1` enables the image backend for
-this GUI during development; the application also answers Snacks' terminal
-capability query through Neovim's `TermResponse` API.
+## Current limitations
 
-The development shell exports `NVIM_APPNAME=nvim-gpui`, records the absolute
-Nix `nvim` wrapper in `NVIM_GPUI_NVIM`, and keeps the repository paths in the
-custom `NVIM_GPUI_CONFIG_DIR` and `NVIM_GPUI_CACHE_DIR` variables. It does not
-export `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, or
-`XDG_CACHE_HOME`, so entering this shell does not change how Git and other
-tools find the user's files. When the application starts an embedded Neovim,
-it injects those XDG variables only into the child process; Neovim then loads
-`config/nvim-gpui/` without touching the user's normal Neovim profile.
-Neovim's data, state, and cache directories are placed under `.cache/`;
-Cargo's target and registry cache are also under `.cache/`, and compiler
-temporary files are under `tmp/`. Generated directories are ignored by Git
-and can be removed as a project-local cleanup operation.
+The project is still being developed. The largest incomplete areas are mouse
+input, clipboard integration, complete command-line and message rendering,
+richer Kitty composition and animation, reconnect behavior, and broader
+redraw coverage.
 
-`just run` starts the wrapper selected by `NVIM_GPUI_NVIM` with `--embed`,
-performs the MessagePack-RPC handshake, identifies the client as a
-UI, and attaches linegrid plus multigrid support. `grid_resize`, `grid_clear`,
-`grid_destroy`, `grid_line`, `grid_cursor_goto`, `grid_scroll`, and `flush` are
-mapped into the Rust cell models. `win_pos` places normal split-window grids;
-`win_float_pos` places floating grids in composition order, and `win_hide`,
-`win_close`, and `win_external_pos` update their visibility. The outer grid is
-painted first, then visible window grids are layered over it. `mode_info_set` and `mode_change` select
-block, horizontal, or vertical cursor shapes and their blink timings; the
-jelly transition remains one additional quad inside `GridElement`. `option_set`
-retains all UI options and applies the font, wide-font, `linespace`, and
-shaping-affecting options immediately. Highlight attributes cover the
-foreground/background, reverse, dim/blend, text styles, conceal, blink,
-overline, and underline variants; `altfont` and `url` are retained as metadata
-for the future font and mouse layers. `set_icon` is decoded and retained by the
-client model. Before the first window opens, the app registers the bundled
-`Symbols Nerd Font` with GPUI and installs the bundled icon as the macOS Dock
-icon. The icon source is `assets/neovim-gpui.png`;
-`assets/neovim-gpui-app-icon.png` adds a solid Catppuccin-like background and
-safe padding, while `assets/neovim-gpui.icns` contains the standard 1x/2x
-macOS sizes. `just icon` regenerates the ICNS from the checked-in PNG.
+## License
 
-The UI advertises `stdout_tty` and consumes Neovim `ui_send` redraw events.
-`ImageStore` now parses the Kitty APC graphics stream, including tmux-wrapped
-data, chunked `a=T` transfers, local-file (`t=f`) and direct-data (`t=d`)
-transfers, PNG and raw RGB/RGBA payloads, normal placements, deletion, and
-`U=1` Unicode placeholders. Image bytes are normalized into GPUI image sources;
-placeholder cells are hidden by `GridElement` and the image is painted as a
-clipped grid overlay. The first implementation is focused on the protocol path
-used by Snacks; animation, advanced Kitty composition, and mouse/clipboard
-integration remain separate slices.
-
-In Insert and Command-line modes, the focused grid registers GPUI's system
-input handler; marked text stays in the local IME state and committed text is
-forwarded to Neovim. The first `guifont` family and `:hN` size are applied to
-the grid; when no font is configured, a verified system monospace family is
-selected instead. The first `guifontwide` family is used for wide CJK cells.
-When `ENABLE_BUNDLED_NERD_FONT` in `src/app.rs` is enabled, `auto` Nerd Font
-mode checks each detected private-use Nerd glyph against the requested primary
-font through a cached GPUI glyph-coverage probe. Missing glyphs receive an
-explicit fallback cascade containing the bundled `Symbols Nerd Font`, while
-the primary font remains responsible for ordinary text. It is currently
-disabled deliberately to provide a rendering-performance baseline; disabling
-it also means no bundled font registration or glyph-coverage probe occurs.
-Normal neighboring cells are still merged into multi-run shaped lines. The
-font's monospace advance is used as the logical cell width and the row height
-scales with the requested size. Rime remains an optional future backend.
-
-Useful tasks are listed with `just --list`. `just ci` runs formatting,
-Clippy, and tests.
-
-To exercise the image path with the repository profile, start a PNG directly or
-open a Markdown file containing an image:
-
-```sh
-cargo run -- path/to/image.png
-cargo run -- path/to/document.md
-```
-
-Snacks will send the image through `nvim_ui_send`; Neovim's `ui_send` redraw
-event is then decoded by Rust and the placeholder grid is painted as a GPUI
-overlay. The image path is deliberately tested with the same child-process
-environment as the normal embedded session.
-
-The application reserves `--help`/`-h`, `--version`/`-V`,
-`--debug-window`, `--no-debug-window`, `--embed`, `--connect`, and
-`--nvim-command` for GPUI. Every other command-line argument is passed to the
-embedded Neovim process unchanged; `--` forces arguments with a GPUI-looking
-name to be passed through. For example:
-
-```sh
-cargo run -- --clean README.md
-cargo run -- --no-debug-window -- ~/notes/today.md
-gpvim --nvim-command /nix/store/.../bin/nvim --clean README.md
-gpvim --connect unix:/tmp/nvim.sock
-gpvim --connect tcp:127.0.0.1:6666
-```
-
-`--connect` attaches to an existing Neovim and therefore does not accept local
-Neovim arguments. Embed mode uses `--nvim-command PATH` first, then
-`NVIM_GPUI_NVIM`, and finally `nvim` from `PATH`. When macOS launches the
-AppBundle through `open` or Finder without an explicit `--cwd`, nvim-gpui uses
-`Contents/MacOS` inside that AppBundle as its working directory. `gpvim` passes
-the caller's current directory explicitly because LaunchServices may start an
-AppBundle with `/` as its process working directory. Use `--cwd PATH` when a
-project directory is desired.
-
-On macOS, `just bundle` builds both Rust binaries and creates
-`.cache/macos/nvim-gpui.app` with a valid `Info.plist`. The `gpvim` helper is
-stored at `Contents/Resources/gpvim`; it opens that AppBundle with
-LaunchServices (`open -n`) instead of directly creating a window, so it starts
-a separate application instance. Before opening it, `gpvim` resolves the
-current shell's `nvim` to an absolute path; this is important for Nix-wrapped
-Neovim. Set `NVIM_GPUI_APP` when the bundle has been moved to another location.
-
-The AppBundle registers `public.text`, `public.plain-text`,
-`public.source-code`, common script/source UTIs, and a broad list of common
-source/configuration extensions as editable documents. The document type uses
-`LSHandlerRank=Alternate`, so nvim-gpui appears in Open With without taking
-over the existing default editor. No `CFBundleTypeIconFile` or document icon
-key is declared; the Finder icons of source files therefore remain owned by
-their existing document type rather than changing to the nvim-gpui app icon.
-
-`gpvim` is a Rust binary rather than a shell script, so the same helper can be
-shipped inside the AppBundle without depending on Bash or the caller's shell.
-When the running app finds no executable `gpvim` in `PATH`, it looks for the
-bundled helper and attempts to create `/usr/local/bin/gpvim` as a symlink. An
-existing path is never overwritten; if that directory is not writable, the
-app continues to work and reports the installation error.
-
-A GUI application launched by Finder/LaunchServices does not inherit the
-interactive shell's complete environment. The AppBundle detects this launch
-context and imports the user's macOS login-shell environment before spawning
-Neovim. Repository-specific `NVIM_APPNAME` and `NVIM_GPUI_*` values are used
-only while the selected working directory is inside this repository; when the
-AppBundle is launched from another directory, stale development variables are
-discarded and the normal Neovim profile is used. The repository-local `XDG_*`
-paths are then injected only into the embedded Neovim child, rather than into
-the GUI process or the user's shell. This is also why a Nix-wrapped `nvim` can report missing
-runpaths or runtime files when launched by a GUI: the wrapper is not merely a
-binary; it supplies environment and runtime paths that are normally prepared
-by the shell. `NVIM_GPUI_NVIM` or `--nvim-command` makes the wrapper selection
-explicit.
-
-The root grid captures all key events that reach the application and routes
-Neovim-owned control, navigation, function, Alt, Ctrl, and platform-modifier
-keys through `nvim_input`. Printable text in Insert mode remains with GPUI's
-system IME so composition is not committed twice. OS-global shortcuts such as
-macOS Cmd-Tab/Cmd-Space or Windows Win-L/Ctrl-Alt-Del are owned by the window
-system and cannot be blocked by an ordinary application; they never reach
-Neovim-GPUI's event dispatcher.
-
-The GPUI dependency is pinned in `Cargo.toml` to the current published
-version used by this scaffold. Development uses GPUI's `runtime_shaders`
-feature so macOS builds do not require the optional Xcode-only `metal`
-command-line tool; `Cargo.lock` is checked in so dependency resolution
-remains reproducible.
-
-The input and image boundaries are reserved in `src/input.rs` and
-`src/image_store.rs`. `InputRouter` selects between Neovim, the system IME,
-and the future Rime backend based on editor context. The current system-input
-slice registers GPUI's `EntityInputHandler`, keeps marked text locally, and
-forwards committed text and control keys to Neovim. `ImageStore` owns Kitty
-transfers and grid-anchored or placeholder-based image placements; GPUI keeps a
-stable image source per image id so redraws do not repeatedly copy the image
-into every cell.
-
-## Planned slices
-
-1. Coalesce resize requests during continuous window dragging.
-2. Expand input, commands, events, and multi-window behavior.
-3. Add Kitty animation/composition details and richer image invalidation behind
-   `ImageStore`.
-
-## Current client boundary
-
-The project is already a usable minimum Neovim GUI client for an early
-editing loop: it can embed or attach to Neovim, attach the UI, render the
-single grid with Unicode/wide-cell handling, apply basic highlights, show the
-cursor, resize the grid, route system-IME text, and terminate with the Neovim
-session. It is not yet a daily-driver replacement for Neovide or a terminal
-UI. The largest missing slices are mouse and clipboard support, complete
-command-line/message/popup rendering, multi-grid and split-window support,
-full redraw event coverage, robust key/IME composition, advanced Kitty
-composition, and connection/error/reconnect handling.
+MIT. See [Cargo.toml](Cargo.toml) for the package metadata.

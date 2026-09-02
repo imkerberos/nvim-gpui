@@ -1,19 +1,13 @@
 pub mod app;
 pub mod grid;
+pub mod helper;
 pub mod image_store;
 pub mod input;
 pub mod nvim;
 pub mod platform;
+pub mod settings;
 
-use std::{
-    env,
-    ffi::OsString,
-    fs,
-    path::{Path, PathBuf},
-};
-
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
+use std::{env, ffi::OsString, fs, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliAction {
@@ -161,103 +155,6 @@ ADDRESS may be HOST:PORT, tcp:HOST:PORT, unix:/path, or a Unix socket path.\nAll
     );
 }
 
-fn gpvim_is_available_in_path() -> bool {
-    let Some(path) = env::var_os("PATH") else {
-        return false;
-    };
-    let command_name = if cfg!(windows) { "gpvim.exe" } else { "gpvim" };
-    env::split_paths(&path).any(|directory| is_executable_path(&directory.join(command_name)))
-}
-
-fn is_executable_path(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-fn bundled_gpvim_path() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(application) = env::var_os("NVIM_GPUI_APP") {
-        candidates.push(PathBuf::from(application).join("Contents/Resources/gpvim"));
-    }
-    if let Ok(executable) = env::current_exe() {
-        let executable = fs::canonicalize(&executable).unwrap_or(executable);
-        candidates.extend(
-            executable
-                .ancestors()
-                .filter(|path| {
-                    path.extension().and_then(|extension| extension.to_str()) == Some("app")
-                })
-                .map(|application| application.join("Contents/Resources/gpvim")),
-        );
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(".cache/macos/nvim-gpui.app/Contents/Resources/gpvim"),
-    );
-    candidates.into_iter().find(|path| is_executable_path(path))
-}
-
-fn ensure_gpvim_helper() -> Result<(), String> {
-    if gpvim_is_available_in_path() {
-        return Ok(());
-    }
-
-    let Some(helper) = bundled_gpvim_path() else {
-        return Ok(());
-    };
-
-    #[cfg(unix)]
-    {
-        let link = Path::new("/usr/local/bin/gpvim");
-        if fs::symlink_metadata(link).is_ok() {
-            return Err(format!(
-                "gpvim is not executable from PATH and {} already exists",
-                link.display()
-            ));
-        }
-        if let Some(parent) = link.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "could not create gpvim helper directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        symlink(&helper, link).map_err(|error| {
-            format!(
-                "could not install gpvim symlink {} -> {}: {error}",
-                link.display(),
-                helper.display()
-            )
-        })?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = helper;
-        Err(
-            "gpvim is not executable from PATH; automatic helper links are only supported on Unix"
-                .to_owned(),
-        )
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn app_bundle_working_directory() -> Option<PathBuf> {
     let executable = env::current_exe().ok()?;
@@ -291,7 +188,7 @@ fn main() {
         }
     };
 
-    if let Err(error) = ensure_gpvim_helper() {
+    if let Err(error) = helper::ensure_installed() {
         eprintln!("[gpvim] {error}");
     }
 
