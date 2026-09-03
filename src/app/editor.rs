@@ -176,59 +176,62 @@ impl Render for NvimGpui {
             .line_height(line_height);
 
         if grid_ready {
-            editor = editor.child(
-                GridElement::with_shared_model(Rc::clone(&self.grid))
-                    .with_metrics(cell_width, line_height)
-                    .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
-                    .with_nerd_fallback_font(
-                        self.nerd_font_family.clone().unwrap_or_default(),
-                        px(gui_font.size),
-                    )
-                    .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-                    .with_shaping_cache(Rc::clone(&shaping_cache))
-                    .with_nerd_fallback_mode(self.settings.fallback_mode)
-                    .with_cursor_animation(self.cursor_animation)
-                    .with_cursor_visible(self.cursor_grid == 1)
-                    .with_cursor_mode(if self.cursor_grid == 1 {
-                        cursor_mode
-                    } else {
-                        grid::CursorModeInfo::default()
-                    })
-                    .with_cursor_blink_started_at(cursor_blink_started_at)
-                    .with_nerd_font_mode(true)
-                    .with_input_handler(move |bounds, window, cx| {
-                        let focus_handle = {
-                            let view = entity.read(cx);
-                            if view.input_router.target() == InputTarget::SystemIme {
-                                view.focus_handle.clone()
-                            } else {
-                                None
+            // A grid and its Kitty placements must share one compositing
+            // layer. Keeping images as siblings of all grids lets a later
+            // floating grid paint over an image that belongs to an earlier
+            // grid, which is not how Neovim's multigrid compositor behaves.
+            let mut main_layer = div()
+                .absolute()
+                .left(px(0.0))
+                .top(px(0.0))
+                .w_full()
+                .h_full()
+                .overflow_hidden()
+                .child(
+                    GridElement::with_shared_model(Rc::clone(&self.grid))
+                        .with_metrics(cell_width, line_height)
+                        .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
+                        .with_nerd_fallback_font(
+                            self.nerd_font_family.clone().unwrap_or_default(),
+                            px(gui_font.size),
+                        )
+                        .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+                        .with_shaping_cache(Rc::clone(&shaping_cache))
+                        .with_nerd_fallback_mode(self.settings.fallback_mode)
+                        .with_cursor_animation(self.cursor_animation)
+                        .with_cursor_visible(self.cursor_grid == 1)
+                        .with_cursor_mode(if self.cursor_grid == 1 {
+                            cursor_mode
+                        } else {
+                            grid::CursorModeInfo::default()
+                        })
+                        .with_cursor_blink_started_at(cursor_blink_started_at)
+                        .with_nerd_font_mode(true)
+                        .with_input_handler(move |bounds, window, cx| {
+                            let focus_handle = {
+                                let view = entity.read(cx);
+                                if view.input_router.target() == InputTarget::SystemIme {
+                                    view.focus_handle.clone()
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(focus_handle) = focus_handle {
+                                window.handle_input(
+                                    &focus_handle,
+                                    ElementInputHandler::new(bounds, entity.clone()),
+                                    cx,
+                                );
                             }
-                        };
-                        if let Some(focus_handle) = focus_handle {
-                            window.handle_input(
-                                &focus_handle,
-                                ElementInputHandler::new(bounds, entity.clone()),
-                                cx,
-                            );
-                        }
-                    }),
-            );
-        }
+                        }),
+                );
 
-        if grid_ready {
             let image_layers = self.visible_image_layers();
-
-            // Images belong to a Neovim grid. Paint the main-grid images before
-            // floating grids, then paint each floating grid's images directly
-            // after that grid. Keeping this order is important for multigrid:
-            // otherwise an image from the main grid, appended at the very end,
-            // would cover a Snacks picker or another opaque floating window.
             for layer in image_layers.iter().filter(|layer| layer.grid == 1) {
                 let Some(source) = self.image_sources.get(&layer.image).cloned() else {
                     continue;
                 };
-                editor = editor.child(
+                main_layer = main_layer.child(
                     img(source)
                         .absolute()
                         .left(px(layer.column as f32 * f32::from(cell_width)))
@@ -238,16 +241,22 @@ impl Render for NvimGpui {
                         .object_fit(gpui::ObjectFit::Fill),
                 );
             }
+            editor = editor.child(main_layer);
 
             for (grid_id, model, placement) in self.visible_grid_layers() {
                 let width = placement.width.max(model.width() as u64);
                 let height = placement.height.max(model.height() as u64);
-                let layer = div()
+                let mut layer = div()
                     .absolute()
                     .left(px(placement.col as f32 * f32::from(cell_width)))
                     .top(px(placement.row as f32 * f32::from(line_height)))
                     .w(px(width as f32 * f32::from(cell_width)))
                     .h(px(height as f32 * f32::from(line_height)))
+                    // Kitty images are children of their owning grid. Keep
+                    // an oversized preview inside that grid's compositor
+                    // bounds so it cannot cover a neighbouring picker pane
+                    // or its separator.
+                    .overflow_hidden()
                     .child(
                         GridElement::with_shared_model(model)
                             .with_metrics(cell_width, line_height)
@@ -272,26 +281,21 @@ impl Render for NvimGpui {
                             })
                             .with_nerd_font_mode(true),
                     );
-                editor = editor.child(layer);
                 for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
                     let Some(source) = self.image_sources.get(&image_layer.image).cloned() else {
                         continue;
                     };
-                    let grid_row = placement.row.max(0);
-                    let grid_col = placement.col.max(0);
-                    editor = editor.child(
+                    layer = layer.child(
                         img(source)
                             .absolute()
-                            .left(px((image_layer.column as f32 + grid_col as f32)
-                                * f32::from(cell_width)))
-                            .top(px(
-                                (image_layer.row as f32 + grid_row as f32) * f32::from(line_height)
-                            ))
+                            .left(px(image_layer.column as f32 * f32::from(cell_width)))
+                            .top(px(image_layer.row as f32 * f32::from(line_height)))
                             .w(px(image_layer.columns as f32 * f32::from(cell_width)))
                             .h(px(image_layer.rows as f32 * f32::from(line_height)))
                             .object_fit(gpui::ObjectFit::Fill),
                     );
                 }
+                editor = editor.child(layer);
             }
         }
 

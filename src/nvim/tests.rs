@@ -3,11 +3,13 @@ use super::environment::{
     project_nvim_environment_is_active_at, remove_project_nvim_environment, NVIM_GPUI_ENV,
     NVIM_GPUI_ENV_VALUE,
 };
-use super::protocol::{resize_request_frame, term_event_notification_frame, ui_attach_params};
+use super::protocol::{
+    resize_request_frame, term_event_notification_frame, ui_attach_params, ui_attach_params_for,
+};
 use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
-use super::{NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
+use super::{NvimCapabilities, NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
 use async_channel::unbounded;
 use rmpv::Value;
 use std::{
@@ -100,6 +102,61 @@ fn embedded_nvim_reports_protocol_metadata_before_ui_events() {
         events.try_recv().expect("ApiReady should be queued"),
         NvimEvent::ApiReady { .. }
     ));
+}
+
+#[test]
+fn embedded_nvim_forwards_nvim_ui_send_event() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let events = process.events();
+    while events.try_recv().is_ok() {}
+
+    process
+        .send_input(
+            ":lua vim.api.nvim_ui_send(string.char(27)..'_Ga=T,f=100,t=d,i=42,m=0;aGVsbG8='..string.char(27)..'\\\\')\n",
+        )
+        .expect("Neovim input should queue");
+
+    let mut found = false;
+    for _ in 0..200 {
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, NvimEvent::UiSend { .. }) {
+                found = true;
+            }
+        }
+        if found {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(found, "nvim_ui_send should produce a UiSend redraw event");
+}
+
+#[test]
+fn ui_attach_marks_ui_send_clients_as_tty_interactive() {
+    let capabilities = NvimCapabilities {
+        ui_options: ["rgb", "ext_linegrid", "ext_multigrid"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        ui_events: ["ui_send"].into_iter().map(str::to_owned).collect(),
+    };
+    let attach_params = ui_attach_params_for(80, 24, &capabilities);
+    let options = attach_params[2]
+        .as_map()
+        .expect("ui options should be a map");
+
+    for option in ["stdin_tty", "stdout_tty"] {
+        assert_eq!(
+            options
+                .iter()
+                .find(|(key, _)| key.as_str() == Some(option))
+                .and_then(|(_, value)| value.as_bool()),
+            Some(true),
+            "{option} should be enabled for a ui_send client"
+        );
+    }
 }
 
 #[test]

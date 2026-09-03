@@ -39,13 +39,20 @@ pub(super) fn ui_attach_params_for(
         // back to the default highlight id.
         options.push((Value::from("ext_hlstate"), Value::Boolean(true)));
     }
-    if capabilities.supports_ui_option("stdin_tty") {
+    // Neovim 0.12 exposes the TTY flags as attach options but omits them from
+    // `api-metadata.ui_options`. Snacks Dashboard uses these flags to
+    // distinguish an interactive GUI from a piped TUI, so the same fallback
+    // used for `stdout_tty` must also cover `stdin_tty`.
+    if capabilities.supports_ui_option("stdin_tty") || capabilities.supports_ui_event("ui_send") {
         // GPUI supplies interactive keyboard input through nvim_input.
         // Mark it as a TTY-like input so plugins such as Snacks Dashboard
         // do not mistake this UI for a non-interactive/piped frontend.
         options.push((Value::from("stdin_tty"), Value::Boolean(true)));
     }
-    if capabilities.supports_ui_option("stdout_tty") {
+    // Neovim 0.12 exposes `ui_send`, but does not advertise the embed-only
+    // `stdout_tty` option in `api-metadata.ui_options`. Enable it from the
+    // event capability as well so Kitty/terminal data reaches the UI.
+    if capabilities.supports_ui_option("stdout_tty") || capabilities.supports_ui_event("ui_send") {
         options.push((Value::from("stdout_tty"), Value::Boolean(true)));
     }
 
