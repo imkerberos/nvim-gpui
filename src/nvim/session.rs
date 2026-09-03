@@ -1,7 +1,6 @@
 use async_channel::Sender;
 use rmpv::Value;
 use std::io::{BufReader, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 
 use super::protocol::*;
@@ -15,7 +14,7 @@ pub(super) fn run_session(
     width: u32,
     height: u32,
     events: &Sender<NvimEvent>,
-    rpc_ready: &AtomicBool,
+    rpc_ready: &Sender<()>,
     startup_theme_sender: &std::sync::mpsc::SyncSender<NvimTheme>,
     protocol_sender: &SyncSender<NvimProtocolInfo>,
 ) -> Result<(), String> {
@@ -70,7 +69,7 @@ pub(super) fn run_session(
         ui_attach_params_for(width, height, &protocol.capabilities),
         events,
     )?;
-    rpc_ready.store(true, Ordering::Release);
+    let _ = rpc_ready.send_blocking(());
     send_event(events, NvimEvent::UiAttached { width, height })?;
 
     let mut startup_theme = NvimTheme::default();

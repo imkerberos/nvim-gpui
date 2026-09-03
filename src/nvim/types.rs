@@ -6,6 +6,7 @@ pub(super) enum NvimCommand {
     Input(String),
     Resize { width: u32, height: u32 },
     TermEvent { event: String, value: String },
+    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

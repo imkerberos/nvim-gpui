@@ -5,7 +5,7 @@
 //! forwards line-grid redraw events and queued input to GPUI/Neovim.
 //! Richer UI capabilities will be layered on top of these events later.
 
-use async_channel::{Receiver, Sender, TryRecvError};
+use async_channel::{Receiver, Sender};
 use rmpv::Value;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
@@ -113,9 +113,9 @@ impl NvimProcess {
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let worker_shutdown_requested = Arc::clone(&shutdown_requested);
         let command_shutdown_requested = Arc::clone(&shutdown_requested);
-        let rpc_ready = Arc::new(AtomicBool::new(false));
-        let command_rpc_ready = Arc::clone(&rpc_ready);
-        let worker_rpc_ready = Arc::clone(&rpc_ready);
+        let (rpc_ready_tx, rpc_ready_rx) = async_channel::bounded::<()>(1);
+        let command_rpc_ready = rpc_ready_rx;
+        let worker_rpc_ready = rpc_ready_tx;
         let rpc_alive = Arc::new(AtomicBool::new(true));
         let command_rpc_alive = Arc::clone(&rpc_alive);
         let (event_tx, events) = async_channel::unbounded();
@@ -123,6 +123,7 @@ impl NvimProcess {
         let (command_tx, command_rx) = async_channel::unbounded();
         let (startup_theme_tx, startup_theme_rx) = std::sync::mpsc::sync_channel::<NvimTheme>(1);
         let (protocol_tx, protocol_rx) = std::sync::mpsc::sync_channel::<NvimProtocolInfo>(1);
+        let rpc_shutdown_commands = command_tx.clone();
 
         let command_writer = Arc::clone(&writer);
         let command_events = event_tx.clone();
@@ -164,12 +165,14 @@ impl NvimProcess {
                     stop_backend(&worker_child, &worker_remote);
                 }
 
+                rpc_alive.store(false, Ordering::Release);
+                let _ = rpc_shutdown_commands.send_blocking(NvimCommand::Shutdown);
+
                 if let Some(child) = worker_child.as_ref() {
                     if let Ok(mut child) = child.lock() {
                         let _ = child.wait();
                     }
                 }
-                rpc_alive.store(false, Ordering::Release);
                 let _ = worker_tx.send_blocking(NvimEvent::Disconnected);
             })
             .map_err(|error| {
@@ -267,28 +270,23 @@ fn run_command_writer(
     commands: Receiver<NvimCommand>,
     events: Sender<NvimEvent>,
     shutdown_requested: Arc<AtomicBool>,
-    rpc_ready: Arc<AtomicBool>,
+    rpc_ready: Receiver<()>,
     rpc_alive: Arc<AtomicBool>,
 ) {
     let mut request_id = 1_000_000;
+
+    if rpc_ready.recv_blocking().is_err() {
+        return;
+    }
 
     loop {
         if shutdown_requested.load(Ordering::Acquire) || !rpc_alive.load(Ordering::Acquire) {
             return;
         }
 
-        if !rpc_ready.load(Ordering::Acquire) {
-            thread::yield_now();
-            continue;
-        }
-
-        let command = match commands.try_recv() {
+        let command = match commands.recv_blocking() {
             Ok(command) => command,
-            Err(TryRecvError::Empty) => {
-                thread::sleep(std::time::Duration::from_millis(1));
-                continue;
-            }
-            Err(TryRecvError::Closed) => return,
+            Err(_) => return,
         };
 
         let message = match command {
@@ -303,6 +301,7 @@ fn run_command_writer(
                 message
             }
             NvimCommand::TermEvent { event, value } => term_event_notification_frame(event, value),
+            NvimCommand::Shutdown => return,
         };
         if let Err(error) = write_shared_message(&writer, &message) {
             if !shutdown_requested.load(Ordering::Acquire) {
