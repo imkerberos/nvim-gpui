@@ -19,6 +19,7 @@ const DEFAULT_BACKGROUND: u32 = 0x1e1e2e;
 const BLUE_FOREGROUND: u32 = 0x89b4fa;
 
 mod cache;
+mod cursor;
 mod element;
 mod model;
 mod visual;
@@ -26,7 +27,8 @@ mod visual;
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };
-pub use element::{CursorElement, GridElement, GridPrepaintState};
+pub use cursor::CursorElement;
+pub use element::{GridElement, GridPrepaintState};
 pub use model::{
     CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
     GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
@@ -84,9 +86,9 @@ pub fn ime_text_cell_offset(
 
 use cache::{ShapingStyle, StyledTextRun};
 #[cfg(test)]
-use element::cursor_bounds;
-pub(crate) use element::cursor_colors;
-use element::jelly_progress;
+use cursor::cursor_bounds;
+pub(crate) use cursor::cursor_colors;
+use cursor::jelly_progress;
 #[cfg(test)]
 use model::cursor_geometry;
 use model::{blink_visible, CursorVisualPositionF};
