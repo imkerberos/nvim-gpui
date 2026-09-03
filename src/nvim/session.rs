@@ -61,6 +61,28 @@ pub(super) fn run_session(
     )?;
     request_id += 1;
 
+    // `mouse` is a global option and is not part of the redraw stream until
+    // it changes. Read it once before attaching so the GUI starts with the
+    // same mode gate as Neovim, including user configuration loaded at boot.
+    let mouse = request(
+        &writer,
+        &mut reader,
+        request_id,
+        "nvim_get_option",
+        Value::Array(vec![Value::from("mouse")]),
+        events,
+    )?;
+    request_id += 1;
+    if let Some(value) = string_value(&mouse) {
+        send_event(
+            events,
+            NvimEvent::OptionSet {
+                name: "mouse".to_owned(),
+                value,
+            },
+        )?;
+    }
+
     request(
         &writer,
         &mut reader,
@@ -267,6 +289,18 @@ pub(crate) fn handle_notification(
         let Some(name) = values.first().and_then(string_value) else {
             continue;
         };
+
+        match name.as_str() {
+            "mouse_on" => {
+                send_event(events, NvimEvent::MouseEnabled(true))?;
+                continue;
+            }
+            "mouse_off" => {
+                send_event(events, NvimEvent::MouseEnabled(false))?;
+                continue;
+            }
+            _ => {}
+        }
 
         for payload in values.iter().skip(1) {
             let Some(args) = payload.as_array() else {

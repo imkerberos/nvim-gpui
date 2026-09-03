@@ -9,7 +9,7 @@ use crate::{
     nvim::NvimEvent,
     parse_cli, CliAction, CliOptions, NvimConnection,
 };
-use gpui::px;
+use gpui::{point, px};
 use std::ffi::OsString;
 use std::rc::Rc;
 use std::time::Instant;
@@ -168,6 +168,21 @@ fn initial_window_size_is_derived_from_the_attached_grid() {
     assert_eq!(
         f32::from(window_size.height),
         24.0 * DEFAULT_GRID_LINE_HEIGHT + expected_titlebar
+    );
+}
+
+#[test]
+fn mouse_position_converts_window_pixels_to_grid_cells() {
+    let titlebar = if themed_titlebar_enabled() {
+        THEMED_TITLEBAR_HEIGHT
+    } else {
+        0.0
+    };
+    let position = point(px(35.9), px(titlebar + 45.9));
+
+    assert_eq!(
+        NvimGpui::nvim_mouse_position(position, px(10.0), px(15.0)),
+        (3, 3)
     );
 }
 
@@ -518,6 +533,7 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
     assert_eq!(layers[0].2.col, 4);
     assert_eq!(layers[1].2.row, 5);
     assert_eq!(layers[1].2.col, 6);
+    assert!(layers[1].2.mouse_enabled);
 
     app.apply_nvim_event(NvimEvent::WinHide { grid: 3 });
     app.apply_nvim_event(NvimEvent::Flush);

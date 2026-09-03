@@ -72,6 +72,28 @@ pub(super) fn resize_request_frame(id: u64, width: u32, height: u32) -> Value {
     ])
 }
 
+pub(super) fn mouse_event_notification_frame(
+    button: String,
+    action: String,
+    modifier: String,
+    grid: u64,
+    row: u64,
+    col: u64,
+) -> Value {
+    Value::Array(vec![
+        Value::from(2),
+        Value::from("nvim_input_mouse"),
+        Value::Array(vec![
+            Value::from(button),
+            Value::from(action),
+            Value::from(modifier),
+            Value::from(grid),
+            Value::from(row),
+            Value::from(col),
+        ]),
+    ])
+}
+
 pub(super) fn parse_hl_attr_define(args: &[Value]) -> Result<NvimEvent, String> {
     let id = args[0]
         .as_u64()

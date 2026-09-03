@@ -345,7 +345,11 @@ impl Render for NvimGpui {
             .overflow_hidden()
             .font_family(gui_font.family.clone())
             .text_size(px(gui_font.size))
-            .line_height(line_height);
+            .line_height(line_height)
+            .on_any_mouse_down(cx.listener(Self::on_mouse_down))
+            .capture_any_mouse_up(cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if grid_ready {
             // A grid and its Kitty placements must share one compositing
@@ -476,5 +480,167 @@ impl Render for NvimGpui {
         }
 
         root.child(editor)
+    }
+}
+
+impl NvimGpui {
+    pub(super) fn mouse_option_allows_current_mode(&self) -> bool {
+        let mode = self.nvim_mode.chars().next().unwrap_or('n');
+        let required = match mode {
+            'i' | 'R' | 's' | 'S' => 'i',
+            'v' | 'V' | '\u{16}' => 'v',
+            'c' => 'c',
+            'r' => 'r',
+            // Terminal-mode mouse input is enabled by `a`, which is the
+            // useful GUI behavior even though the option predates terminal
+            // mode as a separate mode code.
+            't' => return self.mouse_option.contains('a'),
+            _ => 'n',
+        };
+        self.mouse_option.contains('a') || self.mouse_option.contains(required)
+    }
+
+    pub(super) fn nvim_mouse_position(
+        position: gpui::Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> (u64, u64) {
+        let editor_y = f32::from(position.y)
+            - if themed_titlebar_enabled() {
+                THEMED_TITLEBAR_HEIGHT
+            } else {
+                0.0
+            };
+        (
+            (editor_y / f32::from(line_height)).max(0.0).floor() as u64,
+            (f32::from(position.x) / f32::from(cell_width))
+                .max(0.0)
+                .floor() as u64,
+        )
+    }
+
+    fn send_mouse(
+        &mut self,
+        button: &str,
+        action: &str,
+        modifiers: gpui::Modifiers,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+    ) {
+        if !self.mouse_enabled {
+            return;
+        }
+        let gui_font = self.current_grid_font(window);
+        let cell_width = gui_font.cell_width(window);
+        let line_height = gui_font.line_height(window, self.linespace);
+        let (row, col) = Self::nvim_mouse_position(position, cell_width, line_height);
+        let modifier = input::nvim_mouse_modifiers(modifiers);
+        if let Some(nvim) = self.nvim.as_ref() {
+            if let Err(error) = nvim.send_mouse(button, action, modifier, 0, row, col) {
+                self.rpc_status = format!("rpc mouse error: {error}");
+            }
+        }
+    }
+
+    pub(super) fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Some(focus_handle) = self.focus_handle.as_ref() {
+            window.focus(focus_handle);
+        }
+        self.send_mouse(
+            input::nvim_mouse_button(event.button),
+            "press",
+            event.modifiers,
+            event.position,
+            window,
+        );
+        window.prevent_default();
+    }
+
+    pub(super) fn on_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.send_mouse(
+            input::nvim_mouse_button(event.button),
+            "release",
+            event.modifiers,
+            event.position,
+            window,
+        );
+        window.prevent_default();
+    }
+
+    pub(super) fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let (button, action) = event
+            .pressed_button
+            .map(|button| (input::nvim_mouse_button(button), "drag"))
+            .unwrap_or(("move", "move"));
+        self.send_mouse(button, action, event.modifiers, event.position, window);
+        window.prevent_default();
+    }
+
+    pub(super) fn on_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if !self.mouse_enabled {
+            return;
+        }
+
+        let gui_font = self.current_grid_font(window);
+        let cell_width = gui_font.cell_width(window);
+        let line_height = gui_font.line_height(window, self.linespace);
+        let mut delta = input::scroll_delta_to_lines(event.delta, line_height);
+
+        // Shift-wheel is conventionally horizontal. Windows' GPUI backend
+        // already performs this conversion, while macOS/Linux may expose
+        // the original vertical axis, so keep the behavior consistent.
+        if event.modifiers.shift && delta.x.abs() < f32::EPSILON {
+            delta.x = delta.y;
+            delta.y = 0.0;
+        }
+        self.scroll_remainder.x += delta.x;
+        self.scroll_remainder.y += delta.y;
+
+        let x_steps = self.scroll_remainder.x.trunc() as i32;
+        let y_steps = self.scroll_remainder.y.trunc() as i32;
+        self.scroll_remainder.x -= x_steps as f32;
+        self.scroll_remainder.y -= y_steps as f32;
+        let (row, col) = Self::nvim_mouse_position(event.position, cell_width, line_height);
+        let modifier = input::nvim_mouse_modifiers(event.modifiers);
+
+        if let Some(nvim) = self.nvim.as_ref() {
+            for _ in 0..x_steps.unsigned_abs() {
+                let action = if x_steps > 0 { "right" } else { "left" };
+                if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
+                {
+                    self.rpc_status = format!("rpc mouse error: {error}");
+                    break;
+                }
+            }
+            for _ in 0..y_steps.unsigned_abs() {
+                let action = if y_steps > 0 { "up" } else { "down" };
+                if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
+                {
+                    self.rpc_status = format!("rpc mouse error: {error}");
+                    break;
+                }
+            }
+        }
+        window.prevent_default();
     }
 }

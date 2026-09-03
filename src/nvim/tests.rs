@@ -4,7 +4,8 @@ use super::environment::{
     NVIM_GPUI_ENV_VALUE,
 };
 use super::protocol::{
-    resize_request_frame, term_event_notification_frame, ui_attach_params, ui_attach_params_for,
+    mouse_event_notification_frame, resize_request_frame, term_event_notification_frame,
+    ui_attach_params, ui_attach_params_for,
 };
 use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
@@ -105,6 +106,60 @@ fn embedded_nvim_reports_protocol_metadata_before_ui_events() {
 }
 
 #[test]
+fn embedded_nvim_reports_and_accepts_mouse_input() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let events = process.events();
+
+    let mut saw_mouse_option = false;
+    for _ in 0..200 {
+        while let Ok(event) = events.try_recv() {
+            if matches!(
+                event,
+                NvimEvent::OptionSet { ref name, ref value }
+                    if name == "mouse" && value == "nvi"
+            ) {
+                saw_mouse_option = true;
+            }
+        }
+        if saw_mouse_option {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(saw_mouse_option, "startup mouse option should be reported");
+    while events.try_recv().is_ok() {}
+
+    process
+        .send_input(":call setline(1, 'abcdef')\n")
+        .expect("Neovim command should queue");
+    process
+        .send_mouse("left", "press", "", 0, 0, 4)
+        .expect("Neovim mouse press should queue");
+    process
+        .send_mouse("left", "release", "", 0, 0, 4)
+        .expect("Neovim mouse release should queue");
+
+    let mut saw_cursor_move = false;
+    for _ in 0..200 {
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, NvimEvent::GridCursorGoto { row: 0, col: 4, .. }) {
+                saw_cursor_move = true;
+            }
+        }
+        if saw_cursor_move {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(
+        saw_cursor_move,
+        "nvim_input_mouse should move the buffer cursor"
+    );
+}
+
+#[test]
 fn embedded_nvim_forwards_nvim_ui_send_event() {
     let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
         .expect("embedded Neovim should start");
@@ -168,6 +223,27 @@ fn resize_request_frame_uses_the_nvim_ui_resize_method() {
     assert_eq!(frame[2].as_str(), Some("nvim_ui_try_resize"));
     assert_eq!(frame[3][0].as_u64(), Some(120));
     assert_eq!(frame[3][1].as_u64(), Some(40));
+}
+
+#[test]
+fn mouse_event_notification_uses_nvim_input_mouse() {
+    let frame = mouse_event_notification_frame(
+        "left".to_owned(),
+        "press".to_owned(),
+        "CS".to_owned(),
+        0,
+        12,
+        34,
+    );
+
+    assert_eq!(frame[0].as_u64(), Some(2));
+    assert_eq!(frame[1].as_str(), Some("nvim_input_mouse"));
+    assert_eq!(frame[2][0].as_str(), Some("left"));
+    assert_eq!(frame[2][1].as_str(), Some("press"));
+    assert_eq!(frame[2][2].as_str(), Some("CS"));
+    assert_eq!(frame[2][3].as_u64(), Some(0));
+    assert_eq!(frame[2][4].as_u64(), Some(12));
+    assert_eq!(frame[2][5].as_u64(), Some(34));
 }
 
 #[test]
@@ -301,6 +377,26 @@ fn redraw_option_set_becomes_a_typed_event() {
             name: "guifont".to_owned(),
             value: "Monaco:h12".to_owned(),
         }
+    );
+}
+
+#[test]
+fn redraw_mouse_state_becomes_a_typed_event() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![
+        Value::Array(vec![Value::from("mouse_on")]),
+        Value::Array(vec![Value::from("mouse_off")]),
+    ]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("mouse_on should be available"),
+        NvimEvent::MouseEnabled(true)
+    );
+    assert_eq!(
+        receiver.try_recv().expect("mouse_off should be available"),
+        NvimEvent::MouseEnabled(false)
     );
 }
 

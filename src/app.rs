@@ -14,8 +14,9 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
     Context, ElementInputHandler, Entity, FocusHandle, Focusable, Image, KeyDownEvent, MouseButton,
-    Pixels, Render, SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowHandle, WindowKind, WindowOptions,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, SharedString,
+    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowHandle,
+    WindowKind, WindowOptions,
 };
 use std::{
     borrow::Cow,
@@ -190,6 +191,9 @@ struct GridPlacement {
     /// `z_index` is retained for the protocol's same-order/group semantics.
     z_index: i64,
     compindex: i64,
+    /// Whether Neovim allows this floating grid to receive mouse input.
+    /// Neovim uses this when the client sends `nvim_input_mouse` with grid 0.
+    mouse_enabled: bool,
     visible: bool,
     viewport: Option<GridViewport>,
     viewport_margins: Option<GridViewportMargins>,
@@ -248,6 +252,7 @@ impl Default for GridPlacement {
             height: 0,
             z_index: 0,
             compindex: -1,
+            mouse_enabled: true,
             visible: false,
             viewport: None,
             viewport_margins: None,
@@ -274,6 +279,10 @@ struct NvimGpui {
     window_title: String,
     window_icon: String,
     ui_options: HashMap<String, String>,
+    mouse_option: String,
+    mouse_enabled: bool,
+    nvim_mode: String,
+    scroll_remainder: gpui::Point<f32>,
     linespace: f32,
     cursor_style_enabled: bool,
     cursor_modes: Vec<grid::CursorModeInfo>,
@@ -333,6 +342,10 @@ impl Default for NvimGpui {
             window_title: DEFAULT_WINDOW_TITLE.to_owned(),
             window_icon: "nvim-gpui".to_owned(),
             ui_options: HashMap::new(),
+            mouse_option: "nvi".to_owned(),
+            mouse_enabled: true,
+            nvim_mode: "n".to_owned(),
+            scroll_remainder: point(0.0, 0.0),
             linespace: 0.0,
             cursor_style_enabled: false,
             cursor_modes: Vec::new(),

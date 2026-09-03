@@ -29,7 +29,9 @@ mod tests;
 
 use environment::apply_nvim_environment;
 pub use environment::configured_nvim_command;
-use protocol::{resize_request_frame, term_event_notification_frame};
+use protocol::{
+    mouse_event_notification_frame, resize_request_frame, term_event_notification_frame,
+};
 use session::run_session;
 use transport::{connect_remote, write_shared_message, RemoteConnection, SharedWriter};
 use types::NvimCommand;
@@ -217,6 +219,27 @@ impl NvimProcess {
             .map_err(|error| format!("failed to queue Neovim input: {error}"))
     }
 
+    pub fn send_mouse(
+        &self,
+        button: impl Into<String>,
+        action: impl Into<String>,
+        modifier: impl Into<String>,
+        grid: u64,
+        row: u64,
+        col: u64,
+    ) -> Result<(), String> {
+        self.commands
+            .try_send(NvimCommand::Mouse {
+                button: button.into(),
+                action: action.into(),
+                modifier: modifier.into(),
+                grid,
+                row,
+                col,
+            })
+            .map_err(|error| format!("failed to queue Neovim mouse input: {error}"))
+    }
+
     pub fn send_resize(&self, width: u32, height: u32) -> Result<(), String> {
         self.commands
             .try_send(NvimCommand::Resize { width, height })
@@ -295,6 +318,14 @@ fn run_command_writer(
                 Value::from("nvim_input"),
                 Value::Array(vec![Value::from(input)]),
             ]),
+            NvimCommand::Mouse {
+                button,
+                action,
+                modifier,
+                grid,
+                row,
+                col,
+            } => mouse_event_notification_frame(button, action, modifier, grid, row, col),
             NvimCommand::Resize { width, height } => {
                 let message = resize_request_frame(request_id, width, height);
                 request_id += 1;

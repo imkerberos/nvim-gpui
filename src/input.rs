@@ -4,7 +4,7 @@
 //! Rime remains an optional future backend; the first active text backend is
 //! the system IME exposed by GPUI's `EntityInputHandler`.
 
-use gpui::Keystroke;
+use gpui::{Keystroke, Modifiers, MouseButton, Pixels, Point, ScrollDelta};
 use std::ops::Range;
 
 pub use gpui::{EntityInputHandler, UTF16Selection};
@@ -198,6 +198,49 @@ pub fn key_to_nvim_input(keystroke: &Keystroke) -> String {
     notation
 }
 
+/// Return the button name expected by `nvim_input_mouse()`.
+pub fn nvim_mouse_button(button: MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "left",
+        MouseButton::Right => "right",
+        MouseButton::Middle => "middle",
+        MouseButton::Navigate(gpui::NavigationDirection::Back) => "x1",
+        MouseButton::Navigate(gpui::NavigationDirection::Forward) => "x2",
+    }
+}
+
+/// Convert GPUI modifiers to Neovim's mouse modifier notation.
+pub fn nvim_mouse_modifiers(modifiers: Modifiers) -> String {
+    let mut result = String::new();
+    if modifiers.control {
+        result.push('C');
+    }
+    if modifiers.alt {
+        result.push('A');
+    }
+    if modifiers.shift {
+        result.push('S');
+    }
+    if modifiers.platform {
+        result.push('D');
+    }
+    result
+}
+
+/// Express a platform scroll event in terminal-line units.
+///
+/// GPUI keeps the sign supplied by the platform backend: positive `y` is
+/// wheel-up/content-up for the Linux and Windows backends, and AppKit's
+/// native sign on macOS. In particular, do not invert this on macOS: that is
+/// what preserves the user's natural-scrolling preference.
+pub fn scroll_delta_to_lines(delta: ScrollDelta, line_height: Pixels) -> Point<f32> {
+    let delta = delta.pixel_delta(line_height);
+    Point {
+        x: f32::from(delta.x) / f32::from(line_height),
+        y: f32::from(delta.y) / f32::from(line_height),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemImeState {
     text: String,
@@ -334,10 +377,11 @@ fn utf16_to_utf8_offset(text: &str, utf16_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        context_for_nvim_mode, key_to_nvim_input, should_route_key_to_neovim, InputContext,
-        InputRouter, InputRouterConfig, InputTarget, SystemImeState,
+        context_for_nvim_mode, key_to_nvim_input, nvim_mouse_button, nvim_mouse_modifiers,
+        scroll_delta_to_lines, should_route_key_to_neovim, InputContext, InputRouter,
+        InputRouterConfig, InputTarget, SystemImeState,
     };
-    use gpui::Keystroke;
+    use gpui::{point, px, Keystroke, Modifiers, MouseButton, ScrollDelta};
 
     #[test]
     fn normal_mode_always_routes_keys_to_neovim() {
@@ -418,6 +462,37 @@ mod tests {
 
         let control = Keystroke::parse("ctrl-w").expect("control key should parse");
         assert_eq!(key_to_nvim_input(&control), "<C-w>");
+    }
+
+    #[test]
+    fn nvim_mouse_input_uses_button_and_modifier_notation() {
+        assert_eq!(nvim_mouse_button(MouseButton::Left), "left");
+        assert_eq!(
+            nvim_mouse_button(MouseButton::Navigate(gpui::NavigationDirection::Forward)),
+            "x2"
+        );
+        assert_eq!(
+            nvim_mouse_modifiers(Modifiers {
+                control: true,
+                alt: true,
+                shift: true,
+                platform: true,
+                function: false,
+            }),
+            "CASD"
+        );
+    }
+
+    #[test]
+    fn scroll_delta_is_converted_without_changing_its_native_sign() {
+        assert_eq!(
+            scroll_delta_to_lines(ScrollDelta::Lines(point(2.0, -3.0)), px(20.0)),
+            point(2.0, -3.0)
+        );
+        assert_eq!(
+            scroll_delta_to_lines(ScrollDelta::Pixels(point(px(10.0), px(-40.0))), px(20.0)),
+            point(0.5, -2.0)
+        );
     }
 
     #[test]

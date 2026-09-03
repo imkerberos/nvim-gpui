@@ -162,8 +162,8 @@ Unknown arguments are passed through to embedded Neovim.
 
 ## Current limitations
 
-The project is still being developed. Mouse input, reconnecting after a lost
-session, and some advanced plugin interfaces are not yet complete.
+The project is still being developed. Reconnecting after a lost session and
+some advanced plugin interfaces are not yet complete.
 
 ## License
 

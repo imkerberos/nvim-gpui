@@ -4,8 +4,22 @@ use super::{NvimCapabilities, NvimVersion};
 
 pub(super) enum NvimCommand {
     Input(String),
-    Resize { width: u32, height: u32 },
-    TermEvent { event: String, value: String },
+    Mouse {
+        button: String,
+        action: String,
+        modifier: String,
+        grid: u64,
+        row: u64,
+        col: u64,
+    },
+    Resize {
+        width: u32,
+        height: u32,
+    },
+    TermEvent {
+        event: String,
+        value: String,
+    },
     Shutdown,
 }
 
@@ -121,6 +135,7 @@ pub enum NvimEvent {
         name: String,
         value: String,
     },
+    MouseEnabled(bool),
     SetTitle {
         title: String,
     },

@@ -329,6 +329,7 @@ impl NvimGpui {
                 placement.height = height;
                 placement.z_index = 0;
                 placement.compindex = -1;
+                placement.mouse_enabled = true;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
             }
@@ -339,7 +340,7 @@ impl NvimGpui {
                 anchor_grid: _,
                 anchor_row: _,
                 anchor_col: _,
-                mouse_enabled: _,
+                mouse_enabled,
                 zindex,
                 compindex,
                 screen_row,
@@ -350,6 +351,7 @@ impl NvimGpui {
                 placement.col = screen_col;
                 placement.z_index = zindex;
                 placement.compindex = compindex;
+                placement.mouse_enabled = mouse_enabled;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
             }
@@ -438,6 +440,10 @@ impl NvimGpui {
             NvimEvent::OptionSet { name, value } => {
                 self.ui_options.insert(name.clone(), value.clone());
                 match name.as_str() {
+                    "mouse" => {
+                        self.mouse_option = value;
+                        self.mouse_enabled = self.mouse_option_allows_current_mode();
+                    }
                     "guifont" => {
                         self.guifont = Some(value);
                         self.resolved_grid_font = None;
@@ -483,10 +489,13 @@ impl NvimGpui {
                     self.system_ime.clear();
                 }
                 self.state.mode = mode.to_ascii_uppercase();
+                self.nvim_mode = mode;
+                self.mouse_enabled = self.mouse_option_allows_current_mode();
                 self.cursor_mode_index = mode_idx as usize;
                 self.cursor_blink_started_at = Instant::now();
             }
             NvimEvent::UiSend { data } => self.apply_ui_send(&data),
+            NvimEvent::MouseEnabled(enabled) => self.mouse_enabled = enabled,
             NvimEvent::Flush => {
                 self.commit_pending_grid();
                 self.commit_pending_theme();
