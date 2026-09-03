@@ -26,16 +26,12 @@ pub(crate) fn run(options: CliOptions) {
     Application::new()
         .with_assets(AppAssets)
         .run(move |cx: &mut App| {
-            let nerd_font_registered = if ENABLE_BUNDLED_NERD_FONT {
-                match platform::register_bundled_fonts(cx) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        eprintln!("[font] {error}");
-                        false
-                    }
+            let nerd_font_registered = match platform::register_bundled_fonts(cx) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("[font] {error}");
+                    false
                 }
-            } else {
-                false
             };
             if let Err(error) = platform::install_dock_icon() {
                 eprintln!("[platform] {error}");

@@ -617,6 +617,7 @@ impl NvimGpui {
 
     pub(super) fn commit_pending_grid(&mut self) {
         if let Some(grid) = self.pending_grid.take() {
+            self.start_viewport_animation(1, Rc::clone(&self.grid), Rc::clone(&grid));
             let previous_cursor = self.grid.cursor_visual_position();
             let next_cursor = grid.cursor_visual_position();
             if previous_cursor != next_cursor {
@@ -638,6 +639,9 @@ impl NvimGpui {
 
         for (grid, model) in std::mem::take(&mut self.pending_other_grids) {
             if !self.pending_destroyed_grids.contains(&grid) {
+                if let Some(previous) = self.other_grids.get(&grid).cloned() {
+                    self.start_viewport_animation(grid, previous, Rc::clone(&model));
+                }
                 self.other_grids.insert(grid, model);
             }
         }
@@ -651,11 +655,64 @@ impl NvimGpui {
         for grid in std::mem::take(&mut self.pending_destroyed_grids) {
             self.other_grids.remove(&grid);
             self.grid_placements.remove(&grid);
+            self.viewport_animations.remove(&grid);
         }
 
         if let Some(grid) = self.pending_cursor_grid.take() {
             self.cursor_grid = grid;
         }
+    }
+
+    fn start_viewport_animation(
+        &mut self,
+        grid: u64,
+        previous_grid: Rc<grid::GridModel>,
+        next_grid: Rc<grid::GridModel>,
+    ) {
+        let Some(viewport) = self
+            .pending_grid_placements
+            .get(&grid)
+            .and_then(|placement| placement.viewport)
+        else {
+            return;
+        };
+        let Some(previous_placement) = self.grid_placements.get(&grid).copied() else {
+            return;
+        };
+        let Some(next_placement) = self.pending_grid_placements.get(&grid).copied() else {
+            return;
+        };
+
+        if previous_placement.viewport.is_none()
+            || previous_placement.viewport_margins != next_placement.viewport_margins
+            || previous_placement.row != next_placement.row
+            || previous_placement.col != next_placement.col
+            || previous_placement.width != next_placement.width
+            || previous_placement.height != next_placement.height
+            || previous_placement.z_index != next_placement.z_index
+            || previous_placement.compindex != next_placement.compindex
+            || previous_placement.visible != next_placement.visible
+        {
+            self.viewport_animations.remove(&grid);
+            return;
+        }
+
+        if viewport.scroll_delta == 0
+            || previous_grid.width() != next_grid.width()
+            || previous_grid.height() != next_grid.height()
+        {
+            self.viewport_animations.remove(&grid);
+            return;
+        }
+
+        self.viewport_animations.insert(
+            grid,
+            ViewportAnimation {
+                previous_grid,
+                scroll_delta: viewport.scroll_delta,
+                started_at: Instant::now(),
+            },
+        );
     }
 
     pub(super) fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {

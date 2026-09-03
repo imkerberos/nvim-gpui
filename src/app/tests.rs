@@ -594,6 +594,94 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
 }
 
 #[test]
+fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 2,
+        width: 8,
+        height: 3,
+    });
+    app.apply_nvim_event(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("old", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event(NvimEvent::WinPos {
+        grid: 2,
+        win: Vec::new(),
+        row: 0,
+        col: 0,
+        width: 8,
+        height: 3,
+    });
+    app.apply_nvim_event(NvimEvent::WinViewportMargins {
+        grid: 2,
+        win: Vec::new(),
+        top: 1,
+        bottom: 1,
+        left: 0,
+        right: 0,
+    });
+    app.apply_nvim_event(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 0,
+        botline: 1,
+        curline: 0,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 0,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    app.apply_nvim_event(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("new", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 1,
+        botline: 2,
+        curline: 1,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 1,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    let animation = app
+        .viewport_animations
+        .get(&2)
+        .expect("viewport scroll should start an animation");
+    assert_eq!(animation.scroll_delta, 1);
+    assert_eq!(animation.previous_grid.rows()[0].cells()[0].text, "old");
+    assert_eq!(app.other_grids[&2].rows()[0].cells()[0].text, "new");
+    assert_eq!(app.grid_placements[&2].viewport_margins.unwrap().top, 1);
+}
+
+#[test]
+fn viewport_margins_define_the_inner_render_area() {
+    let placement = GridPlacement {
+        viewport_margins: Some(GridViewportMargins {
+            top: 1,
+            bottom: 2,
+            left: 3,
+            right: 4,
+        }),
+        ..Default::default()
+    };
+
+    assert_eq!(NvimGpui::viewport_rect(placement, 100, 40), (3, 1, 93, 37));
+}
+
+#[test]
 fn message_grid_position_makes_native_cmdline_grid_visible() {
     let mut app = NvimGpui::default();
 

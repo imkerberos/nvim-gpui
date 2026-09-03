@@ -2,7 +2,7 @@ use super::{
     blink_visible, cursor_bounds, cursor_colors, cursor_geometry, highlight_colors, jelly_progress,
     CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
     GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, VisualCell, VisualCellBuilder,
-    VisualCellKind, COMMENT_HIGHLIGHT, DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT, LONG_TEXT_CHAR_COUNT,
+    VisualCellKind, DEFAULT_HIGHLIGHT,
 };
 use gpui::{point, px, size, Bounds};
 use std::time::{Duration, Instant};
@@ -66,7 +66,7 @@ fn nerd_symbol_and_following_space_share_a_two_cell_visual_span() {
 fn nerd_symbol_does_not_consume_a_differently_highlighted_space() {
     let row = GridRow::new(vec![
         GridCell::text("\u{f0239}", DEFAULT_HIGHLIGHT),
-        GridCell::text(" ", COMMENT_HIGHLIGHT),
+        GridCell::text(" ", HighlightId(1)),
     ]);
 
     let cells = VisualCellBuilder::new(true).build_row(0, &row);
@@ -113,7 +113,7 @@ fn adjacent_cells_are_never_combined_for_text_layout() {
     let row = GridRow::new(vec![
         GridCell::text("a", DEFAULT_HIGHLIGHT),
         GridCell::text("c", DEFAULT_HIGHLIGHT),
-        GridCell::text("d", COMMENT_HIGHLIGHT),
+        GridCell::text("d", HighlightId(1)),
     ]);
 
     let cells = VisualCellBuilder::new(false).build_row(0, &row);
@@ -512,44 +512,12 @@ fn cursor_blink_respects_wait_on_and_off_intervals() {
 #[test]
 fn keyword_highlight_is_distinct_from_default() {
     let row = GridRow::new(vec![
-        GridCell::text("fn", KEYWORD_HIGHLIGHT),
+        GridCell::text("fn", HighlightId(2)),
         GridCell::text(" main", DEFAULT_HIGHLIGHT),
     ]);
 
     let cells = VisualCellBuilder::new(false).build_row(0, &row);
 
-    assert_eq!(cells[0].highlight, KEYWORD_HIGHLIGHT);
+    assert_eq!(cells[0].highlight, HighlightId(2));
     assert_eq!(cells[1].highlight, DEFAULT_HIGHLIGHT);
-}
-
-#[test]
-fn demo_contains_2048_character_ascii_and_unicode_rows() {
-    let model = super::demo_grid();
-    let ascii_row = &model.rows()[5];
-    let unicode_row = &model.rows()[6];
-    let ascii_prefix_len = "Long ASCII (2048 chars): ".chars().count();
-    let unicode_prefix_len = "Long Unicode (2048 chars): ".chars().count();
-
-    let ascii_char_count = ascii_row
-        .cells()
-        .iter()
-        .filter(|cell| cell.kind != CellKind::Blank)
-        .map(|cell| cell.text.chars().count())
-        .sum::<usize>();
-    let unicode_char_count = unicode_row
-        .cells()
-        .iter()
-        .filter(|cell| cell.kind != CellKind::Blank)
-        .map(|cell| cell.text.chars().count())
-        .sum::<usize>();
-
-    assert_eq!(ascii_char_count, ascii_prefix_len + LONG_TEXT_CHAR_COUNT);
-    assert_eq!(
-        unicode_char_count,
-        unicode_prefix_len + LONG_TEXT_CHAR_COUNT
-    );
-    assert!(unicode_row
-        .cells()
-        .iter()
-        .any(|cell| cell.kind == CellKind::WideContinuation));
 }

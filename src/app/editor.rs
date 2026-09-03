@@ -129,6 +129,148 @@ impl EntityInputHandler for NvimGpui {
     }
 }
 
+#[derive(Clone, Copy)]
+struct GridRenderOptions<'a> {
+    placement: GridPlacement,
+    width: usize,
+    height: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+    gui_font: &'a GuiFontSpec,
+    gui_wide_font: &'a GuiFontSpec,
+    cursor_mode: grid::CursorModeInfo,
+    cursor_blink_started_at: Instant,
+    cursor_animation: Option<grid::CursorAnimation>,
+    cursor_visible: bool,
+    viewport_offset: Pixels,
+}
+
+impl NvimGpui {
+    fn grid_element(
+        &self,
+        model: Rc<grid::GridModel>,
+        options: GridRenderOptions<'_>,
+    ) -> GridElement {
+        let mut element = GridElement::with_shared_model(model)
+            .with_metrics(options.cell_width, options.line_height)
+            .with_default_background(
+                (options.placement.compindex >= 0)
+                    .then_some(self.theme.normal_float_background)
+                    .flatten(),
+            )
+            .with_wide_font(
+                options.gui_wide_font.family.clone(),
+                px(options.gui_wide_font.size),
+            )
+            .with_nerd_fallback_font(
+                self.nerd_font_family.clone().unwrap_or_default(),
+                px(options.gui_font.size),
+            )
+            .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+            .with_shaping_cache(Rc::clone(&self.shaping_cache))
+            .with_nerd_fallback_mode(self.settings.fallback_mode)
+            .with_cursor_animation(options.cursor_animation)
+            .with_cursor_visible(options.cursor_visible)
+            .with_cursor_mode(if options.cursor_visible {
+                options.cursor_mode
+            } else {
+                grid::CursorModeInfo::default()
+            })
+            .with_cursor_blink_started_at(options.cursor_blink_started_at)
+            .with_viewport_offset(point(px(0.0), options.viewport_offset))
+            .with_nerd_font_mode(true);
+
+        if let Some(margins) = options.placement.viewport_margins {
+            element = element.with_viewport_margins(
+                margins.top,
+                margins.bottom,
+                margins.left,
+                margins.right,
+            );
+        }
+
+        element
+    }
+
+    fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::Div {
+        div()
+            .absolute()
+            .left(px(0.0))
+            .top(px(0.0))
+            .w(px(options.width as f32 * f32::from(options.cell_width)))
+            .h(px(options.height as f32 * f32::from(options.line_height)))
+            .child(element)
+    }
+
+    pub(super) fn viewport_rect(
+        placement: GridPlacement,
+        width: usize,
+        height: usize,
+    ) -> (usize, usize, usize, usize) {
+        let margins = placement
+            .viewport_margins
+            .map(|margins| {
+                (
+                    usize::try_from(margins.top).unwrap_or(usize::MAX),
+                    usize::try_from(margins.bottom).unwrap_or(usize::MAX),
+                    usize::try_from(margins.left).unwrap_or(usize::MAX),
+                    usize::try_from(margins.right).unwrap_or(usize::MAX),
+                )
+            })
+            .unwrap_or_default();
+        let top = margins.0.min(height);
+        let bottom = margins.1.min(height.saturating_sub(top));
+        let left = margins.2.min(width);
+        let right = margins.3.min(width.saturating_sub(left));
+        (
+            left,
+            top,
+            width.saturating_sub(left + right),
+            height.saturating_sub(top + bottom),
+        )
+    }
+
+    fn image_surface(
+        &self,
+        grid_id: u64,
+        image_layers: &[ImageLayer],
+        options: GridRenderOptions<'_>,
+    ) -> gpui::Div {
+        let (left, top, viewport_width, viewport_height) =
+            Self::viewport_rect(options.placement, options.width, options.height);
+        let mut surface = div()
+            .absolute()
+            .left(px(left as f32 * f32::from(options.cell_width)))
+            .top(px(top as f32 * f32::from(options.line_height)))
+            .w(px(viewport_width as f32 * f32::from(options.cell_width)))
+            .h(px(viewport_height as f32 * f32::from(options.line_height)))
+            .overflow_hidden();
+
+        for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
+            let Some(source) = self.image_sources.get(&image_layer.image).cloned() else {
+                continue;
+            };
+            surface = surface.child(
+                img(source)
+                    .absolute()
+                    .left(px(
+                        (image_layer.column as f32 - left as f32) * f32::from(options.cell_width)
+                    ))
+                    .top(px(
+                        (image_layer.row as f32 - top as f32) * f32::from(options.line_height)
+                    ))
+                    .w(px(
+                        image_layer.columns as f32 * f32::from(options.cell_width)
+                    ))
+                    .h(px(image_layer.rows as f32 * f32::from(options.line_height)))
+                    .object_fit(gpui::ObjectFit::Fill),
+            );
+        }
+
+        surface
+    }
+}
+
 impl Render for NvimGpui {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_window_title(&self.window_title);
@@ -137,7 +279,6 @@ impl Render for NvimGpui {
         let gui_font = self.current_grid_font(window);
         let gui_wide_font = self.current_grid_wide_font(window);
         let line_height = gui_font.line_height(window, self.linespace);
-        let shaping_cache = Rc::clone(&self.shaping_cache);
         let cursor_mode = self.current_cursor_mode();
         let cursor_blink_started_at = self.cursor_blink_started_at;
         let theme_background = self.theme_background();
@@ -167,6 +308,10 @@ impl Render for NvimGpui {
 
         let cell_width = gui_font.cell_width(window);
         let grid_ready = self.nvim_grid_ready;
+        let now = Instant::now();
+        self.viewport_animations
+            .retain(|_, animation| animation.is_active(now));
+        let viewport_animations = self.viewport_animations.clone();
         let mut editor = div()
             .flex_1()
             .relative()
@@ -180,72 +325,95 @@ impl Render for NvimGpui {
             // layer. Keeping images as siblings of all grids lets a later
             // floating grid paint over an image that belongs to an earlier
             // grid, which is not how Neovim's multigrid compositor behaves.
+            let main_placement = self.grid_placements.get(&1).copied().unwrap_or_default();
+            let main_width = self.grid.width();
+            let main_height = self.grid.height();
+            let main_animation = viewport_animations.get(&1);
+            let (old_offset, current_offset) = main_animation
+                .map(|animation| animation.offsets(now, main_height, line_height))
+                .unwrap_or((px(0.0), px(0.0)));
+            let main_options = GridRenderOptions {
+                placement: main_placement,
+                width: main_width,
+                height: main_height,
+                cell_width,
+                line_height,
+                gui_font: &gui_font,
+                gui_wide_font: &gui_wide_font,
+                cursor_mode,
+                cursor_blink_started_at,
+                cursor_animation: self.cursor_animation,
+                cursor_visible: self.cursor_grid == 1,
+                viewport_offset: current_offset,
+            };
             let mut main_layer = div()
                 .absolute()
                 .left(px(0.0))
                 .top(px(0.0))
                 .w_full()
                 .h_full()
-                .overflow_hidden()
-                .child(
-                    GridElement::with_shared_model(Rc::clone(&self.grid))
-                        .with_metrics(cell_width, line_height)
-                        .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
-                        .with_nerd_fallback_font(
-                            self.nerd_font_family.clone().unwrap_or_default(),
-                            px(gui_font.size),
-                        )
-                        .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-                        .with_shaping_cache(Rc::clone(&shaping_cache))
-                        .with_nerd_fallback_mode(self.settings.fallback_mode)
-                        .with_cursor_animation(self.cursor_animation)
-                        .with_cursor_visible(self.cursor_grid == 1)
-                        .with_cursor_mode(if self.cursor_grid == 1 {
-                            cursor_mode
-                        } else {
-                            grid::CursorModeInfo::default()
-                        })
-                        .with_cursor_blink_started_at(cursor_blink_started_at)
-                        .with_nerd_font_mode(true)
-                        .with_input_handler(move |bounds, window, cx| {
-                            let focus_handle = {
-                                let view = entity.read(cx);
-                                if view.input_router.target() == InputTarget::SystemIme {
-                                    view.focus_handle.clone()
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(focus_handle) = focus_handle {
-                                window.handle_input(
-                                    &focus_handle,
-                                    ElementInputHandler::new(bounds, entity.clone()),
-                                    cx,
-                                );
-                            }
-                        }),
-                );
+                .overflow_hidden();
+
+            if let Some(animation) = main_animation {
+                let old_options = GridRenderOptions {
+                    cursor_animation: None,
+                    cursor_visible: false,
+                    viewport_offset: old_offset,
+                    ..main_options
+                };
+                main_layer = main_layer.child(Self::grid_surface(
+                    self.grid_element(Rc::clone(&animation.previous_grid), old_options),
+                    old_options,
+                ));
+            }
+
+            let mut main_element = self.grid_element(Rc::clone(&self.grid), main_options);
+            main_element = main_element.with_input_handler(move |bounds, window, cx| {
+                let focus_handle = {
+                    let view = entity.read(cx);
+                    if view.input_router.target() == InputTarget::SystemIme {
+                        view.focus_handle.clone()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(focus_handle) = focus_handle {
+                    window.handle_input(
+                        &focus_handle,
+                        ElementInputHandler::new(bounds, entity.clone()),
+                        cx,
+                    );
+                }
+            });
+            main_layer = main_layer.child(Self::grid_surface(main_element, main_options));
 
             let image_layers = self.visible_image_layers();
-            for layer in image_layers.iter().filter(|layer| layer.grid == 1) {
-                let Some(source) = self.image_sources.get(&layer.image).cloned() else {
-                    continue;
-                };
-                main_layer = main_layer.child(
-                    img(source)
-                        .absolute()
-                        .left(px(layer.column as f32 * f32::from(cell_width)))
-                        .top(px(layer.row as f32 * f32::from(line_height)))
-                        .w(px(layer.columns as f32 * f32::from(cell_width)))
-                        .h(px(layer.rows as f32 * f32::from(line_height)))
-                        .object_fit(gpui::ObjectFit::Fill),
-                );
-            }
+            main_layer = main_layer.child(self.image_surface(1, &image_layers, main_options));
             editor = editor.child(main_layer);
 
             for (grid_id, model, placement) in self.visible_grid_layers() {
                 let width = placement.width.max(model.width() as u64);
                 let height = placement.height.max(model.height() as u64);
+                let model_width = model.width();
+                let model_height = model.height();
+                let animation = viewport_animations.get(&grid_id);
+                let (old_offset, current_offset) = animation
+                    .map(|animation| animation.offsets(now, model_height, line_height))
+                    .unwrap_or((px(0.0), px(0.0)));
+                let options = GridRenderOptions {
+                    placement,
+                    width: model_width,
+                    height: model_height,
+                    cell_width,
+                    line_height,
+                    gui_font: &gui_font,
+                    gui_wide_font: &gui_wide_font,
+                    cursor_mode,
+                    cursor_blink_started_at,
+                    cursor_animation: None,
+                    cursor_visible: self.cursor_grid == grid_id,
+                    viewport_offset: current_offset,
+                };
                 let mut layer = div()
                     .absolute()
                     .left(px(placement.col as f32 * f32::from(cell_width)))
@@ -256,45 +424,23 @@ impl Render for NvimGpui {
                     // an oversized preview inside that grid's compositor
                     // bounds so it cannot cover a neighbouring picker pane
                     // or its separator.
-                    .overflow_hidden()
-                    .child(
-                        GridElement::with_shared_model(model)
-                            .with_metrics(cell_width, line_height)
-                            .with_default_background(
-                                (placement.compindex >= 0)
-                                    .then_some(self.theme.normal_float_background)
-                                    .flatten(),
-                            )
-                            .with_wide_font(gui_wide_font.family.clone(), px(gui_wide_font.size))
-                            .with_nerd_fallback_font(
-                                self.nerd_font_family.clone().unwrap_or_default(),
-                                px(gui_font.size),
-                            )
-                            .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-                            .with_shaping_cache(Rc::clone(&shaping_cache))
-                            .with_nerd_fallback_mode(self.settings.fallback_mode)
-                            .with_cursor_visible(self.cursor_grid == grid_id)
-                            .with_cursor_mode(if self.cursor_grid == grid_id {
-                                cursor_mode
-                            } else {
-                                grid::CursorModeInfo::default()
-                            })
-                            .with_nerd_font_mode(true),
-                    );
-                for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
-                    let Some(source) = self.image_sources.get(&image_layer.image).cloned() else {
-                        continue;
+                    .overflow_hidden();
+                if let Some(animation) = animation {
+                    let old_options = GridRenderOptions {
+                        cursor_visible: false,
+                        viewport_offset: old_offset,
+                        ..options
                     };
-                    layer = layer.child(
-                        img(source)
-                            .absolute()
-                            .left(px(image_layer.column as f32 * f32::from(cell_width)))
-                            .top(px(image_layer.row as f32 * f32::from(line_height)))
-                            .w(px(image_layer.columns as f32 * f32::from(cell_width)))
-                            .h(px(image_layer.rows as f32 * f32::from(line_height)))
-                            .object_fit(gpui::ObjectFit::Fill),
-                    );
+                    layer = layer.child(Self::grid_surface(
+                        self.grid_element(Rc::clone(&animation.previous_grid), old_options),
+                        old_options,
+                    ));
                 }
+                layer = layer.child(Self::grid_surface(
+                    self.grid_element(model, options),
+                    options,
+                ));
+                layer = layer.child(self.image_surface(grid_id, &image_layers, options));
                 editor = editor.child(layer);
             }
         }

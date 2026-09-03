@@ -4,9 +4,6 @@ use super::*;
 pub struct HighlightId(pub u64);
 
 pub const DEFAULT_HIGHLIGHT: HighlightId = HighlightId(0);
-pub const COMMENT_HIGHLIGHT: HighlightId = HighlightId(1);
-pub const KEYWORD_HIGHLIGHT: HighlightId = HighlightId(2);
-pub const STRING_HIGHLIGHT: HighlightId = HighlightId(3);
 
 /// The RGB attributes announced by Neovim's `hl_attr_define` event.
 ///

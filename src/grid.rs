@@ -15,14 +15,9 @@ use std::{
 
 const DEFAULT_FOREGROUND: u32 = 0xcdd6f4;
 const DEFAULT_BACKGROUND: u32 = 0x1e1e2e;
-const MUTED_FOREGROUND: u32 = 0x7f849c;
 const BLUE_FOREGROUND: u32 = 0x89b4fa;
-const GREEN_FOREGROUND: u32 = 0xa6e3a1;
-const STRING_BACKGROUND: u32 = 0x263238;
-const LONG_TEXT_CHAR_COUNT: usize = 2048;
 
 mod cache;
-mod demo;
 mod element;
 mod model;
 mod visual;
@@ -30,12 +25,10 @@ mod visual;
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };
-pub use demo::demo_grid;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
     CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
-    GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, COMMENT_HIGHLIGHT,
-    DEFAULT_HIGHLIGHT, KEYWORD_HIGHLIGHT, STRING_HIGHLIGHT,
+    GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
 
@@ -46,9 +39,7 @@ use element::{cursor_bounds, cursor_colors};
 #[cfg(test)]
 use model::cursor_geometry;
 use model::{blink_visible, CursorVisualPositionF};
-use visual::{
-    demo_highlight_attrs, highlight_colors, push_background, visual_cell_overlaps_cursor,
-};
+use visual::{highlight_colors, push_background, visual_cell_overlaps_cursor};
 
 #[cfg(test)]
 mod tests;

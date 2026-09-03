@@ -24,7 +24,7 @@ use std::{
     ops::Range,
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const BACKGROUND: u32 = 0x1e1e2e;
@@ -57,9 +57,7 @@ const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const LOGO_ASSET: &str = "neovim-gpui.png";
 const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
 const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
-// Keep this as a single switch so the bundled font can be disabled for a
-// controlled performance comparison without changing the settings model.
-const ENABLE_BUNDLED_NERD_FONT: bool = true;
+const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
 
 struct AppAssets;
 
@@ -210,6 +208,37 @@ struct ImageLayer {
     z_index: i32,
 }
 
+#[derive(Clone)]
+struct ViewportAnimation {
+    previous_grid: Rc<grid::GridModel>,
+    scroll_delta: i64,
+    started_at: Instant,
+}
+
+impl ViewportAnimation {
+    fn progress(&self, now: Instant) -> f32 {
+        (now.saturating_duration_since(self.started_at).as_secs_f32()
+            / VIEWPORT_SCROLL_DURATION.as_secs_f32())
+        .min(1.0)
+    }
+
+    fn is_active(&self, now: Instant) -> bool {
+        self.progress(now) < 1.0
+    }
+
+    fn offsets(&self, now: Instant, max_delta: usize, line_height: Pixels) -> (Pixels, Pixels) {
+        let progress = self.progress(now);
+        let progress = progress * progress * (3.0 - 2.0 * progress);
+        let delta = self
+            .scroll_delta
+            .clamp(-(max_delta as i64), max_delta as i64) as f32;
+        (
+            px(-delta * progress * f32::from(line_height)),
+            px(delta * (1.0 - progress) * f32::from(line_height)),
+        )
+    }
+}
+
 impl Default for GridPlacement {
     fn default() -> Self {
         Self {
@@ -262,6 +291,7 @@ struct NvimGpui {
     grid_placements: HashMap<u64, GridPlacement>,
     pending_grid_placements: HashMap<u64, GridPlacement>,
     pending_destroyed_grids: HashSet<u64>,
+    viewport_animations: HashMap<u64, ViewportAnimation>,
     cursor_grid: u64,
     pending_cursor_grid: Option<u64>,
     image_store: image_store::ImageStore,
@@ -286,7 +316,10 @@ impl Default for NvimGpui {
         Self {
             focus_handle: None,
             state: EditorState::default(),
-            grid: Rc::new(grid::demo_grid()),
+            grid: Rc::new(grid::GridModel::new(
+                DEFAULT_GRID_WIDTH as usize,
+                DEFAULT_GRID_HEIGHT as usize,
+            )),
             pending_grid: None,
             nvim: None,
             input_router: InputRouter::default(),
@@ -317,6 +350,7 @@ impl Default for NvimGpui {
             grid_placements: HashMap::new(),
             pending_grid_placements: HashMap::new(),
             pending_destroyed_grids: HashSet::new(),
+            viewport_animations: HashMap::new(),
             cursor_grid: 1,
             pending_cursor_grid: None,
             image_store: image_store::ImageStore::new(),

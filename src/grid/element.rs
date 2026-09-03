@@ -10,24 +10,28 @@ struct PendingText {
     // fallback glyph advance is not necessarily the terminal cell advance,
     // so ordinary text after it must start a fresh shaped line.
     mergeable: bool,
+    in_viewport: bool,
 }
 
 struct PaintedText {
     line: ShapedLine,
     origin: gpui::Point<Pixels>,
+    in_viewport: bool,
 }
 
 pub struct GridPrepaintState {
-    backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    overlines: Vec<(Bounds<Pixels>, Hsla)>,
+    backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
+    overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
     texts: Vec<PaintedText>,
     cursors: Vec<PaintedCursor>,
+    viewport_bounds: Option<Bounds<Pixels>>,
 }
 
 struct PaintedCursor {
     bounds: Bounds<Pixels>,
     color: Hsla,
     opacity: f32,
+    in_viewport: bool,
 }
 
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
@@ -42,6 +46,8 @@ pub struct GridElement {
     wide_font: Option<(String, Pixels)>,
     nerd_fallback_font: Option<(String, Pixels)>,
     default_background_override: Option<u32>,
+    viewport_margins: (usize, usize, usize, usize),
+    viewport_offset: gpui::Point<Pixels>,
     glyph_coverage_cache: SharedGlyphCoverageCache,
     cursor_animation: Option<CursorAnimation>,
     cursor_mode: CursorModeInfo,
@@ -62,6 +68,8 @@ impl GridElement {
             wide_font: None,
             nerd_fallback_font: None,
             default_background_override: None,
+            viewport_margins: (0, 0, 0, 0),
+            viewport_offset: point(px(0.0), px(0.0)),
             glyph_coverage_cache: GlyphCoverageCache::shared(),
             cursor_animation: None,
             cursor_mode: CursorModeInfo::default(),
@@ -106,6 +114,26 @@ impl GridElement {
     /// id while still expecting the window surface to remain opaque.
     pub fn with_default_background(mut self, background: Option<u32>) -> Self {
         self.default_background_override = background;
+        self
+    }
+
+    /// Keep the window's non-viewport margins fixed while the viewport is
+    /// moved. Neovim uses these margins for elements such as winbars and
+    /// floating-window borders.
+    pub fn with_viewport_margins(mut self, top: u64, bottom: u64, left: u64, right: u64) -> Self {
+        self.viewport_margins = (
+            usize::try_from(top).unwrap_or(usize::MAX),
+            usize::try_from(bottom).unwrap_or(usize::MAX),
+            usize::try_from(left).unwrap_or(usize::MAX),
+            usize::try_from(right).unwrap_or(usize::MAX),
+        );
+        self
+    }
+
+    /// Offset only the viewport portion of this grid. The outer grid remains
+    /// stationary so borders and winbars do not move during smooth scrolling.
+    pub fn with_viewport_offset(mut self, offset: gpui::Point<Pixels>) -> Self {
+        self.viewport_offset = offset;
         self
     }
 
@@ -210,6 +238,55 @@ impl GridElement {
         fallback_font.fallbacks = Some(FontFallbacks::from_fonts(vec![fallback_family.clone()]));
         (fallback_font, *fallback_size)
     }
+
+    fn viewport_row_range(&self) -> (usize, usize) {
+        let height = self.model.height();
+        let top = self.viewport_margins.0.min(height);
+        let bottom = self.viewport_margins.1.min(height.saturating_sub(top));
+        (top, height.saturating_sub(bottom))
+    }
+
+    fn viewport_column_range(&self) -> (usize, usize) {
+        let width = self.model.width();
+        let left = self.viewport_margins.2.min(width);
+        let right = self.viewport_margins.3.min(width.saturating_sub(left));
+        (left, width.saturating_sub(right))
+    }
+
+    fn cell_is_in_viewport(&self, row: usize, column: usize) -> bool {
+        let (top, bottom) = self.viewport_row_range();
+        let (left, right) = self.viewport_column_range();
+        (top..bottom).contains(&row) && (left..right).contains(&column)
+    }
+
+    fn offset_for_cell(&self, row: usize, column: usize) -> gpui::Point<Pixels> {
+        if self.cell_is_in_viewport(row, column) {
+            self.viewport_offset
+        } else {
+            point(px(0.0), px(0.0))
+        }
+    }
+
+    fn viewport_bounds(
+        &self,
+        bounds: Bounds<Pixels>,
+        cell_width: Pixels,
+    ) -> Option<Bounds<Pixels>> {
+        let (top, bottom) = self.viewport_row_range();
+        let (left, right) = self.viewport_column_range();
+        (top < bottom && left < right).then(|| {
+            Bounds::new(
+                point(
+                    bounds.origin.x + cell_width * left,
+                    bounds.origin.y + self.line_height * top,
+                ),
+                size(
+                    cell_width * (right - left),
+                    self.line_height * (bottom - top),
+                ),
+            )
+        })
+    }
 }
 
 impl IntoElement for GridElement {
@@ -279,10 +356,11 @@ impl Element for GridElement {
         let mut pending_text: Option<PendingText> = None;
 
         builder.for_each_cell(model.as_ref(), |cell| {
+            let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
             let attrs = model
                 .highlight_ref(cell.highlight)
                 .map(Cow::Borrowed)
-                .unwrap_or_else(|| Cow::Owned(demo_highlight_attrs(cell.highlight)));
+                .unwrap_or_else(|| Cow::Owned(HighlightAttrs::default()));
             let (mut foreground, mut background) = highlight_colors(
                 model.as_ref(),
                 cell.highlight,
@@ -350,7 +428,7 @@ impl Element for GridElement {
             let origin = point(
                 bounds.origin.x + cell_width * cell.grid_start,
                 bounds.origin.y + self.line_height * cell.row,
-            );
+            ) + self.offset_for_cell(cell.row, cell.grid_start);
             let cell_bounds =
                 Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
             let overline = attrs.overline.then(|| {
@@ -372,6 +450,7 @@ impl Element for GridElement {
                     && cell.grid_len == 1
                     && pending_text.as_ref().is_some_and(|pending| {
                         pending.mergeable
+                            && pending.in_viewport == in_viewport
                             && pending.row == cell.row
                             && pending.grid_end == cell.grid_start
                     });
@@ -403,6 +482,7 @@ impl Element for GridElement {
                             style,
                         }],
                         mergeable: cell.kind == VisualCellKind::Text,
+                        in_viewport,
                     });
                 }
             } else if let Some(pending) = pending_text.take() {
@@ -415,10 +495,10 @@ impl Element for GridElement {
             // glyphs, whose raster width is often smaller than the cell
             // advance.
             if let Some(background) = background {
-                push_background(&mut backgrounds, cell_bounds, background);
+                push_background(&mut backgrounds, cell_bounds, background, in_viewport);
             }
             if let Some(overline) = overline {
-                overlines.push(overline);
+                overlines.push((overline.0, overline.1, in_viewport));
             }
         });
 
@@ -432,17 +512,24 @@ impl Element for GridElement {
                 let origin = point(
                     bounds.origin.x + cell_width * pending.grid_start,
                     bounds.origin.y + self.line_height * pending.row,
-                );
+                ) + self.offset_for_cell(pending.row, pending.grid_start);
                 let text: SharedString = pending.text.into();
                 let line = self
                     .shaping_cache
                     .borrow_mut()
                     .shape_line(window, text, pending.runs);
-                PaintedText { line, origin }
+                PaintedText {
+                    line,
+                    origin,
+                    in_viewport: pending.in_viewport,
+                }
             })
             .collect();
 
         if has_blinking_text {
+            window.request_animation_frame();
+        }
+        if self.viewport_offset.x != px(0.0) || self.viewport_offset.y != px(0.0) {
             window.request_animation_frame();
         }
 
@@ -462,6 +549,7 @@ impl Element for GridElement {
                 .filter(|animation| animation.targets(target));
 
             let Some(animation) = animation.filter(|animation| animation.is_active(now)) else {
+                let in_viewport = self.cell_is_in_viewport(target.row, target.col);
                 return vec![PaintedCursor {
                     bounds: cursor_bounds(
                         bounds,
@@ -469,9 +557,10 @@ impl Element for GridElement {
                         self.line_height,
                         target,
                         self.cursor_mode,
-                    ),
+                    ) + self.offset_for_cell(target.row, target.col),
                     color,
                     opacity: 1.0,
+                    in_viewport,
                 }];
             };
 
@@ -496,9 +585,10 @@ impl Element for GridElement {
                             animation,
                             self.cursor_mode,
                             sample_time,
-                        ),
+                        ) + self.offset_for_cell(target.row, target.col),
                         color,
                         opacity,
+                        in_viewport: self.cell_is_in_viewport(target.row, target.col),
                     }
                 })
                 .collect()
@@ -513,6 +603,7 @@ impl Element for GridElement {
             overlines,
             texts,
             cursors,
+            viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
     }
 
@@ -530,11 +621,21 @@ impl Element for GridElement {
             input_handler(bounds, window, cx);
         }
 
-        for (bounds, background) in &prepaint.backgrounds {
-            window.paint_quad(fill(*bounds, *background));
+        for (bounds, background, in_viewport) in &prepaint.backgrounds {
+            let mask = (*in_viewport).then(|| gpui::ContentMask {
+                bounds: prepaint.viewport_bounds.unwrap_or(*bounds),
+            });
+            window.with_content_mask(mask, |window| {
+                window.paint_quad(fill(*bounds, *background));
+            });
         }
-        for (bounds, color) in &prepaint.overlines {
-            window.paint_quad(fill(*bounds, *color));
+        for (bounds, color, in_viewport) in &prepaint.overlines {
+            let mask = (*in_viewport).then(|| gpui::ContentMask {
+                bounds: prepaint.viewport_bounds.unwrap_or(*bounds),
+            });
+            window.with_content_mask(mask, |window| {
+                window.paint_quad(fill(*bounds, *color));
+            });
         }
 
         // Keep the terminal's cell coordinates for placement, but do not clip
@@ -546,21 +647,31 @@ impl Element for GridElement {
         // the Neovim viewport.
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for cursor in prepaint.cursors.drain(..) {
-                let radius = px((f32::from(cursor.bounds.size.width)
-                    .min(f32::from(cursor.bounds.size.height))
-                    .mul_add(0.18, 0.0))
-                .clamp(2.0, 6.0));
-                window.paint_quad(
-                    fill(cursor.bounds, cursor.color.opacity(cursor.opacity))
-                        .corner_radii(Corners::all(radius)),
-                );
+                let mask = cursor.in_viewport.then(|| gpui::ContentMask {
+                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                });
+                window.with_content_mask(mask, |window| {
+                    let radius = px((f32::from(cursor.bounds.size.width)
+                        .min(f32::from(cursor.bounds.size.height))
+                        .mul_add(0.18, 0.0))
+                    .clamp(2.0, 6.0));
+                    window.paint_quad(
+                        fill(cursor.bounds, cursor.color.opacity(cursor.opacity))
+                            .corner_radii(Corners::all(radius)),
+                    );
+                });
             }
 
             for painted_text in prepaint.texts.drain(..) {
-                painted_text
-                    .line
-                    .paint(painted_text.origin, self.line_height, window, cx)
-                    .expect("failed to paint grid text");
+                let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
+                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                });
+                window.with_content_mask(mask, |window| {
+                    painted_text
+                        .line
+                        .paint(painted_text.origin, self.line_height, window, cx)
+                        .expect("failed to paint grid text");
+                });
             }
         });
     }
@@ -706,4 +817,24 @@ fn cursor_bounds_at(
     };
 
     Bounds::new(origin, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_margins_keep_outer_cells_fixed() {
+        let element = GridElement::with_shared_model(Rc::new(GridModel::new(8, 4)))
+            .with_viewport_margins(1, 1, 2, 2)
+            .with_viewport_offset(point(px(0.0), px(10.0)));
+
+        assert_eq!(element.viewport_row_range(), (1, 3));
+        assert_eq!(element.viewport_column_range(), (2, 6));
+        assert!(element.cell_is_in_viewport(1, 2));
+        assert!(!element.cell_is_in_viewport(0, 2));
+        assert!(!element.cell_is_in_viewport(1, 1));
+        assert_eq!(element.offset_for_cell(1, 2), point(px(0.0), px(10.0)));
+        assert_eq!(element.offset_for_cell(0, 2), point(px(0.0), px(0.0)));
+    }
 }

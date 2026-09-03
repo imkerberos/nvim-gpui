@@ -148,25 +148,6 @@ fn is_nerd_symbol(text: &str) -> bool {
             || ('\u{100000}'..='\u{10fffd}').contains(&character))
 }
 
-pub(super) fn demo_highlight_attrs(highlight: HighlightId) -> HighlightAttrs {
-    match highlight {
-        COMMENT_HIGHLIGHT => HighlightAttrs {
-            foreground: Some(MUTED_FOREGROUND),
-            ..Default::default()
-        },
-        KEYWORD_HIGHLIGHT => HighlightAttrs {
-            foreground: Some(BLUE_FOREGROUND),
-            ..Default::default()
-        },
-        STRING_HIGHLIGHT => HighlightAttrs {
-            foreground: Some(GREEN_FOREGROUND),
-            background: Some(STRING_BACKGROUND),
-            ..Default::default()
-        },
-        _ => HighlightAttrs::default(),
-    }
-}
-
 pub(super) fn highlight_colors(
     model: &GridModel,
     highlight: HighlightId,
@@ -175,7 +156,7 @@ pub(super) fn highlight_colors(
     let attrs = model
         .highlight_ref(highlight)
         .map(Cow::Borrowed)
-        .unwrap_or_else(|| Cow::Owned(demo_highlight_attrs(highlight)));
+        .unwrap_or_else(|| Cow::Owned(HighlightAttrs::default()));
     let (default_foreground, default_background, _) = model.default_colors();
     let foreground = attrs
         .foreground
@@ -221,13 +202,15 @@ fn blend_alpha(blend: Option<u8>) -> f32 {
 }
 
 pub(super) fn push_background(
-    backgrounds: &mut Vec<(Bounds<Pixels>, Hsla)>,
+    backgrounds: &mut Vec<(Bounds<Pixels>, Hsla, bool)>,
     bounds: Bounds<Pixels>,
     color: Hsla,
+    in_viewport: bool,
 ) {
-    if let Some((previous_bounds, previous_color)) = backgrounds.last_mut() {
+    if let Some((previous_bounds, previous_color, previous_in_viewport)) = backgrounds.last_mut() {
         let previous_right = previous_bounds.origin.x + previous_bounds.size.width;
         if *previous_color == color
+            && *previous_in_viewport == in_viewport
             && previous_bounds.origin.y == bounds.origin.y
             && previous_bounds.size.height == bounds.size.height
             && previous_right == bounds.origin.x
@@ -237,5 +220,5 @@ pub(super) fn push_background(
         }
     }
 
-    backgrounds.push((bounds, color));
+    backgrounds.push((bounds, color, in_viewport));
 }
