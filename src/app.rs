@@ -8,7 +8,7 @@ use crate::{
         key_to_nvim_input, should_route_key_to_neovim, EntityInputHandler, InputRouter,
         InputTarget, SystemImeState,
     },
-    nvim::{self, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
+    nvim::{self, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
     platform, settings, CliOptions, NvimConnection,
 };
 use gpui::{
@@ -289,6 +289,8 @@ struct NvimGpui {
     cursor_mode_index: usize,
     cursor_blink_started_at: Instant,
     event_task: Option<Task<()>>,
+    reconnect_task: Option<Task<()>>,
+    reconnect_attempt: u32,
     window_bounds_subscription: Option<Subscription>,
     last_resize: Option<(u32, u32)>,
     resolved_grid_font: Option<GuiFontSpec>,
@@ -352,6 +354,8 @@ impl Default for NvimGpui {
             cursor_mode_index: 0,
             cursor_blink_started_at: Instant::now(),
             event_task: None,
+            reconnect_task: None,
+            reconnect_attempt: 0,
             window_bounds_subscription: None,
             last_resize: None,
             resolved_grid_font: None,

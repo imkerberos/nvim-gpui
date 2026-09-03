@@ -31,44 +31,153 @@ impl NvimGpui {
         this.apply_runtime_settings();
 
         if let Some(nvim) = this.nvim.as_ref() {
-            let events = nvim.events();
-            this.event_task = Some(cx.spawn(async move |weak, cx| {
-                while let Ok(event) = events.recv().await {
-                    // A single Neovim redraw notification can contain hundreds
-                    // of typed events. Drain the events that are already
-                    // available and invalidate GPUI once for the batch instead
-                    // of once per cell/window/style update.
-                    let mut batch = Vec::with_capacity(64);
-                    batch.push(event);
-                    while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
-                        match events.try_recv() {
-                            Ok(event) => batch.push(event),
-                            Err(async_channel::TryRecvError::Empty)
-                            | Err(async_channel::TryRecvError::Closed) => break,
-                        }
-                    }
-                    let disconnected = batch
-                        .iter()
-                        .any(|event| matches!(event, NvimEvent::Disconnected));
-                    if weak
-                        .update(cx, |this, cx| {
-                            for event in batch {
-                                this.apply_nvim_event(event);
-                            }
-                            cx.notify();
-                            if disconnected {
-                                cx.quit();
-                            }
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }));
+            this.start_event_task(nvim.events(), cx);
         }
 
         this
+    }
+
+    fn start_event_task(
+        &mut self,
+        events: async_channel::Receiver<NvimEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        self.event_task = Some(cx.spawn(async move |weak, cx| {
+            while let Ok(event) = events.recv().await {
+                // A single Neovim redraw notification can contain hundreds
+                // of typed events. Drain the events that are already
+                // available and invalidate GPUI once for the batch instead
+                // of once per cell/window/style update.
+                let mut batch = Vec::with_capacity(64);
+                batch.push(event);
+                while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
+                    match events.try_recv() {
+                        Ok(event) => batch.push(event),
+                        Err(async_channel::TryRecvError::Empty)
+                        | Err(async_channel::TryRecvError::Closed) => break,
+                    }
+                }
+                let disconnect_reason = batch.iter().find_map(|event| match event {
+                    NvimEvent::Disconnected { reason } => Some(reason.clone()),
+                    _ => None,
+                });
+                if weak
+                    .update(cx, |this, cx| {
+                        for event in batch {
+                            this.apply_nvim_event(event);
+                        }
+                        if let Some(reason) = disconnect_reason {
+                            this.handle_disconnect(reason, cx);
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
+        match reason {
+            DisconnectReason::Requested => {}
+            DisconnectReason::CleanExit => cx.quit(),
+            reason => self.schedule_reconnect(reason, cx),
+        }
+    }
+
+    fn schedule_reconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
+        if self.reconnect_task.is_some() {
+            return;
+        }
+
+        let Some(nvim) = self.nvim.as_ref() else {
+            return;
+        };
+        let connection = nvim.connection_spec();
+        let size = self
+            .last_resize
+            .or(self.grid_size)
+            .unwrap_or((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
+        self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
+        let attempt = self.reconnect_attempt;
+        let backoff = 250_u64 * (1_u64 << attempt.saturating_sub(1).min(4));
+        self.rpc_status = format!("rpc: reconnecting (attempt {attempt})");
+
+        let task = cx.background_spawn(async move {
+            std::thread::sleep(Duration::from_millis(backoff));
+            NvimProcess::connect_from_spec(&connection, size.0, size.1)
+        });
+        self.reconnect_task = Some(cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.reconnect_task = None;
+                match result {
+                    Ok(nvim) => {
+                        this.reconnect_attempt = 0;
+                        this.install_reconnected_nvim(nvim, cx);
+                    }
+                    Err(error) => {
+                        this.rpc_status = format!("rpc reconnect failed: {error}");
+                        this.schedule_reconnect(reason.clone(), cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn install_reconnected_nvim(&mut self, nvim: NvimProcess, cx: &mut Context<Self>) {
+        let events = nvim.events();
+        let initial_theme = nvim.startup_theme().unwrap_or_default();
+        let protocol = nvim.protocol().cloned();
+
+        self.reset_nvim_session(initial_theme);
+        self.nvim = Some(nvim);
+        self.api_level = protocol.as_ref().map(|protocol| protocol.version.api_level);
+        self.nvim_version = protocol.map(|protocol| protocol.version);
+        self.rpc_status = "rpc: reconnected".to_owned();
+        self.start_event_task(events, cx);
+    }
+
+    fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {
+        self.state = EditorState::default();
+        self.grid = Rc::new(grid::GridModel::new(
+            DEFAULT_GRID_WIDTH as usize,
+            DEFAULT_GRID_HEIGHT as usize,
+        ));
+        self.pending_grid = None;
+        self.grid_size = Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
+        self.last_resize = None;
+        self.nvim_grid_ready = false;
+        self.startup_resize_target = None;
+        self.startup_flush_seen = false;
+        self.theme = initial_theme;
+        self.pending_theme = None;
+        self.ui_options.clear();
+        self.other_grids.clear();
+        self.pending_other_grids.clear();
+        self.grid_placements.clear();
+        self.pending_grid_placements.clear();
+        self.pending_destroyed_grids.clear();
+        self.viewport_animations.clear();
+        self.cursor_grid = 1;
+        self.pending_cursor_grid = None;
+        self.image_store.clear();
+        self.image_sources.clear();
+        self.mouse_option = "nvi".to_owned();
+        self.mouse_enabled = true;
+        self.nvim_mode = "n".to_owned();
+        self.input_router = InputRouter::default();
+        self.system_ime.clear();
+        self.scroll_remainder = point(0.0, 0.0);
+        self.cursor_style_enabled = false;
+        self.cursor_modes.clear();
+        self.cursor_mode_index = 0;
+        self.cursor_blink_started_at = Instant::now();
+        self.window_title = DEFAULT_WINDOW_TITLE.to_owned();
+        self.window_icon = "nvim-gpui".to_owned();
     }
 
     pub(super) fn apply_runtime_settings(&mut self) {
@@ -505,7 +614,7 @@ impl NvimGpui {
             NvimEvent::Error(error) => {
                 self.rpc_status = format!("rpc error: {error}");
             }
-            NvimEvent::Disconnected => {
+            NvimEvent::Disconnected { .. } => {
                 self.rpc_status = "rpc: disconnected".to_owned();
             }
         }

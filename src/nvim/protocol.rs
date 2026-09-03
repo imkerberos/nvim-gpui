@@ -3,7 +3,11 @@ use rmpv::Value;
 
 use super::{NvimCapabilities, NvimEvent, CLIENT_NAME};
 
-pub(super) fn client_info_params() -> Value {
+pub(super) fn client_info_params(methods: impl IntoIterator<Item = String>) -> Value {
+    let methods = methods
+        .into_iter()
+        .map(|method| (Value::from(method), Value::Map(Vec::new())))
+        .collect();
     Value::Array(vec![
         Value::from(CLIENT_NAME),
         Value::Map(vec![
@@ -13,7 +17,7 @@ pub(super) fn client_info_params() -> Value {
         ]),
         Value::from("ui"),
         Value::Map(Vec::new()),
-        Value::Map(Vec::new()),
+        Value::Map(methods),
     ])
 }
 

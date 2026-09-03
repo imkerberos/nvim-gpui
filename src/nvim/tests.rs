@@ -10,7 +10,7 @@ use super::protocol::{
 use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
-use super::{NvimCapabilities, NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
+use super::{DisconnectReason, NvimCapabilities, NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
 use async_channel::unbounded;
 use rmpv::Value;
 use std::{
@@ -18,6 +18,10 @@ use std::{
     ffi::{OsStr, OsString},
     io::Cursor,
     path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 #[test]
@@ -156,6 +160,106 @@ fn embedded_nvim_reports_and_accepts_mouse_input() {
     assert!(
         saw_cursor_move,
         "nvim_input_mouse should move the buffer cursor"
+    );
+}
+
+#[test]
+fn embedded_nvim_rpc_request_round_trips_a_response() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let response = process
+        .request("nvim_get_mode", Value::Array(Vec::new()))
+        .expect("RPC request should queue");
+
+    let mut result = None;
+    for _ in 0..200 {
+        if let Ok(value) = response.try_recv() {
+            result = Some(value);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let value = result
+        .expect("RPC response should arrive")
+        .expect("nvim_get_mode should succeed");
+    assert!(
+        value.as_map().is_some(),
+        "nvim_get_mode should return a map"
+    );
+}
+
+#[test]
+fn embedded_nvim_replies_to_a_nvim_rpc_request() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let called = Arc::new(AtomicBool::new(false));
+    let called_by_handler = Arc::clone(&called);
+    process
+        .register_request_handler("nvim_gpui_test", move |params| {
+            called_by_handler.store(true, Ordering::Release);
+            Ok(params.clone())
+        })
+        .expect("request handler should register");
+
+    process
+        .send_input(
+            ":lua for _, chan in ipairs(vim.api.nvim_list_chans()) do if chan.mode == 'rpc' then vim.rpcrequest(chan.id, 'nvim_gpui_test', 7); break end end\n",
+        )
+        .expect("Neovim input should queue");
+
+    for _ in 0..200 {
+        if called.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        called.load(Ordering::Acquire),
+        "Neovim request should reach the registered GUI handler"
+    );
+
+    let response = process
+        .request("nvim_get_mode", Value::Array(Vec::new()))
+        .expect("RPC request should queue after the incoming request");
+    assert!(
+        response
+            .recv_blocking()
+            .expect("response channel should stay open")
+            .is_ok(),
+        "the session should remain usable after replying to a Neovim request"
+    );
+}
+
+#[test]
+fn embedded_nvim_can_be_reconnected_after_a_clean_exit() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let events = process.events();
+    process
+        .send_input(":qa!\n")
+        .expect("Neovim quit command should queue");
+
+    let mut disconnected = None;
+    for _ in 0..400 {
+        while let Ok(event) = events.try_recv() {
+            if let NvimEvent::Disconnected { reason } = event {
+                disconnected = Some(reason);
+            }
+        }
+        if disconnected.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(disconnected, Some(DisconnectReason::CleanExit));
+
+    let replacement = process
+        .reconnect(80, 24)
+        .expect("the embedded command should be restartable");
+    assert!(
+        replacement.version().is_some(),
+        "the replacement should complete the RPC handshake"
     );
 }
 

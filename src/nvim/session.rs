@@ -5,7 +5,10 @@ use std::sync::mpsc::SyncSender;
 
 use super::protocol::*;
 use super::transport::{read_message, write_shared_message, RpcReader, SharedWriter};
-use super::{parse_protocol_info, NvimEvent, NvimProtocolInfo, NvimTheme};
+use super::{
+    parse_protocol_info, NvimEvent, NvimProtocolInfo, NvimTheme, PendingRequests,
+    RpcRequestHandlers,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_session(
@@ -17,6 +20,8 @@ pub(super) fn run_session(
     rpc_ready: &Sender<()>,
     startup_theme_sender: &std::sync::mpsc::SyncSender<NvimTheme>,
     protocol_sender: &SyncSender<NvimProtocolInfo>,
+    pending_requests: &PendingRequests,
+    request_handlers: &RpcRequestHandlers,
 ) -> Result<(), String> {
     let mut reader = BufReader::new(reader);
     let mut request_id = 1;
@@ -28,6 +33,7 @@ pub(super) fn run_session(
         "nvim_get_api_info",
         Value::Array(Vec::new()),
         events,
+        request_handlers,
     )?;
     request_id += 1;
 
@@ -51,13 +57,20 @@ pub(super) fn run_session(
         }
     }
 
+    let request_methods = request_handlers
+        .lock()
+        .map_err(|_| "RPC request handler registry is poisoned".to_owned())?
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
     request(
         &writer,
         &mut reader,
         request_id,
         "nvim_set_client_info",
-        client_info_params(),
+        client_info_params(request_methods),
         events,
+        request_handlers,
     )?;
     request_id += 1;
 
@@ -71,6 +84,7 @@ pub(super) fn run_session(
         "nvim_get_option",
         Value::Array(vec![Value::from("mouse")]),
         events,
+        request_handlers,
     )?;
     request_id += 1;
     if let Some(value) = string_value(&mouse) {
@@ -90,6 +104,7 @@ pub(super) fn run_session(
         "nvim_ui_attach",
         ui_attach_params_for(width, height, &protocol.capabilities),
         events,
+        request_handlers,
     )?;
     let _ = rpc_ready.send_blocking(());
     send_event(events, NvimEvent::UiAttached { width, height })?;
@@ -103,7 +118,7 @@ pub(super) fn run_session(
             let _ = startup_theme_sender.send(startup_theme);
             startup_theme_sent = true;
         }
-        dispatch_message(&writer, message, events)?;
+        dispatch_message(&writer, message, events, pending_requests, request_handlers)?;
     }
 }
 
@@ -175,6 +190,7 @@ fn request(
     method: &str,
     params: Value,
     events: &Sender<NvimEvent>,
+    request_handlers: &RpcRequestHandlers,
 ) -> Result<Value, String> {
     write_shared_message(
         writer,
@@ -215,6 +231,24 @@ fn request(
                 let params = values.get(2).unwrap_or(&Value::Nil);
                 handle_notification(&method, params, events)?;
             }
+            Some(0) => {
+                let request_id = values
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "RPC request has no id".to_owned())?;
+                let request_method = values
+                    .get(2)
+                    .and_then(string_value)
+                    .ok_or_else(|| "RPC request has no method".to_owned())?;
+                let request_params = values.get(3).unwrap_or(&Value::Nil);
+                handle_request(
+                    writer,
+                    request_id,
+                    &request_method,
+                    request_params,
+                    request_handlers,
+                )?;
+            }
             Some(tag) => return Err(format!("unexpected RPC message type: {tag}")),
             None => return Err("RPC message has no type".to_owned()),
         }
@@ -225,6 +259,8 @@ fn dispatch_message(
     writer: &SharedWriter,
     message: Value,
     events: &Sender<NvimEvent>,
+    pending_requests: &PendingRequests,
+    request_handlers: &RpcRequestHandlers,
 ) -> Result<(), String> {
     let Some(values) = message.as_array() else {
         return Err("RPC message is not an array".to_owned());
@@ -232,12 +268,30 @@ fn dispatch_message(
 
     match values.first().and_then(Value::as_u64) {
         Some(1) => {
+            let response_id = values
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "RPC response has no id".to_owned())?;
             let error = values.get(2).unwrap_or(&Value::Nil);
-            if !matches!(error, Value::Nil) {
-                send_event(
-                    events,
-                    NvimEvent::Error(format!("Neovim RPC request failed: {error:?}")),
-                )?;
+            let result = if matches!(error, Value::Nil) {
+                values
+                    .get(3)
+                    .cloned()
+                    .ok_or_else(|| "RPC response has no result".to_owned())
+            } else {
+                Err(format!(
+                    "Neovim RPC request failed: {}",
+                    display_value(error)
+                ))
+            };
+            let response_sender = pending_requests
+                .lock()
+                .map_err(|_| "RPC request registry is poisoned".to_owned())?
+                .remove(&response_id);
+            if let Some(response_sender) = response_sender {
+                let _ = response_sender.send_blocking(result);
+            } else if let Err(error) = result {
+                send_event(events, NvimEvent::Error(error))?;
             }
             Ok(())
         }
@@ -254,19 +308,43 @@ fn dispatch_message(
                 .get(1)
                 .and_then(Value::as_u64)
                 .ok_or_else(|| "RPC request has no id".to_owned())?;
-            write_shared_message(
-                writer,
-                &Value::Array(vec![
-                    Value::from(1),
-                    Value::from(id),
-                    Value::from("nvim-gpui does not accept RPC requests yet"),
-                    Value::Nil,
-                ]),
-            )
+            let method = values
+                .get(2)
+                .and_then(string_value)
+                .ok_or_else(|| "RPC request has no method".to_owned())?;
+            let params = values.get(3).unwrap_or(&Value::Nil);
+            handle_request(writer, id, &method, params, request_handlers)
         }
         Some(tag) => Err(format!("unexpected RPC message type: {tag}")),
         None => Err("RPC message has no type".to_owned()),
     }
+}
+
+fn handle_request(
+    writer: &SharedWriter,
+    id: u64,
+    method: &str,
+    params: &Value,
+    request_handlers: &RpcRequestHandlers,
+) -> Result<(), String> {
+    let response = request_handlers
+        .lock()
+        .map_err(|_| "RPC request handler registry is poisoned".to_owned())?
+        .get(method)
+        .cloned()
+        .map(|handler| handler(params))
+        .unwrap_or_else(|| Err(format!("RPC method is not supported: {method}")));
+
+    let frame = match response {
+        Ok(result) => Value::Array(vec![Value::from(1), Value::from(id), Value::Nil, result]),
+        Err(error) => Value::Array(vec![
+            Value::from(1),
+            Value::from(id),
+            Value::from(error),
+            Value::Nil,
+        ]),
+    };
+    write_shared_message(writer, &frame)
 }
 
 pub(crate) fn handle_notification(

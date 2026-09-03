@@ -1,5 +1,8 @@
 use crate::grid::{CursorModeInfo, GridLineCell, HighlightAttrs, HighlightId};
 
+use async_channel::Sender;
+use rmpv::Value;
+
 use super::{NvimCapabilities, NvimVersion};
 
 pub(super) enum NvimCommand {
@@ -15,6 +18,11 @@ pub(super) enum NvimCommand {
     Resize {
         width: u32,
         height: u32,
+    },
+    Request {
+        method: String,
+        params: Value,
+        response: Sender<Result<Value, String>>,
     },
     TermEvent {
         event: String,
@@ -155,7 +163,18 @@ pub enum NvimEvent {
     },
     Flush,
     Error(String),
-    Disconnected,
+    Disconnected {
+        reason: DisconnectReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisconnectReason {
+    Requested,
+    CleanExit,
+    TransportClosed,
+    UnexpectedExit,
+    ProtocolError(String),
 }
 
 /// Effective theme colors collected from Neovim's initial UI redraw.
