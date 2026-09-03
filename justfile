@@ -26,6 +26,18 @@ build:
 release:
     cargo build --release
 
+# Synchronize Cargo, AppBundle, and Homebrew release versions.
+release-prepare version:
+    python3 scripts/release.py prepare {{version}}
+
+# Validate release metadata and the matching changelog section.
+release-check tag="":
+    python3 scripts/release.py check {{tag}}
+
+# Print the changelog section used as GitHub Release notes.
+release-notes tag:
+    python3 scripts/release.py notes {{tag}}
+
 # Build a macOS AppBundle at .cache/macos/nvim-gpui.app.
 bundle:
     if [ "$(uname -s)" != "Darwin" ]; then echo "bundle is only supported on macOS" >&2; exit 1; fi

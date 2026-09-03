@@ -46,6 +46,7 @@
               just
               neovim
               imagemagick
+              python3
               rust-analyzer
               rustc
               rustfmt

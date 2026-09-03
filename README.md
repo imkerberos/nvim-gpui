@@ -10,6 +10,8 @@ A native macOS graphical frontend for Neovim.
 Neovim editing experience, but it is not yet a complete replacement for
 Neovide or a terminal UI.
 
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## Features
 
 - Unicode and CJK text support.
@@ -162,8 +164,9 @@ Unknown arguments are passed through to embedded Neovim.
 
 ## Current limitations
 
-The project is still being developed. Reconnecting after a lost session and
-some advanced plugin interfaces are not yet complete.
+The project is still experimental. Some advanced Neovim UI and third-party
+plugin features may not yet behave exactly like they do in a terminal or in
+other Neovim GUI clients.
 
 ## License
 

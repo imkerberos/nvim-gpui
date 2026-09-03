@@ -59,7 +59,17 @@ just ci           # fmt-check, clippy, and test
 just run          # launch the development GUI
 just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
 just dmg          # build the arch-named compressed macOS DMG on macOS
+just release-prepare 0.2.0  # synchronize release version metadata
+just release-check v0.2.0    # validate metadata and changelog before tagging
+just release-notes v0.2.0    # preview the GitHub Release notes
 ```
+
+`Cargo.toml` is the canonical version source. Before creating a release, run
+`just release-prepare VERSION`, add the matching section to `CHANGELOG.md`,
+then run `just release-check vVERSION`. The script synchronizes `Cargo.lock`,
+the macOS AppBundle metadata, and the Homebrew Cask. The release workflow
+repeats the check and uses the matching changelog section as the GitHub Release
+body.
 
 `Makefile` forwards the common tasks to `just` for environments where a Make
 entry point is more convenient.
