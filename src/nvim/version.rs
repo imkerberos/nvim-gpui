@@ -46,11 +46,17 @@ impl NvimCapabilities {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NvimProtocolInfo {
+    pub channel_id: u64,
     pub version: NvimVersion,
     pub capabilities: NvimCapabilities,
 }
 
 pub(super) fn parse_protocol_info(api_info: &Value) -> Result<NvimProtocolInfo, String> {
+    let channel_id = api_info
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "nvim_get_api_info response has no channel id".to_owned())?;
     let metadata = api_info
         .as_array()
         .and_then(|values| values.get(1))
@@ -86,6 +92,7 @@ pub(super) fn parse_protocol_info(api_info: &Value) -> Result<NvimProtocolInfo, 
     };
 
     Ok(NvimProtocolInfo {
+        channel_id,
         version,
         capabilities,
     })

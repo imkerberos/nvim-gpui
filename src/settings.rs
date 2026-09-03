@@ -12,6 +12,53 @@ pub const DEFAULT_IMAGE_CACHE_SIZE_MB: u32 = 128;
 pub const IMAGE_CACHE_SIZE_OPTIONS_MB: &[u32] = &[64, 128, 256, 512, 1024];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PasteShortcut {
+    #[default]
+    CmdV,
+    CtrlV,
+    Disabled,
+}
+
+impl PasteShortcut {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::CmdV => "cmd-v",
+            Self::CtrlV => "ctrl-v",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CmdV => "Cmd-V",
+            Self::CtrlV => "Ctrl-V",
+            Self::Disabled => "Disabled",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cmd-v" => Some(Self::CmdV),
+            "ctrl-v" => Some(Self::CtrlV),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub fn matches(self, keystroke: &gpui::Keystroke) -> bool {
+        let expected = match self {
+            Self::CmdV => gpui::Keystroke::parse("cmd-v"),
+            Self::CtrlV => gpui::Keystroke::parse("ctrl-v"),
+            Self::Disabled => return false,
+        };
+        let Ok(expected) = expected else {
+            return false;
+        };
+        expected.modifiers == keystroke.modifiers && expected.key == keystroke.key
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NerdFontChoice {
     #[default]
     Symbols,
@@ -90,6 +137,7 @@ pub struct Settings {
     pub fallback_mode: FallbackMode,
     pub startup_maximized: bool,
     pub image_cache_size_mb: u32,
+    pub paste_shortcut: PasteShortcut,
 }
 
 impl Default for Settings {
@@ -99,6 +147,7 @@ impl Default for Settings {
             fallback_mode: FallbackMode::default(),
             startup_maximized: false,
             image_cache_size_mb: DEFAULT_IMAGE_CACHE_SIZE_MB,
+            paste_shortcut: PasteShortcut::default(),
         }
     }
 }
@@ -128,11 +177,12 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nimage_cache_size_mb={}\n",
+            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nimage_cache_size_mb={}\npaste_shortcut={}\n",
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
-            self.image_cache_size_mb
+            self.image_cache_size_mb,
+            self.paste_shortcut.key()
         )
     }
 }
@@ -164,6 +214,11 @@ fn parse_settings(contents: &str) -> Settings {
                     if (16..=4096).contains(&value) {
                         settings.image_cache_size_mb = value;
                     }
+                }
+            }
+            "paste_shortcut" => {
+                if let Some(value) = PasteShortcut::parse(value.trim()) {
+                    settings.paste_shortcut = value;
                 }
             }
             _ => {}
@@ -206,7 +261,7 @@ pub(crate) fn application_support_directory() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_settings, FallbackMode, NerdFontChoice, Settings};
+    use super::{parse_settings, FallbackMode, NerdFontChoice, PasteShortcut, Settings};
 
     #[test]
     fn defaults_are_conservative_and_use_a_128_mb_image_cache() {
@@ -214,6 +269,7 @@ mod tests {
         assert_eq!(Settings::default().nerd_font, NerdFontChoice::Symbols);
         assert_eq!(Settings::default().fallback_mode, FallbackMode::Auto);
         assert!(!Settings::default().startup_maximized);
+        assert_eq!(Settings::default().paste_shortcut, PasteShortcut::CmdV);
         assert_eq!(NerdFontChoice::Symbols.family(), "Symbols Nerd Font");
         assert_eq!(
             NerdFontChoice::SymbolsMono.family(),
@@ -224,12 +280,24 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nimage_cache_size_mb=512\nunknown=x\nimage_cache_size_mb=1\n",
+            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nunknown=x\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
         assert_eq!(settings.fallback_mode, FallbackMode::Force);
         assert!(settings.startup_maximized);
         assert_eq!(settings.image_cache_size_mb, 512);
+        assert_eq!(settings.paste_shortcut, PasteShortcut::CtrlV);
+    }
+
+    #[test]
+    fn paste_shortcut_matches_only_its_configured_keystroke() {
+        let cmd_v = gpui::Keystroke::parse("cmd-v").expect("cmd-v should parse");
+        let ctrl_v = gpui::Keystroke::parse("ctrl-v").expect("ctrl-v should parse");
+
+        assert!(PasteShortcut::CmdV.matches(&cmd_v));
+        assert!(!PasteShortcut::CmdV.matches(&ctrl_v));
+        assert!(PasteShortcut::CtrlV.matches(&ctrl_v));
+        assert!(!PasteShortcut::Disabled.matches(&cmd_v));
     }
 }

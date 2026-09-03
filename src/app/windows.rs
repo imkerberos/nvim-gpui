@@ -194,6 +194,31 @@ impl Render for SettingsWindow {
             ));
         }
 
+        let mut paste_shortcut_options = div().w_full().flex().items_center();
+        for (index, shortcut) in [
+            settings::PasteShortcut::CmdV,
+            settings::PasteShortcut::CtrlV,
+            settings::PasteShortcut::Disabled,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = source.clone();
+            paste_shortcut_options = paste_shortcut_options.child(setting_option_button(
+                ("settings-paste-shortcut", index),
+                shortcut.label(),
+                current.paste_shortcut == shortcut,
+                move |cx| {
+                    source.update(cx, |view, cx| {
+                        let mut next = view.settings.clone();
+                        next.paste_shortcut = shortcut;
+                        view.update_settings(next);
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+
         let source = self.source.clone();
         let startup_options = div()
             .w_full()
@@ -290,14 +315,9 @@ impl Render for SettingsWindow {
                 cache_options,
             ))
             .child(setting_row(
-                "Input method",
-                "Reserved for the optional system/Rime input router.",
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(rgb(MUTED_TEXT))
-                    .child("Pending"),
+                "Paste shortcut",
+                "Read the local system clipboard and paste it through Neovim.",
+                paste_shortcut_options,
             ))
             .child(setting_row(
                 "Command-line helper",

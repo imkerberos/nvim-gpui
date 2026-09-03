@@ -171,6 +171,17 @@ For a Nix-wrapped Neovim, pass the wrapper's absolute path with
 `ADDRESS` may be a TCP address such as `HOST:PORT`, or a Unix socket path.
 Unknown arguments are passed through to embedded Neovim.
 
+## Clipboard
+
+Cmd-V reads the local system clipboard and sends the text through Neovim's
+`nvim_paste` API, so multiline and mode-aware paste work in both embedded and
+remote sessions. The shortcut can be changed in Settings to Cmd-V, Ctrl-V, or
+Disabled.
+
+When using `--connect`, `+` and `*` register operations are bridged to the
+local GUI clipboard. On Linux, `*` uses the primary selection; on other
+platforms it falls back to the normal system clipboard.
+
 ## Logs
 
 Runtime logs are written to `~/Library/Application Support/nvim-gpui/logs` on

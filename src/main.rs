@@ -1,4 +1,5 @@
 pub mod app;
+mod clipboard;
 pub mod grid;
 pub mod helper;
 pub mod image_store;

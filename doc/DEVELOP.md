@@ -84,6 +84,8 @@ Markdown parser, and the Kitty capability fallback used by the GUI.
 - `src/main.rs` parses process-level startup arguments and starts GPUI.
 - `src/app.rs` owns the application state, windows, layout, settings, and
   Neovim event dispatch.
+- `src/clipboard.rs` owns GPUI system clipboard access, `nvim_paste` text
+  insertion, and the remote clipboard provider bridge.
 - `src/nvim.rs` owns embedded/remote MessagePack-RPC, redraw decoding,
   environment selection, and child-process lifecycle.
 - `src/grid.rs` contains the logical cell model and the single custom
@@ -123,9 +125,25 @@ following redraw areas into the application model:
 - `set_title`, `set_icon`, and `ui_send` for image data.
 
 The client is intentionally still an early implementation. Mouse input,
-clipboard integration, complete command-line/message rendering, richer Kitty
-composition, reconnect behavior, and broader redraw coverage remain future
-slices.
+complete command-line/message rendering, richer Kitty composition, reconnect
+behavior, and broader redraw coverage remain future slices.
+
+## Clipboard
+
+The main window handles the configured paste shortcut (Cmd-V by default) by
+reading text from the local GPUI system clipboard and calling Neovim's
+`nvim_paste` API. This path is shared by embedded and remote sessions and keeps
+multiline paste inside Neovim's mode-aware paste handling.
+
+Remote sessions also register `nvim_gpui_clipboard_get` and
+`nvim_gpui_clipboard_set` request handlers. After the handlers are advertised,
+the client installs a remote `g:clipboard` provider in Neovim. Consequently,
+remote `+` and `*` register operations read and write the local GUI clipboard;
+embedded sessions leave Neovim's normal local provider unchanged.
+
+The paste shortcut is persisted in the application settings file as
+`paste_shortcut=cmd-v`, `paste_shortcut=ctrl-v`, or `paste_shortcut=disabled`.
+It can also be changed from the Settings window.
 
 ## System IME
 

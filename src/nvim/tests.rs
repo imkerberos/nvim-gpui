@@ -11,6 +11,7 @@ use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
 use super::{DisconnectReason, NvimCapabilities, NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
+use crate::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
 use rmpv::Value;
 use std::{
@@ -20,6 +21,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::channel,
         Arc,
     },
 };
@@ -76,6 +78,7 @@ fn api_metadata_builds_version_and_ui_capabilities() {
 
     let protocol = parse_protocol_info(&api_info).expect("API metadata should decode");
 
+    assert_eq!(protocol.channel_id, 1);
     assert_eq!(protocol.version.major, 0);
     assert_eq!(protocol.version.minor, 10);
     assert_eq!(protocol.version.patch, 4);
@@ -228,6 +231,107 @@ fn embedded_nvim_replies_to_a_nvim_rpc_request() {
             .expect("response channel should stay open")
             .is_ok(),
         "the session should remain usable after replying to a Neovim request"
+    );
+}
+
+#[test]
+fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    let (set_tx, set_rx) = channel();
+    process
+        .register_request_handler(CLIPBOARD_GET_METHOD, |_| {
+            Ok(Value::Array(vec![
+                Value::Array(vec![Value::from("")]),
+                Value::from("v"),
+            ]))
+        })
+        .expect("clipboard get handler should register");
+    process
+        .register_request_handler(CLIPBOARD_SET_METHOD, move |params| {
+            set_tx
+                .send(params.clone())
+                .map_err(|_| "clipboard test receiver was dropped".to_owned())?;
+            Ok(Value::Nil)
+        })
+        .expect("clipboard set handler should register");
+
+    let setup = process
+        .request(
+            "nvim_exec_lua",
+            Value::Array(vec![
+                Value::from(crate::clipboard::remote_provider_lua(
+                    process
+                        .protocol()
+                        .expect("protocol should be available")
+                        .channel_id,
+                )),
+                Value::Array(Vec::new()),
+            ]),
+        )
+        .expect("clipboard provider setup should queue");
+    let setup_result = setup
+        .recv_blocking()
+        .expect("clipboard provider setup response should arrive");
+    assert!(
+        setup_result.is_ok(),
+        "clipboard setup failed: {setup_result:?}"
+    );
+
+    process
+        .send_input(":call setline(1, ['one', 'two']) | call deletebufline(bufnr(), 3) | normal! gg\"+2yy\n")
+        .expect("yank command should queue");
+    let params = set_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("remote yank should reach the GUI clipboard handler");
+    let params = params
+        .as_array()
+        .expect("clipboard set params should be an array");
+    assert_eq!(params[0].as_str(), Some("+"));
+    assert_eq!(
+        params[1],
+        Value::Array(vec![
+            Value::from("one"),
+            Value::from("two"),
+            Value::from(""),
+        ])
+    );
+    assert_eq!(params[2].as_str(), Some("V"));
+}
+
+#[test]
+fn embedded_nvim_accepts_multiline_paste() {
+    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
+        .expect("embedded Neovim should start");
+    process
+        .send_input("i")
+        .expect("insert mode input should queue");
+
+    let paste = process
+        .send_paste("one\ntwo")
+        .expect("nvim_paste request should queue")
+        .recv_blocking()
+        .expect("nvim_paste response should arrive")
+        .expect("nvim_paste should succeed");
+    assert_eq!(paste, Value::Boolean(true));
+
+    let lines = process
+        .request(
+            "nvim_buf_get_lines",
+            Value::Array(vec![
+                Value::from(0),
+                Value::from(0),
+                Value::from(-1_i64),
+                Value::Boolean(false),
+            ]),
+        )
+        .expect("buffer read request should queue")
+        .recv_blocking()
+        .expect("buffer read response should arrive")
+        .expect("buffer read should succeed");
+    assert_eq!(
+        lines,
+        Value::Array(vec![Value::from("one"), Value::from("two")])
     );
 }
 

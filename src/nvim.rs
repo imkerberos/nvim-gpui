@@ -165,6 +165,10 @@ impl NvimProcess {
         self.connection.clone()
     }
 
+    pub(crate) fn is_remote(&self) -> bool {
+        matches!(self.connection, ConnectionSpec::Remote { .. })
+    }
+
     pub(crate) fn connect_from_spec(
         connection: &ConnectionSpec,
         width: u32,
@@ -379,6 +383,26 @@ impl NvimProcess {
         self.commands
             .try_send(NvimCommand::Input(input.into()))
             .map_err(|error| format!("failed to queue Neovim input: {error}"))
+    }
+
+    pub fn send_paste(
+        &self,
+        data: impl Into<String>,
+    ) -> Result<Receiver<Result<Value, String>>, String> {
+        let data = data.into();
+        log::debug!(
+            target: "nvim_gpui::input",
+            "queueing Neovim paste: bytes={}",
+            data.len()
+        );
+        self.request(
+            "nvim_paste",
+            Value::Array(vec![
+                Value::from(data),
+                Value::Boolean(false),
+                Value::from(-1_i64),
+            ]),
+        )
     }
 
     pub fn send_mouse(

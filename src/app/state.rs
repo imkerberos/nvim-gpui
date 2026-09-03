@@ -37,6 +37,9 @@ impl NvimGpui {
         this.nvim_grid_ready = !nvim_available;
         this.apply_runtime_settings();
 
+        if this.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            this.start_remote_clipboard_bridge(cx);
+        }
         if let Some(nvim) = this.nvim.as_ref() {
             this.start_event_task(nvim.events(), cx);
         }
@@ -91,6 +94,96 @@ impl NvimGpui {
                 }
             }
         }));
+    }
+
+    fn start_remote_clipboard_bridge(&mut self, cx: &mut Context<Self>) {
+        let Some(nvim) = self.nvim.as_ref() else {
+            return;
+        };
+        if !nvim.is_remote() {
+            return;
+        }
+
+        let (requests, request_queue) = crate::clipboard::channel();
+        let get_requests = requests.clone();
+        let set_requests = requests;
+        self.clipboard_task = Some(cx.spawn(async move |_weak, cx| {
+            while let Ok(request) = request_queue.recv().await {
+                if cx
+                    .update(|app| crate::clipboard::handle_on_ui_thread(app, request))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+
+        let registration = {
+            let nvim = self.nvim.as_ref().expect("remote Neovim should be present");
+            nvim.register_request_handler(
+                crate::clipboard::CLIPBOARD_GET_METHOD,
+                crate::clipboard::get_request_handler(get_requests),
+            )
+            .and_then(|_| {
+                nvim.register_request_handler(
+                    crate::clipboard::CLIPBOARD_SET_METHOD,
+                    crate::clipboard::set_request_handler(set_requests),
+                )
+            })
+        };
+        if let Err(error) = registration {
+            log::error!(
+                target: "nvim_gpui::clipboard",
+                "failed to register remote clipboard handlers: {error}"
+            );
+            self.clipboard_task = None;
+            return;
+        }
+
+        let response = self
+            .nvim
+            .as_ref()
+            .expect("remote Neovim should be present")
+            .protocol()
+            .map(|protocol| protocol.channel_id);
+        let channel_id = response.unwrap_or_default();
+        let response = self
+            .nvim
+            .as_ref()
+            .expect("remote Neovim should be present")
+            .request(
+                "nvim_exec_lua",
+                rmpv::Value::Array(vec![
+                    rmpv::Value::from(crate::clipboard::remote_provider_lua(channel_id)),
+                    rmpv::Value::Array(Vec::new()),
+                ]),
+            );
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                log::error!(
+                    target: "nvim_gpui::clipboard",
+                    "failed to install remote clipboard provider: {error}"
+                );
+                self.clipboard_task = None;
+                return;
+            }
+        };
+        cx.spawn(async move |_weak, _cx| match response.recv().await {
+            Ok(Ok(_)) => log::info!(
+                target: "nvim_gpui::clipboard",
+                "remote clipboard provider installed"
+            ),
+            Ok(Err(error)) => log::error!(
+                target: "nvim_gpui::clipboard",
+                "remote clipboard provider failed: {error}"
+            ),
+            Err(error) => log::error!(
+                target: "nvim_gpui::clipboard",
+                "remote clipboard provider response was lost: {error}"
+            ),
+        })
+        .detach();
     }
 
     fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
@@ -165,6 +258,7 @@ impl NvimGpui {
         self.nvim_version = protocol.map(|protocol| protocol.version);
         self.rpc_status = "rpc: reconnected".to_owned();
         log::info!(target: "nvim_gpui::state", "installed reconnected Neovim session");
+        self.start_remote_clipboard_bridge(cx);
         self.start_event_task(events, cx);
     }
 
@@ -205,6 +299,7 @@ impl NvimGpui {
         self.cursor_modes.clear();
         self.cursor_mode_index = 0;
         self.cursor_blink_started_at = Instant::now();
+        self.clipboard_task = None;
         self.window_title = DEFAULT_WINDOW_TITLE.to_owned();
         self.window_icon = "nvim-gpui".to_owned();
     }
@@ -1151,12 +1246,65 @@ impl NvimGpui {
                 .is_some_and(|placement| placement.visible)
     }
 
+    fn paste_from_system_clipboard(&mut self, cx: &mut Context<Self>) {
+        let text = match crate::clipboard::paste_text(cx) {
+            Ok(text) => text,
+            Err(error) => {
+                log::warn!(
+                    target: "nvim_gpui::clipboard",
+                    "could not read system clipboard for paste: {error}"
+                );
+                return;
+            }
+        };
+        let Some(nvim) = self.nvim.as_ref() else {
+            log::warn!(
+                target: "nvim_gpui::clipboard",
+                "ignoring paste because Neovim is unavailable"
+            );
+            return;
+        };
+        let response = match nvim.send_paste(text) {
+            Ok(response) => response,
+            Err(error) => {
+                log::error!(
+                    target: "nvim_gpui::clipboard",
+                    "failed to queue system paste: {error}"
+                );
+                self.rpc_status = format!("rpc paste error: {error}");
+                return;
+            }
+        };
+        cx.spawn(async move |_weak, _cx| match response.recv().await {
+            Ok(Ok(rmpv::Value::Boolean(false))) => log::warn!(
+                target: "nvim_gpui::clipboard",
+                "Neovim rejected system paste"
+            ),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => log::error!(
+                target: "nvim_gpui::clipboard",
+                "system paste failed in Neovim: {error}"
+            ),
+            Err(error) => log::error!(
+                target: "nvim_gpui::clipboard",
+                "system paste response was lost: {error}"
+            ),
+        })
+        .detach();
+    }
+
     pub(super) fn on_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        if self.settings.paste_shortcut.matches(&event.keystroke) {
+            self.paste_from_system_clipboard(cx);
+            window.prevent_default();
+            return;
+        }
+
         let target = self.input_router.target();
         if !should_route_key_to_neovim(target, &event.keystroke) {
             return;
