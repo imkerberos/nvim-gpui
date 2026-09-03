@@ -3,6 +3,7 @@ pub mod grid;
 pub mod helper;
 pub mod image_store;
 pub mod input;
+mod logging;
 pub mod nvim;
 pub mod platform;
 pub mod settings;
@@ -188,23 +189,59 @@ fn main() {
         }
     };
 
+    let _logger = match logging::init() {
+        Ok(logger) => Some(logger),
+        Err(error) => {
+            eprintln!("[logging] {error}");
+            None
+        }
+    };
+    log::info!(
+        target: "nvim_gpui::startup",
+        "starting nvim-gpui (debug_window={}, connection={:?}, nvim_args={})",
+        options.debug_window,
+        options.connection,
+        options.nvim_args.len()
+    );
+
     if let Err(error) = helper::ensure_installed() {
+        log::warn!(target: "nvim_gpui::startup", "installation check failed: {error}");
         eprintln!("[gpvim] {error}");
     }
 
     if let Some(path) = options.working_directory.as_deref() {
         if let Err(error) = env::set_current_dir(path) {
+            log::error!(
+                target: "nvim_gpui::startup",
+                "failed to set working directory {}: {error}",
+                path.to_string_lossy()
+            );
             eprintln!("gpvim: failed to set working directory: {error}");
             return;
         }
+        log::debug!(
+            target: "nvim_gpui::startup",
+            "working directory set to {}",
+            path.to_string_lossy()
+        );
     } else if let Some(path) = app_bundle_working_directory() {
         if let Err(error) = env::set_current_dir(&path) {
+            log::error!(
+                target: "nvim_gpui::startup",
+                "failed to set AppBundle working directory {}: {error}",
+                path.display()
+            );
             eprintln!(
                 "gpvim: failed to set AppBundle working directory {}: {error}",
                 path.display()
             );
             return;
         }
+        log::debug!(
+            target: "nvim_gpui::startup",
+            "AppBundle working directory set to {}",
+            path.display()
+        );
     }
 
     app::run(options);

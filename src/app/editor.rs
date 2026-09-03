@@ -41,6 +41,7 @@ impl EntityInputHandler for NvimGpui {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // The local buffer only represents the active composition. Once the
         // platform cancels its marked range, there is no text to retain here.
+        log::debug!(target: "nvim_gpui::ime", "IME composition unmarked");
         self.system_ime.clear();
         cx.notify();
     }
@@ -56,10 +57,19 @@ impl EntityInputHandler for NvimGpui {
             return;
         }
 
+        log::debug!(
+            target: "nvim_gpui::ime",
+            "IME text committed: bytes={}, replacement_range={range:?}",
+            text.len()
+        );
         self.system_ime.replace_text(range, text);
         if !text.is_empty() {
             if let Some(nvim) = self.nvim.as_ref() {
                 if let Err(error) = nvim.send_input(text.to_owned()) {
+                    log::error!(
+                        target: "nvim_gpui::ime",
+                        "failed to forward committed IME text: {error}"
+                    );
                     self.rpc_status = format!("rpc input error: {error}");
                 }
             }
@@ -77,6 +87,11 @@ impl EntityInputHandler for NvimGpui {
         cx: &mut Context<Self>,
     ) {
         if self.input_router.target() == InputTarget::SystemIme {
+            log::debug!(
+                target: "nvim_gpui::ime",
+                "IME preedit updated: bytes={}, replacement_range={range:?}, selected_range={new_selected_range:?}",
+                new_text.len()
+            );
             self.system_ime
                 .replace_and_mark_text(range, new_text, new_selected_range);
             cx.notify();
@@ -85,12 +100,19 @@ impl EntityInputHandler for NvimGpui {
 
     fn bounds_for_range(
         &mut self,
-        _range_utf16: Range<usize>,
+        range_utf16: Range<usize>,
         element_bounds: Bounds<gpui::Pixels>,
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<gpui::Pixels>> {
         let cursor = self.ime_cursor_position()?;
+        log::trace!(
+            target: "nvim_gpui::ime",
+            "IME bounds requested: grid={:?}, range={range_utf16:?}, row={}, col={}",
+            self.ime_input_grid,
+            cursor.row,
+            cursor.col
+        );
         let font_spec = self.current_grid_font(window);
         let cell_width = font_spec.cell_width(window);
         let line_height = font_spec.line_height(window, self.linespace);
@@ -149,6 +171,10 @@ impl NvimGpui {
                     cx,
                 );
                 if invalidate_coordinates {
+                    log::debug!(
+                        target: "nvim_gpui::ime",
+                        "registered system IME input handler: grid={grid}"
+                    );
                     // Schedule this after the current paint so the platform
                     // observes the input handler for this grid, rather than
                     // the handler from the previous frame.
@@ -382,6 +408,11 @@ impl Render for NvimGpui {
         let active_ime_grid =
             (self.input_router.target() == InputTarget::SystemIme).then_some(self.cursor_grid);
         if self.ime_input_grid != active_ime_grid {
+            log::debug!(
+                target: "nvim_gpui::ime",
+                "IME input grid changed: from={:?}, to={active_ime_grid:?}",
+                self.ime_input_grid
+            );
             self.ime_input_grid = active_ime_grid;
             self.ime_coordinates_dirty = true;
         }
@@ -634,6 +665,10 @@ impl NvimGpui {
         let modifier = input::nvim_mouse_modifiers(modifiers);
         if let Some(nvim) = self.nvim.as_ref() {
             if let Err(error) = nvim.send_mouse(button, action, modifier, 0, row, col) {
+                log::error!(
+                    target: "nvim_gpui::input",
+                    "mouse event failed: button={button}, action={action}, row={row}, col={col}: {error}"
+                );
                 self.rpc_status = format!("rpc mouse error: {error}");
             }
         }
@@ -725,6 +760,10 @@ impl NvimGpui {
                 let action = if x_steps > 0 { "right" } else { "left" };
                 if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
                 {
+                    log::error!(
+                        target: "nvim_gpui::input",
+                        "horizontal wheel event failed: action={action}, row={row}, col={col}: {error}"
+                    );
                     self.rpc_status = format!("rpc mouse error: {error}");
                     break;
                 }
@@ -733,6 +772,10 @@ impl NvimGpui {
                 let action = if y_steps > 0 { "up" } else { "down" };
                 if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
                 {
+                    log::error!(
+                        target: "nvim_gpui::input",
+                        "vertical wheel event failed: action={action}, row={row}, col={col}: {error}"
+                    );
                     self.rpc_status = format!("rpc mouse error: {error}");
                     break;
                 }

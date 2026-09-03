@@ -9,6 +9,13 @@ impl NvimGpui {
         initial_theme: Option<NvimTheme>,
     ) -> Self {
         let nvim_available = nvim.is_ok();
+        match &nvim {
+            Ok(_) => log::info!(target: "nvim_gpui::state", "Neovim connection initialized"),
+            Err(error) => log::error!(
+                target: "nvim_gpui::state",
+                "Neovim connection unavailable: {error}"
+            ),
+        }
         let mut this = Self {
             focus_handle: Some(cx.focus_handle()),
             grid: Rc::new(grid::GridModel::new(
@@ -57,6 +64,13 @@ impl NvimGpui {
                         | Err(async_channel::TryRecvError::Closed) => break,
                     }
                 }
+                if batch.len() > 1 {
+                    log::debug!(
+                        target: "nvim_gpui::state",
+                        "processing Neovim event batch: {} events",
+                        batch.len()
+                    );
+                }
                 let disconnect_reason = batch.iter().find_map(|event| match event {
                     NvimEvent::Disconnected { reason } => Some(reason.clone()),
                     _ => None,
@@ -80,6 +94,7 @@ impl NvimGpui {
     }
 
     fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
+        log::info!(target: "nvim_gpui::state", "Neovim disconnected: reason={reason:?}");
         match reason {
             DisconnectReason::Requested => {}
             DisconnectReason::CleanExit => cx.quit(),
@@ -103,6 +118,12 @@ impl NvimGpui {
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
         let attempt = self.reconnect_attempt;
         let backoff = 250_u64 * (1_u64 << attempt.saturating_sub(1).min(4));
+        log::warn!(
+            target: "nvim_gpui::state",
+            "scheduling Neovim reconnect: attempt={}, backoff_ms={}, reason={reason:?}",
+            attempt,
+            backoff
+        );
         self.rpc_status = format!("rpc: reconnecting (attempt {attempt})");
 
         let task = cx.background_spawn(async move {
@@ -115,10 +136,15 @@ impl NvimGpui {
                 this.reconnect_task = None;
                 match result {
                     Ok(nvim) => {
+                        log::info!(target: "nvim_gpui::state", "Neovim reconnected");
                         this.reconnect_attempt = 0;
                         this.install_reconnected_nvim(nvim, cx);
                     }
                     Err(error) => {
+                        log::warn!(
+                            target: "nvim_gpui::state",
+                            "Neovim reconnect failed: {error}"
+                        );
                         this.rpc_status = format!("rpc reconnect failed: {error}");
                         this.schedule_reconnect(reason.clone(), cx);
                     }
@@ -138,6 +164,7 @@ impl NvimGpui {
         self.api_level = protocol.as_ref().map(|protocol| protocol.version.api_level);
         self.nvim_version = protocol.map(|protocol| protocol.version);
         self.rpc_status = "rpc: reconnected".to_owned();
+        log::info!(target: "nvim_gpui::state", "installed reconnected Neovim session");
         self.start_event_task(events, cx);
     }
 
@@ -317,8 +344,19 @@ impl NvimGpui {
         }
 
         match nvim.send_resize(width, height) {
-            Ok(()) => self.last_resize = Some(size),
-            Err(error) => self.rpc_status = format!("rpc resize error: {error}"),
+            Ok(()) => {
+                log::debug!(
+                    target: "nvim_gpui::state",
+                    "sent Neovim resize: width={}, height={}",
+                    width,
+                    height
+                );
+                self.last_resize = Some(size);
+            }
+            Err(error) => {
+                log::error!(target: "nvim_gpui::state", "Neovim resize failed: {error}");
+                self.rpc_status = format!("rpc resize error: {error}");
+            }
         }
     }
 
@@ -328,11 +366,20 @@ impl NvimGpui {
                 version,
                 capabilities: _,
             } => {
+                log::info!(
+                    target: "nvim_gpui::state",
+                    "Neovim API ready: version={version}, api_level={}",
+                    version.api_level
+                );
                 self.api_level = Some(version.api_level);
                 self.nvim_version = Some(version);
                 self.rpc_status = format!("rpc: Neovim {version} / API {}", version.api_level);
             }
             NvimEvent::UiAttached { width, height } => {
+                log::info!(
+                    target: "nvim_gpui::state",
+                    "Neovim UI attached: width={width}, height={height}"
+                );
                 self.rpc_status = format!("rpc: attached {width}×{height}");
             }
             NvimEvent::GridResized {
@@ -340,6 +387,10 @@ impl NvimGpui {
                 width,
                 height,
             } => {
+                log::debug!(
+                    target: "nvim_gpui::state",
+                    "grid resized: grid={grid}, width={width}, height={height}"
+                );
                 self.ime_coordinates_dirty = true;
                 if grid == 1 {
                     self.pending_grid = Some(self.new_styled_grid(width as usize, height as usize));
@@ -368,6 +419,7 @@ impl NvimGpui {
                 self.pending_grid_mut_for(grid).clear();
             }
             NvimEvent::GridDestroy { grid } => {
+                log::debug!(target: "nvim_gpui::state", "grid destroyed: grid={grid}");
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.grid_size = None;
@@ -610,6 +662,11 @@ impl NvimGpui {
             NvimEvent::ModeChanged { mode, mode_idx } => {
                 self.ime_coordinates_dirty = true;
                 self.input_router.set_nvim_mode(&mode);
+                log::info!(
+                    target: "nvim_gpui::state",
+                    "Neovim mode changed: mode={mode}, mode_idx={mode_idx}, input_target={:?}",
+                    self.input_router.target()
+                );
                 if self.input_router.target() != InputTarget::SystemIme {
                     self.system_ime.clear();
                 }
@@ -620,7 +677,13 @@ impl NvimGpui {
                 self.cursor_blink_started_at = Instant::now();
             }
             NvimEvent::UiSend { data } => self.apply_ui_send(&data),
-            NvimEvent::MouseEnabled(enabled) => self.mouse_enabled = enabled,
+            NvimEvent::MouseEnabled(enabled) => {
+                log::debug!(
+                    target: "nvim_gpui::state",
+                    "Neovim mouse input enabled: {enabled}"
+                );
+                self.mouse_enabled = enabled;
+            }
             NvimEvent::Flush => {
                 self.commit_pending_grid();
                 self.commit_pending_theme();
@@ -629,9 +692,14 @@ impl NvimGpui {
                 self.update_startup_grid_ready();
             }
             NvimEvent::Error(error) => {
+                log::error!(target: "nvim_gpui::state", "Neovim event error: {error}");
                 self.rpc_status = format!("rpc error: {error}");
             }
-            NvimEvent::Disconnected { .. } => {
+            NvimEvent::Disconnected { reason } => {
+                log::info!(
+                    target: "nvim_gpui::state",
+                    "Neovim disconnected: reason={reason:?}"
+                );
                 self.rpc_status = "rpc: disconnected".to_owned();
             }
         }
@@ -660,6 +728,10 @@ impl NvimGpui {
                 KittyEvent::TerminalResponse(response) => {
                     if let Some(nvim) = self.nvim.as_ref() {
                         if let Err(error) = nvim.send_term_event("termresponse", response) {
+                            log::error!(
+                                target: "nvim_gpui::nvim",
+                                "failed to forward Neovim terminal response: {error}"
+                            );
                             self.rpc_status = format!("rpc terminal response error: {error}");
                         }
                     }
@@ -1092,6 +1164,7 @@ impl NvimGpui {
 
         if let Some(nvim) = self.nvim.as_ref() {
             if let Err(error) = nvim.send_input(key_to_nvim_input(&event.keystroke)) {
+                log::error!(target: "nvim_gpui::input", "key event failed: {error}");
                 self.rpc_status = format!("rpc input error: {error}");
             }
         }

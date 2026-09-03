@@ -3,6 +3,14 @@ use super::*;
 pub(crate) fn run(options: CliOptions) {
     let app_settings = settings::Settings::load();
     let startup_maximized = app_settings.startup_maximized;
+    log::debug!(
+        target: "nvim_gpui::startup",
+        "loaded settings: nerd_font={}, fallback_mode={}, startup_maximized={}, image_cache_size_mb={}",
+        app_settings.nerd_font.key(),
+        app_settings.fallback_mode.key(),
+        app_settings.startup_maximized,
+        app_settings.image_cache_size_mb
+    );
     let nvim = match options.connection {
         NvimConnection::Embed => {
             let nvim_command = options
@@ -20,20 +28,26 @@ pub(crate) fn run(options: CliOptions) {
             NvimProcess::connect(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT, &address)
         }
     };
+    if let Err(error) = &nvim {
+        log::error!(target: "nvim_gpui::startup", "Neovim initialization failed: {error}");
+    }
     let show_debug_window = options.debug_window;
     let initial_theme = nvim.as_ref().ok().and_then(NvimProcess::startup_theme);
 
+    log::info!(target: "nvim_gpui::startup", "starting GPUI application");
     Application::new()
         .with_assets(AppAssets)
         .run(move |cx: &mut App| {
             let nerd_font_registered = match platform::register_bundled_fonts(cx) {
                 Ok(()) => true,
                 Err(error) => {
+                    log::error!(target: "nvim_gpui::startup", "bundled font registration failed: {error}");
                     eprintln!("[font] {error}");
                     false
                 }
             };
             if let Err(error) = platform::install_dock_icon() {
+                log::warn!(target: "nvim_gpui::startup", "dock icon installation failed: {error}");
                 eprintln!("[platform] {error}");
             }
 
@@ -79,6 +93,8 @@ pub(crate) fn run(options: CliOptions) {
                     |_, _| nvim_view.clone(),
                 )
                 .expect("failed to open nvim-gpui window");
+
+            log::info!(target: "nvim_gpui::startup", "main window opened");
 
             main_window
                 .update(cx, |view, window, cx| {

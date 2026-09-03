@@ -91,6 +91,12 @@ impl NvimProcess {
     ) -> Result<Self, String> {
         let nvim_command = nvim_command.as_ref().to_owned();
         let nvim_args: Vec<OsString> = nvim_args.into_iter().collect();
+        log::info!(
+            target: "nvim_gpui::nvim",
+            "starting embedded Neovim command={} args={}",
+            nvim_command.to_string_lossy(),
+            nvim_args.len()
+        );
         let mut command = Command::new(&nvim_command);
         apply_nvim_environment(&mut command);
         command
@@ -129,6 +135,10 @@ impl NvimProcess {
     }
 
     pub fn connect(width: u32, height: u32, address: &str) -> Result<Self, String> {
+        log::info!(
+            target: "nvim_gpui::nvim",
+            "connecting to remote Neovim address={address}"
+        );
         let (reader, writer, remote) = connect_remote(address)?;
         let writer: SharedWriter = Arc::new(Mutex::new(writer));
         Self::start_workers(
@@ -251,6 +261,7 @@ impl NvimProcess {
                     child_exit_status(&worker_child).map(|status| status.success())
                 };
                 if let Err(error) = result.as_ref() {
+                    log::error!(target: "nvim_gpui::nvim", "Neovim RPC worker failed: {error}");
                     if !shutdown_requested && error != NVIM_EXITED {
                         eprintln!("[nvim-rpc] {error}");
                         let _ = worker_tx.send_blocking(NvimEvent::Error(error.clone()));
@@ -273,6 +284,10 @@ impl NvimProcess {
                     worker_remote.is_some(),
                     clean_exit,
                 );
+                log::info!(
+                    target: "nvim_gpui::nvim",
+                    "Neovim RPC worker stopped: reason={reason:?}"
+                );
                 let _ = worker_tx.send_blocking(NvimEvent::Disconnected { reason });
             })
             .map_err(|error| {
@@ -283,6 +298,12 @@ impl NvimProcess {
 
         let startup_theme = startup_theme_rx.recv_timeout(STARTUP_THEME_TIMEOUT).ok();
         let protocol = protocol_rx.recv_timeout(STARTUP_THEME_TIMEOUT).ok();
+        log::debug!(
+            target: "nvim_gpui::nvim",
+            "Neovim startup handshake received: theme={}, protocol={}",
+            startup_theme.is_some(),
+            protocol.is_some()
+        );
 
         Ok(Self {
             child,
@@ -322,6 +343,7 @@ impl NvimProcess {
         F: Fn(&Value) -> Result<Value, String> + Send + Sync + 'static,
     {
         let method = method.into();
+        log::debug!(target: "nvim_gpui::nvim", "registering RPC request handler: {method}");
         let methods = {
             let mut handlers = self
                 .request_handlers
@@ -340,10 +362,12 @@ impl NvimProcess {
         method: impl Into<String>,
         params: Value,
     ) -> Result<Receiver<Result<Value, String>>, String> {
+        let method = method.into();
+        log::debug!(target: "nvim_gpui::nvim", "queueing RPC request: {method}");
         let (response_tx, response_rx) = async_channel::bounded(1);
         self.commands
             .try_send(NvimCommand::Request {
-                method: method.into(),
+                method,
                 params,
                 response: response_tx,
             })
@@ -379,6 +403,12 @@ impl NvimProcess {
     }
 
     pub fn send_resize(&self, width: u32, height: u32) -> Result<(), String> {
+        log::debug!(
+            target: "nvim_gpui::nvim",
+            "queueing Neovim resize: width={}, height={}",
+            width,
+            height
+        );
         self.commands
             .try_send(NvimCommand::Resize { width, height })
             .map_err(|error| format!("failed to queue Neovim resize: {error}"))
@@ -400,6 +430,7 @@ impl NvimProcess {
 
 impl Drop for NvimProcess {
     fn drop(&mut self) {
+        log::debug!(target: "nvim_gpui::nvim", "shutting down Neovim connection");
         self.shutdown_requested.store(true, Ordering::Release);
         stop_backend(&self.child, &self.remote);
     }
@@ -565,6 +596,7 @@ fn run_command_writer(
             }
         }
         if let Err(error) = write_shared_message(&writer, &message) {
+            log::error!(target: "nvim_gpui::nvim", "failed to write Neovim RPC message: {error}");
             if let Some((id, response)) = pending_response {
                 if let Ok(mut pending) = pending_requests.lock() {
                     pending.remove(&id);

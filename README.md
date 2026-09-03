@@ -10,6 +10,9 @@ A native macOS graphical frontend for Neovim.
 Neovim editing experience, but it is not yet a complete replacement for
 Neovide or a terminal UI.
 
+Platform support is currently limited to macOS. Linux and Windows support are
+coming soon.
+
 <p align="center">
   <img src="assets/screenshots/editor-cjk.png" alt="CJK text editing in nvim-gpui" width="32%">
   <img src="assets/screenshots/nerd-fonts.png" alt="Nerd Font rendering in nvim-gpui" width="32%">
@@ -167,6 +170,18 @@ For a Nix-wrapped Neovim, pass the wrapper's absolute path with
 
 `ADDRESS` may be a TCP address such as `HOST:PORT`, or a Unix socket path.
 Unknown arguments are passed through to embedded Neovim.
+
+## Logs
+
+Runtime logs are written to `~/Library/Application Support/nvim-gpui/logs` on
+macOS. Set `NVIM_GPUI_LOG_DIR` to use another directory. The default log
+level is `info`; use `RUST_LOG` for more detail, for example:
+
+```sh
+RUST_LOG=nvim_gpui=debug gpvim
+```
+
+Log files rotate at 10 MiB, with five rotated files retained.
 
 ## Current limitations
 

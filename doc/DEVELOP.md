@@ -97,6 +97,8 @@ Markdown parser, and the Kitty capability fallback used by the GUI.
 - `src/platform.rs` contains macOS font registration, Dock icon setup, and
   platform-specific window behavior.
 - `src/settings.rs` persists user settings independently from Neovim.
+- `src/logging.rs` configures the `log` facade and the bounded asynchronous
+  `flexi_logger` file logger.
 - `src/helper.rs` and `src/bin/gpvim.rs` implement the Rust `gpvim` launcher
   used by the AppBundle and CLI installation flow.
 
@@ -124,6 +126,101 @@ The client is intentionally still an early implementation. Mouse input,
 clipboard integration, complete command-line/message rendering, richer Kitty
 composition, reconnect behavior, and broader redraw coverage remain future
 slices.
+
+## System IME
+
+System text input is exposed through GPUI's `EntityInputHandler`. The
+`InputRouter` selects the system IME in Insert mode when Rime is disabled, and
+in command-line or prompt contexts unless both Rime and its command-line mode
+are enabled. Normal mode and terminal mode remain owned by Neovim.
+
+Do not send every key event to both the system IME and Neovim. When the target
+is `InputTarget::SystemIme`, printable keys, space, and keys reported as being
+in IME composition are left to the platform input handler. Otherwise the
+character can be committed once by `KeyDownEvent` and a second time by the
+IME callback. Control, navigation, editing, and mode-switch keys such as
+Escape, Enter, Backspace, arrows, and modified keys are still forwarded to
+Neovim. `InputTarget::Rime` is currently an input-routing boundary rather than
+an implemented text backend.
+
+The platform may present an IME using no-inline composition or inline
+composition. Both cases enter through the GPUI input-handler callbacks, but
+the client-side state is handled as follows:
+
+- `replace_and_mark_text_in_range` updates a transient `SystemImeState` for
+  the preedit text. It does not modify Neovim or `GridModel`.
+- The inline preedit is merged during `GridElement`'s cell paint pass. It is
+  not a fake Neovim cell and does not use the underlying cell's virtual-text
+  highlight; it uses normal text attributes and its own marked-text style.
+- The caret position is measured from the shaped preedit prefix, so it moves
+  with the IME selection rather than remaining at the original cell.
+- `replace_text_in_range` forwards only the committed text to Neovim once,
+  then clears the transient state. Neovim remains the authority for the
+  actual grid contents, so preedit text must never be inserted into the
+  Neovim buffer manually.
+- `unmark_text` cancels the transient composition without sending text.
+
+GPUI exposes UTF-16 ranges to the platform. `SystemImeState` stores UTF-8
+byte ranges internally and performs the conversion at the input boundary.
+This distinction must be preserved when changing IME callbacks or rendering
+the marked range.
+
+Multigrid coordinate handling is intentional. `cursor_grid` is the last
+cursor grid committed at `flush`; `pending_cursor_grid` belongs to the current
+redraw batch. `ime_input_grid` identifies the painted grid element that owns
+the active system IME handler, and is therefore separate from both pending
+state and the general cursor lookup. `ime_cursor_position()` must read the
+cursor from `ime_input_grid` and return coordinates local to that grid. The
+handler then combines those local coordinates with its element bounds, which
+already contain the grid's screen placement. Grid movement, scrolling,
+resizing, font metric changes, and mode changes mark the IME coordinates
+dirty; the next painted handler calls
+`Window::invalidate_character_coordinates()`.
+
+Relevant regression tests include:
+
+- `input::tests::system_ime_state_round_trips_utf16_ranges`;
+- `input::tests::system_ime_owns_printable_keys_but_not_control_keys`;
+- `app::tests::ime_cursor_position_uses_the_registered_grid`; and
+- `app::tests::cursor_grid_is_committed_only_at_flush`.
+
+The current IME path is implemented and tested on macOS. Other platform
+backends are not yet supported by the project.
+
+## Logging and diagnostics
+
+The application uses the `log` facade with `flexi_logger`. Logging is
+initialized in `src/main.rs` before the installation check, working-directory
+setup, Neovim startup, and GPUI application launch. If the logger cannot be
+started, the application reports the problem on stderr and continues without
+file logging.
+
+By default, macOS logs are written to:
+
+```text
+~/Library/Application Support/nvim-gpui/logs/
+```
+
+Set `NVIM_GPUI_LOG_DIR` to override the directory. The current file is
+rotated at 10 MiB and five rotated files are retained. `WriteMode::Async` is
+used so logging does not block the UI or RPC path. The logger handle remains
+alive for the lifetime of `main`, allowing the asynchronous writer to flush
+when the application exits.
+
+The default level is `info`, and `RUST_LOG` uses the normal `log` filter
+syntax. Useful diagnostics include:
+
+```sh
+RUST_LOG=nvim_gpui=debug gpvim --debug-window
+RUST_LOG=nvim_gpui::ime=trace,nvim_gpui::state=debug gpvim
+```
+
+The main targets are `nvim_gpui::startup`, `nvim_gpui::nvim`,
+`nvim_gpui::state`, `nvim_gpui::ime`, and `nvim_gpui::input`. IME logging
+records lifecycle events, byte lengths, UTF-16 ranges, grid IDs, and cursor
+coordinates, but not the raw input text. Avoid adding per-cell or per-key
+`info` logs; use `debug` or `trace` for high-frequency diagnostics and keep
+payloads bounded.
 
 ## Testing an external Neovim configuration
 

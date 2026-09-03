@@ -177,18 +177,22 @@ fn settings_path() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
 
+    application_support_directory().map(|directory| directory.join("settings.conf"))
+}
+
+pub(crate) fn application_support_directory() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         env::var_os("HOME")
             .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/nvim-gpui/settings.conf"))
+            .map(|home| home.join("Library/Application Support/nvim-gpui"))
     }
 
     #[cfg(target_os = "windows")]
     {
         env::var_os("APPDATA")
             .map(PathBuf::from)
-            .map(|app_data| app_data.join("nvim-gpui/settings.conf"))
+            .map(|app_data| app_data.join("nvim-gpui"))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -196,7 +200,7 @@ fn settings_path() -> Option<PathBuf> {
         env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|config| config.join("nvim-gpui/settings.conf"))
+            .map(|config| config.join("nvim-gpui"))
     }
 }
 
