@@ -164,6 +164,8 @@ impl NvimGpui {
         self.viewport_animations.clear();
         self.cursor_grid = 1;
         self.pending_cursor_grid = None;
+        self.ime_input_grid = None;
+        self.ime_coordinates_dirty = true;
         self.image_store.clear();
         self.image_sources.clear();
         self.mouse_option = "nvi".to_owned();
@@ -338,6 +340,7 @@ impl NvimGpui {
                 width,
                 height,
             } => {
+                self.ime_coordinates_dirty = true;
                 if grid == 1 {
                     self.pending_grid = Some(self.new_styled_grid(width as usize, height as usize));
                     self.grid_size = Some((width, height));
@@ -377,6 +380,7 @@ impl NvimGpui {
                 // `grid_cursor_goto` belongs to the current redraw batch. Do
                 // not expose it until `flush`, otherwise a partial redraw can
                 // paint the cursor over a different, already committed grid.
+                self.ime_coordinates_dirty = true;
                 self.pending_cursor_grid = Some(grid);
                 self.pending_grid_mut_for(grid)
                     .set_cursor(row as usize, col as usize);
@@ -414,6 +418,7 @@ impl NvimGpui {
                 rows,
                 cols,
             } => {
+                self.ime_coordinates_dirty = true;
                 self.pending_grid_mut_for(grid).scroll(
                     top as usize,
                     bot as usize,
@@ -431,6 +436,7 @@ impl NvimGpui {
                 width,
                 height,
             } => {
+                self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
                 placement.row = row as i64;
                 placement.col = col as i64;
@@ -455,6 +461,7 @@ impl NvimGpui {
                 screen_row,
                 screen_col,
             } => {
+                self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
                 placement.row = screen_row;
                 placement.col = screen_col;
@@ -493,6 +500,7 @@ impl NvimGpui {
                 left,
                 right,
             } => {
+                self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
                 placement.viewport_margins = Some(GridViewportMargins {
                     top,
@@ -510,6 +518,7 @@ impl NvimGpui {
                 zindex,
                 compindex,
             } => {
+                self.ime_coordinates_dirty = true;
                 // A message grid is not associated with a normal window, so
                 // Neovim positions it with msg_set_pos instead of win_pos.
                 // Keep it in the same placement table as window grids so its
@@ -528,16 +537,19 @@ impl NvimGpui {
                 self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinExternalPos { grid, win: _ } => {
+                self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinHide { grid } => {
+                self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinClose { grid } => {
+                self.ime_coordinates_dirty = true;
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.grid_size = None;
@@ -554,6 +566,7 @@ impl NvimGpui {
                         self.mouse_enabled = self.mouse_option_allows_current_mode();
                     }
                     "guifont" => {
+                        self.ime_coordinates_dirty = true;
                         self.guifont = Some(value);
                         self.resolved_grid_font = None;
                         self.resolved_grid_wide_font = None;
@@ -561,12 +574,14 @@ impl NvimGpui {
                         self.shaping_cache.borrow_mut().clear();
                     }
                     "guifontwide" => {
+                        self.ime_coordinates_dirty = true;
                         self.guifontwide = Some(value);
                         self.resolved_grid_wide_font = None;
                         self.last_resize = None;
                         self.shaping_cache.borrow_mut().clear();
                     }
                     "linespace" => {
+                        self.ime_coordinates_dirty = true;
                         self.linespace = parse_non_negative_float(&value).unwrap_or(0.0);
                         self.last_resize = None;
                     }
@@ -593,6 +608,7 @@ impl NvimGpui {
                 self.cursor_blink_started_at = Instant::now();
             }
             NvimEvent::ModeChanged { mode, mode_idx } => {
+                self.ime_coordinates_dirty = true;
                 self.input_router.set_nvim_mode(&mode);
                 if self.input_router.target() != InputTarget::SystemIme {
                     self.system_ime.clear();
@@ -608,6 +624,7 @@ impl NvimGpui {
             NvimEvent::Flush => {
                 self.commit_pending_grid();
                 self.commit_pending_theme();
+                self.ime_coordinates_dirty = true;
                 self.startup_flush_seen = true;
                 self.update_startup_grid_ready();
             }
@@ -798,6 +815,20 @@ impl NvimGpui {
             self.grid_placements.get(&self.cursor_grid).copied()?
         };
         Self::cursor_screen_position(&model, placement)
+    }
+
+    /// Return the cursor in the local coordinate system of the grid that owns
+    /// the currently registered system IME handler. The handler's
+    /// `element_bounds` already includes the grid's screen placement, so the
+    /// caller must add only this local position.
+    pub(super) fn ime_cursor_position(&self) -> Option<grid::CursorVisualPosition> {
+        let grid = self.ime_input_grid?;
+        let model = if grid == 1 {
+            self.grid.as_ref()
+        } else {
+            self.other_grids.get(&grid)?.as_ref()
+        };
+        model.cursor_visual_position()
     }
 
     fn pending_cursor_screen_position(&self) -> Option<grid::CursorVisualPosition> {

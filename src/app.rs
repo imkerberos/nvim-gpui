@@ -305,6 +305,12 @@ struct NvimGpui {
     viewport_animations: HashMap<u64, ViewportAnimation>,
     cursor_grid: u64,
     pending_cursor_grid: Option<u64>,
+    /// Grid whose element owns the currently registered system IME handler.
+    /// This is separate from `cursor_grid` because the platform input handler
+    /// lives for the painted frame, while Neovim cursor state can change
+    /// between frames.
+    ime_input_grid: Option<u64>,
+    ime_coordinates_dirty: bool,
     image_store: image_store::ImageStore,
     image_sources: HashMap<ImageId, Arc<Image>>,
     nerd_font_family: Option<String>,
@@ -370,6 +376,8 @@ impl Default for NvimGpui {
             viewport_animations: HashMap::new(),
             cursor_grid: 1,
             pending_cursor_grid: None,
+            ime_input_grid: None,
+            ime_coordinates_dirty: true,
             image_store: image_store::ImageStore::new(),
             image_sources: HashMap::new(),
             nerd_font_family: None,

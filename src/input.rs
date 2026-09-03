@@ -274,10 +274,24 @@ impl SystemImeState {
         }
     }
 
+    pub fn selected_range_utf8(&self) -> Range<usize> {
+        self.selected_range.clone()
+    }
+
     pub fn marked_text_range(&self) -> Option<Range<usize>> {
         self.marked_range
             .as_ref()
             .map(|range| self.range_to_utf16(range))
+    }
+
+    /// Return the marked range in the representation used by Rust strings.
+    ///
+    /// GPUI's input-handler API exposes UTF-16 ranges to the platform, while
+    /// the temporary inline-composition renderer works with string byte
+    /// offsets. Keep both views explicit so the renderer does not have to
+    /// reverse the conversion.
+    pub fn marked_range_utf8(&self) -> Option<Range<usize>> {
+        self.marked_range.clone()
     }
 
     pub fn replace_text(&mut self, range_utf16: Option<Range<usize>>, new_text: &str) {
@@ -446,6 +460,8 @@ mod tests {
         assert_eq!(text, "你a😀");
         assert_eq!(actual_range, 0..4);
         assert_eq!(state.marked_text_range(), Some(0..4));
+        assert_eq!(state.marked_range_utf8(), Some(0..8));
+        assert_eq!(state.selected_range_utf8(), 3..4);
         assert_eq!(state.selected_text_range().range, 1..2);
     }
 

@@ -19,6 +19,14 @@ struct PaintedText {
     in_viewport: bool,
 }
 
+struct ImePaintedText {
+    row: usize,
+    col: usize,
+    cell_end: usize,
+    line: ShapedLine,
+    in_viewport: bool,
+}
+
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
@@ -43,6 +51,7 @@ pub struct GridElement {
     glyph_coverage_cache: SharedGlyphCoverageCache,
     cursor_blink_started_at: Instant,
     input_handler: Option<InputHandlerRegistrar>,
+    ime_composition: Option<ImeComposition>,
 }
 
 impl GridElement {
@@ -62,6 +71,7 @@ impl GridElement {
             glyph_coverage_cache: GlyphCoverageCache::shared(),
             cursor_blink_started_at: Instant::now(),
             input_handler: None,
+            ime_composition: None,
         }
     }
 
@@ -143,6 +153,11 @@ impl GridElement {
         registrar: impl FnMut(Bounds<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.input_handler = Some(Box::new(registrar));
+        self
+    }
+
+    pub fn with_ime_composition(mut self, composition: Option<ImeComposition>) -> Self {
+        self.ime_composition = composition;
         self
     }
 
@@ -379,8 +394,89 @@ impl Element for GridElement {
         let mut overlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
+        let ime_paint = self.ime_composition.as_ref().and_then(|composition| {
+            if composition.text.is_empty()
+                || composition.row >= model.height()
+                || composition.col > model.width()
+            {
+                return None;
+            }
+
+            // The cell under the cursor may be Neovim virtual text and carry
+            // a decoration-specific highlight. IME preedit is client-side
+            // input, so it must use the grid's normal text attributes instead
+            // of inheriting that cell's virtual-text color.
+            let highlight = DEFAULT_HIGHLIGHT;
+            let attrs = model.highlight_ref(highlight).cloned().unwrap_or_default();
+            let (foreground, _) =
+                highlight_colors(model.as_ref(), highlight, self.default_background_override);
+            let text = composition.text.clone();
+            let marked_start = composition.marked_range.start.min(text.len());
+            let marked_end = composition
+                .marked_range
+                .end
+                .min(text.len())
+                .max(marked_start);
+            let make_style = |underline| ShapingStyle {
+                font: normal_font.clone(),
+                font_size: normal_font_size,
+                foreground,
+                underline,
+                strikethrough: attrs.strikethrough.then(|| StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: attrs
+                        .special
+                        .or(attrs.foreground)
+                        .map(|color| rgb(color).into()),
+                }),
+            };
+            let marked_style = Some(UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(foreground),
+                wavy: false,
+            });
+            let plain_style = make_style(None);
+            let marked_style = make_style(marked_style);
+            let mut runs = Vec::with_capacity(3);
+            if marked_start > 0 {
+                runs.push(StyledTextRun {
+                    len: marked_start,
+                    style: plain_style.clone(),
+                });
+            }
+            runs.push(StyledTextRun {
+                len: marked_end - marked_start,
+                style: marked_style,
+            });
+            if marked_end < text.len() {
+                runs.push(StyledTextRun {
+                    len: text.len() - marked_end,
+                    style: plain_style,
+                });
+            }
+            let line = self
+                .shaping_cache
+                .borrow_mut()
+                .shape_line(window, text, runs);
+            let cell_len = ((f32::from(line.width) / f32::from(cell_width)).ceil() as usize).max(1);
+
+            Some(ImePaintedText {
+                row: composition.row,
+                col: composition.col,
+                cell_end: composition.col.saturating_add(cell_len),
+                line,
+                in_viewport: composition.col < model.width()
+                    && self.cell_is_in_viewport(composition.row, composition.col),
+            })
+        });
+        let ime_span = ime_paint
+            .as_ref()
+            .map(|ime| (ime.row, ime.col, ime.cell_end));
 
         builder.for_each_cell(model.as_ref(), |cell| {
+            let ime_overlaps = ime_span.is_some_and(|(row, start, end)| {
+                cell.row == row && cell.grid_start < end && start < cell.grid_start + cell.grid_len
+            });
             let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
             let attrs = model
                 .highlight_ref(cell.highlight)
@@ -394,7 +490,8 @@ impl Element for GridElement {
             if attrs.blink {
                 has_blinking_text = true;
             }
-            let style = if cell.text.is_empty()
+            let style = if ime_overlaps
+                || cell.text.is_empty()
                 || is_kitty_placeholder(&cell.text)
                 || attrs.conceal
                 || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
@@ -513,8 +610,10 @@ impl Element for GridElement {
             if let Some(background) = background {
                 push_background(&mut backgrounds, cell_bounds, background, in_viewport);
             }
-            if let Some(overline) = overline {
-                overlines.push((overline.0, overline.1, in_viewport));
+            if !ime_overlaps {
+                if let Some(overline) = overline {
+                    overlines.push((overline.0, overline.1, in_viewport));
+                }
             }
         });
 
@@ -522,7 +621,7 @@ impl Element for GridElement {
             text_groups.push(pending);
         }
 
-        let texts = text_groups
+        let mut texts: Vec<PaintedText> = text_groups
             .into_iter()
             .map(|pending| {
                 let origin = point(
@@ -541,6 +640,18 @@ impl Element for GridElement {
                 }
             })
             .collect();
+
+        if let Some(ime) = ime_paint {
+            let origin = point(
+                bounds.origin.x + cell_width * ime.col,
+                bounds.origin.y + self.line_height * ime.row,
+            ) + self.offset_for_cell(ime.row, ime.col);
+            texts.push(PaintedText {
+                line: ime.line,
+                origin,
+                in_viewport: ime.in_viewport,
+            });
+        }
 
         if has_blinking_text {
             window.request_animation_frame();

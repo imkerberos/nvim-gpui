@@ -90,10 +90,7 @@ impl EntityInputHandler for NvimGpui {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<gpui::Pixels>> {
-        let cursor = self
-            .grid
-            .cursor()
-            .unwrap_or(grid::GridCursor { row: 0, col: 0 });
+        let cursor = self.ime_cursor_position()?;
         let font_spec = self.current_grid_font(window);
         let cell_width = font_spec.cell_width(window);
         let line_height = font_spec.line_height(window, self.linespace);
@@ -126,6 +123,85 @@ impl EntityInputHandler for NvimGpui {
             self.system_ime.text(),
             byte_offset,
         ))
+    }
+}
+
+impl NvimGpui {
+    fn with_system_ime_input_handler(
+        &self,
+        element: GridElement,
+        grid: u64,
+        entity: Entity<Self>,
+        invalidate_coordinates: bool,
+        composition: Option<&grid::ImeComposition>,
+    ) -> GridElement {
+        if self.ime_input_grid != Some(grid) {
+            return element;
+        }
+
+        let element = element.with_ime_composition(composition.cloned());
+        element.with_input_handler(move |bounds, window, cx| {
+            let focus_handle = entity.read(cx).focus_handle.clone();
+            if let Some(focus_handle) = focus_handle {
+                window.handle_input(
+                    &focus_handle,
+                    ElementInputHandler::new(bounds, entity.clone()),
+                    cx,
+                );
+                if invalidate_coordinates {
+                    // Schedule this after the current paint so the platform
+                    // observes the input handler for this grid, rather than
+                    // the handler from the previous frame.
+                    window.invalidate_character_coordinates();
+                }
+            }
+        })
+    }
+
+    fn system_ime_composition(&self) -> Option<grid::ImeComposition> {
+        let marked_range = self.system_ime.marked_range_utf8()?;
+        let cursor = self.ime_cursor_position()?;
+        (!self.system_ime.is_empty()).then(|| grid::ImeComposition {
+            row: cursor.row,
+            col: cursor.col,
+            text: self.system_ime.text().to_owned().into(),
+            marked_range,
+            selected_range: self.system_ime.selected_range_utf8(),
+        })
+    }
+
+    fn system_ime_cursor_position(
+        &self,
+        composition: &grid::ImeComposition,
+        screen_position: grid::CursorVisualPosition,
+        local_position: grid::CursorVisualPosition,
+        window: &Window,
+        gui_font: &GuiFontSpec,
+        cell_width: Pixels,
+    ) -> grid::CursorVisualPosition {
+        let selected_start = composition.selected_range.start.min(composition.text.len());
+        let prefix = &composition.text[..selected_start];
+        let offset = grid::ime_text_cell_offset(
+            window,
+            &gui_font.family,
+            px(gui_font.size),
+            prefix,
+            cell_width,
+        );
+        let screen_row = screen_position
+            .row
+            .saturating_sub(local_position.row)
+            .saturating_add(composition.row);
+        let screen_col = screen_position
+            .col
+            .saturating_sub(local_position.col)
+            .saturating_add(composition.col)
+            .saturating_add(offset);
+        grid::CursorVisualPosition {
+            row: screen_row,
+            col: screen_col,
+            width: 1,
+        }
     }
 }
 
@@ -302,42 +378,68 @@ impl Render for NvimGpui {
         self.viewport_animations
             .retain(|_, animation| animation.is_active(now));
         let viewport_animations = self.viewport_animations.clone();
-        let cursor_element = grid_ready.then(|| {
-            let model = self.active_cursor_model()?;
-            let position = self.current_cursor_screen_position()?;
-            let local_position = model.cursor_visual_position()?;
-            let (cursor_foreground, cursor_background) =
-                grid::cursor_colors(&model, local_position, cursor_mode);
-            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
-                self.grid_element(
-                    Rc::clone(&model),
-                    GridRenderOptions {
-                        placement: self.grid_placement(self.cursor_grid),
-                        width: model.width(),
-                        height: model.height(),
-                        cell_width,
-                        line_height,
-                        gui_font: &gui_font,
-                        gui_wide_font: &gui_wide_font,
-                        cursor_blink_started_at,
-                        viewport_offset: px(0.0),
-                    },
+
+        let active_ime_grid =
+            (self.input_router.target() == InputTarget::SystemIme).then_some(self.cursor_grid);
+        if self.ime_input_grid != active_ime_grid {
+            self.ime_input_grid = active_ime_grid;
+            self.ime_coordinates_dirty = true;
+        }
+        let invalidate_ime_coordinates = self.ime_coordinates_dirty;
+        if invalidate_ime_coordinates && self.ime_input_grid.is_some() {
+            self.ime_coordinates_dirty = false;
+        }
+        let ime_composition = self.system_ime_composition();
+
+        let cursor_element =
+            grid_ready.then(|| {
+                let model = self.active_cursor_model()?;
+                let local_position = model.cursor_visual_position()?;
+                let position = self.current_cursor_screen_position()?;
+                let position = ime_composition
+                    .as_ref()
+                    .map(|composition| {
+                        self.system_ime_cursor_position(
+                            composition,
+                            position,
+                            local_position,
+                            window,
+                            &gui_font,
+                            cell_width,
+                        )
+                    })
+                    .unwrap_or(position);
+                let (cursor_foreground, cursor_background) =
+                    grid::cursor_colors(&model, local_position, cursor_mode);
+                let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
+                    self.grid_element(
+                        Rc::clone(&model),
+                        GridRenderOptions {
+                            placement: self.grid_placement(self.cursor_grid),
+                            width: model.width(),
+                            height: model.height(),
+                            cell_width,
+                            line_height,
+                            gui_font: &gui_font,
+                            gui_wide_font: &gui_wide_font,
+                            cursor_blink_started_at,
+                            viewport_offset: px(0.0),
+                        },
+                    )
+                });
+                Some(
+                    grid::CursorElement::new(position, cursor_background, cursor_mode)
+                        .with_local_position(local_position)
+                        .with_glyph_foreground(cursor_foreground)
+                        .with_glyph_source(glyph_source)
+                        .with_animation(self.cursor_animation.filter(|animation| {
+                            ime_composition.is_none() && animation.is_active(now)
+                        }))
+                        .with_metrics(cell_width, line_height)
+                        .with_grid_size(self.grid.width(), self.grid.height())
+                        .with_blink_started_at(cursor_blink_started_at),
                 )
             });
-            Some(
-                grid::CursorElement::new(position, cursor_background, cursor_mode)
-                    .with_local_position(local_position)
-                    .with_glyph_foreground(cursor_foreground)
-                    .with_glyph_source(glyph_source)
-                    .with_animation(
-                        self.cursor_animation
-                            .filter(|animation| animation.is_active(now)),
-                    )
-                    .with_metrics(cell_width, line_height)
-                    .with_grid_size(self.grid.width(), self.grid.height())
-                    .with_blink_started_at(cursor_blink_started_at),
-            )
-        });
         let cursor_element = cursor_element.flatten();
         let mut editor = div()
             .flex_1()
@@ -393,24 +495,13 @@ impl Render for NvimGpui {
                 ));
             }
 
-            let mut main_element = self.grid_element(Rc::clone(&self.grid), main_options);
-            main_element = main_element.with_input_handler(move |bounds, window, cx| {
-                let focus_handle = {
-                    let view = entity.read(cx);
-                    if view.input_router.target() == InputTarget::SystemIme {
-                        view.focus_handle.clone()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(focus_handle) = focus_handle {
-                    window.handle_input(
-                        &focus_handle,
-                        ElementInputHandler::new(bounds, entity.clone()),
-                        cx,
-                    );
-                }
-            });
+            let main_element = self.with_system_ime_input_handler(
+                self.grid_element(Rc::clone(&self.grid), main_options),
+                1,
+                entity.clone(),
+                invalidate_ime_coordinates,
+                ime_composition.as_ref(),
+            );
             main_layer = main_layer.child(Self::grid_surface(main_element, main_options));
 
             let image_layers = self.visible_image_layers();
@@ -459,7 +550,13 @@ impl Render for NvimGpui {
                     ));
                 }
                 layer = layer.child(Self::grid_surface(
-                    self.grid_element(model, options),
+                    self.with_system_ime_input_handler(
+                        self.grid_element(model, options),
+                        grid_id,
+                        entity.clone(),
+                        invalidate_ime_coordinates,
+                        ime_composition.as_ref(),
+                    ),
                     options,
                 ));
                 layer = layer.child(self.image_surface(grid_id, &image_layers, options));

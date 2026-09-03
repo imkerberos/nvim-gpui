@@ -4,7 +4,10 @@ use super::{
     DEFAULT_GRID_LINE_HEIGHT, DEFAULT_WINDOW_TITLE, THEMED_TITLEBAR_HEIGHT,
 };
 use crate::{
-    grid::{CursorModeInfo, CursorShape, GridLineCell, HighlightAttrs, HighlightId},
+    grid::{
+        CursorModeInfo, CursorShape, CursorVisualPosition, GridLineCell, HighlightAttrs,
+        HighlightId,
+    },
     image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
     nvim::NvimEvent,
     parse_cli, CliAction, CliOptions, NvimConnection,
@@ -296,6 +299,55 @@ fn cursor_grid_is_committed_only_at_flush() {
 
     assert_eq!(app.cursor_grid, 2);
     assert_eq!(app.pending_cursor_grid, None);
+}
+
+#[test]
+fn ime_cursor_position_uses_the_registered_grid() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 1,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 1,
+        col: 3,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 2,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+        grid: 2,
+        row: 0,
+        col: 1,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    app.ime_input_grid = Some(2);
+    assert_eq!(
+        app.ime_cursor_position(),
+        Some(CursorVisualPosition {
+            row: 0,
+            col: 1,
+            width: 1,
+        })
+    );
+
+    app.ime_input_grid = Some(1);
+    assert_eq!(
+        app.ime_cursor_position(),
+        Some(CursorVisualPosition {
+            row: 1,
+            col: 3,
+            width: 1,
+        })
+    );
 }
 
 #[test]

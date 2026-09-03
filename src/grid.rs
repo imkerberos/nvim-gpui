@@ -9,6 +9,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     f32::consts::PI,
+    ops::Range,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -31,6 +32,55 @@ pub use model::{
     GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
+
+/// Transient text supplied by the platform IME.
+///
+/// This is deliberately separate from [`GridModel`]. Neovim remains the
+/// authority for the grid contents; the element merges this composition into
+/// the cell paint pass for the current frame only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImeComposition {
+    pub row: usize,
+    pub col: usize,
+    pub text: SharedString,
+    /// Byte range in `text` that is still marked by the IME.
+    pub marked_range: Range<usize>,
+    /// Byte range in `text` containing the IME caret/selection.
+    pub selected_range: Range<usize>,
+}
+
+/// Convert a prefix of IME text to the number of terminal cells it occupies.
+///
+/// The IME text is not part of Neovim's grid, so its width has to be measured
+/// locally. Using the same text system and font metrics as the grid keeps the
+/// transient cursor aligned with the rendered preedit.
+pub fn ime_text_cell_offset(
+    window: &Window,
+    font_family: &str,
+    font_size: Pixels,
+    text: &str,
+    cell_width: Pixels,
+) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    let text: SharedString = text.to_owned().into();
+    let line = window.text_system().shape_line(
+        text.clone(),
+        font_size,
+        &[TextRun {
+            len: text.len(),
+            font: font(font_family.to_owned()),
+            color: rgb(DEFAULT_FOREGROUND).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    (f32::from(line.width) / f32::from(cell_width)).ceil() as usize
+}
 
 use cache::{ShapingStyle, StyledTextRun};
 #[cfg(test)]
