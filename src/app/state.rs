@@ -616,19 +616,12 @@ impl NvimGpui {
     }
 
     pub(super) fn commit_pending_grid(&mut self) {
+        if self.pending_cursor_grid.is_some() {
+            self.update_cursor_animation();
+        }
+
         if let Some(grid) = self.pending_grid.take() {
             self.start_viewport_animation(1, Rc::clone(&self.grid), Rc::clone(&grid));
-            let previous_cursor = self.grid.cursor_visual_position();
-            let next_cursor = grid.cursor_visual_position();
-            if previous_cursor != next_cursor {
-                self.cursor_animation = match (previous_cursor, next_cursor) {
-                    (Some(from), Some(target)) => self
-                        .cursor_animation
-                        .map(|animation| animation.retarget(target))
-                        .or_else(|| Some(grid::CursorAnimation::new(from, target))),
-                    _ => None,
-                };
-            }
 
             if let Some(cursor) = grid.cursor() {
                 self.state.line = cursor.row + 1;
@@ -660,6 +653,67 @@ impl NvimGpui {
 
         if let Some(grid) = self.pending_cursor_grid.take() {
             self.cursor_grid = grid;
+        }
+    }
+
+    fn update_cursor_animation(&mut self) {
+        let previous = self.current_cursor_screen_position();
+        let next = self.pending_cursor_screen_position();
+
+        self.cursor_animation = match (previous, next) {
+            (Some(from), Some(target)) if from != target => self
+                .cursor_animation
+                .map(|animation| animation.retarget(target))
+                .or_else(|| Some(grid::CursorAnimation::new(from, target))),
+            _ => None,
+        };
+    }
+
+    pub(super) fn current_cursor_screen_position(&self) -> Option<grid::CursorVisualPosition> {
+        let model = self.active_cursor_model()?;
+        let placement = if self.cursor_grid == 1 {
+            self.grid_placements
+                .get(&self.cursor_grid)
+                .copied()
+                .unwrap_or_default()
+        } else {
+            self.grid_placements.get(&self.cursor_grid).copied()?
+        };
+        Self::cursor_screen_position(&model, placement)
+    }
+
+    fn pending_cursor_screen_position(&self) -> Option<grid::CursorVisualPosition> {
+        let grid = self.pending_cursor_grid.unwrap_or(self.cursor_grid);
+        let model = if grid == 1 {
+            self.pending_grid.as_ref().unwrap_or(&self.grid)
+        } else {
+            self.pending_other_grids
+                .get(&grid)
+                .or_else(|| self.other_grids.get(&grid))?
+        };
+        let placement = self.grid_placement(grid);
+        Self::cursor_screen_position(model, placement)
+    }
+
+    fn cursor_screen_position(
+        model: &grid::GridModel,
+        placement: GridPlacement,
+    ) -> Option<grid::CursorVisualPosition> {
+        let position = model.cursor_visual_position()?;
+        let row = placement.row.checked_add(position.row as i64)?;
+        let col = placement.col.checked_add(position.col as i64)?;
+        (row >= 0 && col >= 0).then_some(grid::CursorVisualPosition {
+            row: row as usize,
+            col: col as usize,
+            width: position.width,
+        })
+    }
+
+    pub(super) fn active_cursor_model(&self) -> Option<Rc<grid::GridModel>> {
+        if self.cursor_grid == 1 {
+            Some(Rc::clone(&self.grid))
+        } else {
+            self.other_grids.get(&self.cursor_grid).cloned()
         }
     }
 

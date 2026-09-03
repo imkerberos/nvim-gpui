@@ -22,6 +22,7 @@ pub struct VisualCell {
     pub kind: VisualCellKind,
 }
 
+#[cfg(test)]
 pub(super) fn visual_cell_overlaps_cursor(cell: &VisualCell, cursor: CursorVisualPosition) -> bool {
     if cell.row != cursor.row {
         return false;

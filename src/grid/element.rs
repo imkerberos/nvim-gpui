@@ -23,15 +23,7 @@ pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
     texts: Vec<PaintedText>,
-    cursors: Vec<PaintedCursor>,
     viewport_bounds: Option<Bounds<Pixels>>,
-}
-
-struct PaintedCursor {
-    bounds: Bounds<Pixels>,
-    color: Hsla,
-    opacity: f32,
-    in_viewport: bool,
 }
 
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
@@ -49,9 +41,6 @@ pub struct GridElement {
     viewport_margins: (usize, usize, usize, usize),
     viewport_offset: gpui::Point<Pixels>,
     glyph_coverage_cache: SharedGlyphCoverageCache,
-    cursor_animation: Option<CursorAnimation>,
-    cursor_mode: CursorModeInfo,
-    cursor_visible: bool,
     cursor_blink_started_at: Instant,
     input_handler: Option<InputHandlerRegistrar>,
 }
@@ -71,9 +60,6 @@ impl GridElement {
             viewport_margins: (0, 0, 0, 0),
             viewport_offset: point(px(0.0), px(0.0)),
             glyph_coverage_cache: GlyphCoverageCache::shared(),
-            cursor_animation: None,
-            cursor_mode: CursorModeInfo::default(),
-            cursor_visible: false,
             cursor_blink_started_at: Instant::now(),
             input_handler: None,
         }
@@ -144,21 +130,6 @@ impl GridElement {
 
     pub fn with_shaping_cache(mut self, cache: SharedShapedLineCache) -> Self {
         self.shaping_cache = cache;
-        self
-    }
-
-    pub fn with_cursor_animation(mut self, animation: Option<CursorAnimation>) -> Self {
-        self.cursor_animation = animation;
-        self
-    }
-
-    pub fn with_cursor_mode(mut self, mode: CursorModeInfo) -> Self {
-        self.cursor_mode = mode;
-        self
-    }
-
-    pub fn with_cursor_visible(mut self, visible: bool) -> Self {
-        self.cursor_visible = visible;
         self
     }
 
@@ -237,6 +208,71 @@ impl GridElement {
         let mut fallback_font = base_font;
         fallback_font.fallbacks = Some(FontFallbacks::from_fonts(vec![fallback_family.clone()]));
         (fallback_font, *fallback_size)
+    }
+
+    /// Shape the active cell again using the cursor foreground color.
+    ///
+    /// The cursor is painted by the editor-wide overlay so it can travel
+    /// between grids. Repainting just this glyph after the cursor background
+    /// keeps block cursors faithful to Neovim's foreground/background swap
+    /// without putting a second cursor back into every GridElement.
+    pub(crate) fn cursor_glyph(
+        &mut self,
+        window: &Window,
+        position: CursorVisualPosition,
+        foreground: Hsla,
+    ) -> Option<CursorGlyph> {
+        let row = self.model.rows().get(position.row)?;
+        let cell = VisualCellBuilder::new(self.nerd_font_mode)
+            .build_row(position.row, row)
+            .into_iter()
+            .find(|cell| {
+                (cell.grid_start..cell.grid_start + cell.grid_len).contains(&position.col)
+            })?;
+        let attrs = self
+            .model
+            .highlight_ref(cell.highlight)
+            .cloned()
+            .unwrap_or_default();
+        if cell.text.is_empty() || is_kitty_placeholder(&cell.text) || attrs.conceal {
+            return None;
+        }
+
+        let text_style = window.text_style();
+        let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
+        let normal_font = text_style.font();
+        let (cell_font, cell_font_size) =
+            self.font_for_cell(window, &cell, &normal_font, normal_font_size);
+        let underline = (attrs.underline
+            || attrs.undercurl
+            || attrs.underdouble
+            || attrs.underdotted
+            || attrs.underdashed)
+            .then(|| UnderlineStyle {
+                thickness: px(1.0),
+                color: Some(foreground),
+                wavy: attrs.undercurl,
+            });
+        let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
+            thickness: px(1.0),
+            color: Some(foreground),
+        });
+        let text_len = cell.text.len();
+        let line = self.shaping_cache.borrow_mut().shape_line(
+            window,
+            cell.text,
+            vec![StyledTextRun {
+                len: text_len,
+                style: ShapingStyle {
+                    font: cell_font,
+                    font_size: cell_font_size,
+                    foreground,
+                    underline,
+                    strikethrough,
+                },
+            }],
+        );
+        Some(CursorGlyph { line })
     }
 
     fn viewport_row_range(&self) -> (usize, usize) {
@@ -339,17 +375,6 @@ impl Element for GridElement {
         let model = Rc::clone(&self.model);
         let now = Instant::now();
         let mut has_blinking_text = false;
-        let cursor_position = self
-            .cursor_visible
-            .then(|| self.model.cursor_visual_position())
-            .flatten();
-        let block_cursor_colors = (self.cursor_visible
-            && self.cursor_mode.shape == CursorShape::Block)
-            .then(|| {
-                cursor_position
-                    .map(|position| cursor_colors(&self.model, position, self.cursor_mode))
-            })
-            .flatten();
         let mut backgrounds = Vec::new();
         let mut overlines = Vec::new();
         let mut text_groups = Vec::new();
@@ -361,20 +386,11 @@ impl Element for GridElement {
                 .highlight_ref(cell.highlight)
                 .map(Cow::Borrowed)
                 .unwrap_or_else(|| Cow::Owned(HighlightAttrs::default()));
-            let (mut foreground, mut background) = highlight_colors(
+            let (foreground, background) = highlight_colors(
                 model.as_ref(),
                 cell.highlight,
                 self.default_background_override,
             );
-            let is_cursor_cell = block_cursor_colors.is_some_and(|_| {
-                cursor_position.is_some_and(|position| visual_cell_overlaps_cursor(&cell, position))
-            });
-            if is_cursor_cell {
-                let (cursor_foreground, cursor_background) =
-                    block_cursor_colors.expect("cursor colors are available");
-                foreground = cursor_foreground;
-                background = Some(cursor_background);
-            }
             if attrs.blink {
                 has_blinking_text = true;
             }
@@ -533,76 +549,10 @@ impl Element for GridElement {
             window.request_animation_frame();
         }
 
-        let cursors = cursor_position.map_or_else(Vec::new, |target| {
-            if self.cursor_mode.blink_enabled()
-                && !self
-                    .cursor_mode
-                    .visible_at(self.cursor_blink_started_at, now)
-            {
-                window.request_animation_frame();
-                return Vec::new();
-            }
-
-            let color = cursor_colors(&self.model, target, self.cursor_mode).1;
-            let animation = self
-                .cursor_animation
-                .filter(|animation| animation.targets(target));
-
-            let Some(animation) = animation.filter(|animation| animation.is_active(now)) else {
-                let in_viewport = self.cell_is_in_viewport(target.row, target.col);
-                return vec![PaintedCursor {
-                    bounds: cursor_bounds(
-                        bounds,
-                        cell_width,
-                        self.line_height,
-                        target,
-                        self.cursor_mode,
-                    ) + self.offset_for_cell(target.row, target.col),
-                    color,
-                    opacity: 1.0,
-                    in_viewport,
-                }];
-            };
-
-            window.request_animation_frame();
-
-            // Two short-lived layers give the moving cursor a soft tail. They
-            // are painted from oldest to newest, then the opaque cursor body
-            // is painted last. This is a constant amount of work per grid,
-            // independent of the number of cells on screen.
-            const TRAIL: [(u64, f32); 3] = [(28, 0.12), (14, 0.22), (0, 1.0)];
-            TRAIL
-                .into_iter()
-                .map(|(age_ms, opacity)| {
-                    let sample_time = now
-                        .checked_sub(Duration::from_millis(age_ms))
-                        .unwrap_or(animation.started_at);
-                    PaintedCursor {
-                        bounds: animated_cursor_bounds(
-                            bounds,
-                            cell_width,
-                            self.line_height,
-                            animation,
-                            self.cursor_mode,
-                            sample_time,
-                        ) + self.offset_for_cell(target.row, target.col),
-                        color,
-                        opacity,
-                        in_viewport: self.cell_is_in_viewport(target.row, target.col),
-                    }
-                })
-                .collect()
-        });
-
-        if self.cursor_visible && cursor_position.is_some() && self.cursor_mode.blink_enabled() {
-            window.request_animation_frame();
-        }
-
         GridPrepaintState {
             backgrounds,
             overlines,
             texts,
-            cursors,
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
     }
@@ -646,22 +596,6 @@ impl Element for GridElement {
         // itself remains clipped so text and an elastic cursor cannot escape
         // the Neovim viewport.
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for cursor in prepaint.cursors.drain(..) {
-                let mask = cursor.in_viewport.then(|| gpui::ContentMask {
-                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                });
-                window.with_content_mask(mask, |window| {
-                    let radius = px((f32::from(cursor.bounds.size.width)
-                        .min(f32::from(cursor.bounds.size.height))
-                        .mul_add(0.18, 0.0))
-                    .clamp(2.0, 6.0));
-                    window.paint_quad(
-                        fill(cursor.bounds, cursor.color.opacity(cursor.opacity))
-                            .corner_radii(Corners::all(radius)),
-                    );
-                });
-            }
-
             for painted_text in prepaint.texts.drain(..) {
                 let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
                     bounds: prepaint.viewport_bounds.unwrap_or(bounds),
@@ -677,6 +611,253 @@ impl Element for GridElement {
     }
 }
 
+pub(crate) struct CursorGlyph {
+    line: ShapedLine,
+}
+
+/// A cursor that is positioned in editor-wide screen coordinates.
+///
+/// GridElement keeps the cursor attached to the grid that owns it, which is
+/// correct for a stationary cursor. During a cross-window move, however, the
+/// cursor must travel between grid bounds. This small overlay lets the app
+/// render that transition without duplicating a cursor in either grid.
+pub struct CursorElement {
+    position: CursorVisualPosition,
+    local_position: CursorVisualPosition,
+    animation: Option<CursorAnimation>,
+    color: Hsla,
+    glyph_foreground: Hsla,
+    glyph_source: Option<GridElement>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    width: usize,
+    height: usize,
+    cursor_mode: CursorModeInfo,
+    blink_started_at: Instant,
+}
+
+impl CursorElement {
+    pub(crate) fn new(
+        position: CursorVisualPosition,
+        color: Hsla,
+        cursor_mode: CursorModeInfo,
+    ) -> Self {
+        Self {
+            position,
+            local_position: position,
+            animation: None,
+            color,
+            glyph_foreground: color,
+            glyph_source: None,
+            cell_width: px(10.0),
+            line_height: px(22.0),
+            width: 0,
+            height: 0,
+            cursor_mode,
+            blink_started_at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn with_animation(mut self, animation: Option<CursorAnimation>) -> Self {
+        self.animation = animation;
+        self
+    }
+
+    pub(crate) fn with_local_position(mut self, position: CursorVisualPosition) -> Self {
+        self.local_position = position;
+        self
+    }
+
+    pub(crate) fn with_glyph_foreground(mut self, foreground: Hsla) -> Self {
+        self.glyph_foreground = foreground;
+        self
+    }
+
+    pub(crate) fn with_glyph_source(mut self, source: Option<GridElement>) -> Self {
+        self.glyph_source = source;
+        self
+    }
+
+    pub(crate) fn with_metrics(mut self, cell_width: Pixels, line_height: Pixels) -> Self {
+        self.cell_width = cell_width;
+        self.line_height = line_height;
+        self
+    }
+
+    pub(crate) fn with_grid_size(mut self, width: usize, height: usize) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    pub(crate) fn with_blink_started_at(mut self, started_at: Instant) -> Self {
+        self.blink_started_at = started_at;
+        self
+    }
+}
+
+pub struct CursorTrail {
+    bounds: Bounds<Pixels>,
+    opacity: f32,
+}
+
+pub struct CursorPrepaintState {
+    trails: Vec<CursorTrail>,
+    glyph_position: Option<CursorVisualPositionF>,
+    glyph: Option<ShapedLine>,
+}
+
+impl IntoElement for CursorElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for CursorElement {
+    type RequestLayoutState = ();
+    type PrepaintState = CursorPrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = (self.cell_width * self.width).into();
+        style.size.height = (self.line_height * self.height).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        let now = Instant::now();
+        if self.cursor_mode.blink_enabled()
+            && !self.cursor_mode.visible_at(self.blink_started_at, now)
+        {
+            window.request_animation_frame();
+            return CursorPrepaintState {
+                trails: Vec::new(),
+                glyph_position: None,
+                glyph: None,
+            };
+        }
+
+        let (trails, glyph_position) =
+            if let Some(animation) = self.animation.filter(|animation| animation.is_active(now)) {
+                window.request_animation_frame();
+
+                const TRAIL: [(u64, f32); 5] =
+                    [(56, 0.05), (42, 0.08), (28, 0.13), (14, 0.22), (0, 1.0)];
+                let trails = TRAIL
+                    .into_iter()
+                    .map(|(age_ms, opacity)| {
+                        let sample_time = now
+                            .checked_sub(Duration::from_millis(age_ms))
+                            .unwrap_or(animation.started_at);
+                        CursorTrail {
+                            bounds: animated_cursor_bounds(
+                                bounds,
+                                self.cell_width,
+                                self.line_height,
+                                animation,
+                                self.cursor_mode,
+                                sample_time,
+                            ),
+                            opacity,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                (trails, Some(animation.position_at(now)))
+            } else {
+                (
+                    vec![CursorTrail {
+                        bounds: cursor_bounds_at(
+                            bounds,
+                            self.cell_width,
+                            self.line_height,
+                            self.position.into(),
+                            self.cursor_mode,
+                        ),
+                        opacity: 1.0,
+                    }],
+                    Some(self.position.into()),
+                )
+            };
+
+        let glyph = (self.cursor_mode.shape == CursorShape::Block)
+            .then(|| {
+                self.glyph_source.as_mut()?.cursor_glyph(
+                    window,
+                    self.local_position,
+                    self.glyph_foreground,
+                )
+            })
+            .flatten()
+            .map(|glyph| glyph.line);
+
+        CursorPrepaintState {
+            trails,
+            glyph_position,
+            glyph,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for trail in prepaint.trails.drain(..) {
+                let radius = px((f32::from(trail.bounds.size.width)
+                    .min(f32::from(trail.bounds.size.height))
+                    .mul_add(0.18, 0.0))
+                .clamp(2.0, 6.0));
+                window.paint_quad(
+                    fill(trail.bounds, self.color.opacity(trail.opacity))
+                        .corner_radii(Corners::all(radius)),
+                );
+            }
+
+            if let (Some(glyph), Some(position)) = (prepaint.glyph.take(), prepaint.glyph_position)
+            {
+                let origin = point(
+                    bounds.origin.x + self.cell_width * position.col,
+                    bounds.origin.y + self.line_height * position.row,
+                );
+                glyph
+                    .paint(origin, self.line_height, window, _cx)
+                    .expect("failed to paint cursor glyph");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
 pub(super) fn cursor_bounds(
     grid_bounds: Bounds<Pixels>,
     cell_width: Pixels,
@@ -687,7 +868,7 @@ pub(super) fn cursor_bounds(
     cursor_bounds_at(grid_bounds, cell_width, line_height, position.into(), mode)
 }
 
-pub(super) fn cursor_colors(
+pub(crate) fn cursor_colors(
     model: &GridModel,
     position: CursorVisualPosition,
     mode: CursorModeInfo,
@@ -736,30 +917,48 @@ fn animated_cursor_bounds(
         return base;
     }
 
+    // Estimate the instantaneous velocity from two nearby animation samples.
+    // The velocity, rather than only the total distance, makes a short key
+    // press feel soft and makes a large jump visibly stretch at launch.
+    let previous_time = now
+        .checked_sub(Duration::from_millis(8))
+        .unwrap_or(animation.started_at);
+    let previous_position = animation.position_at(previous_time);
+    let interval = 0.008;
+    let velocity_col = (position.col - previous_position.col) / interval;
+    let velocity_row = (position.row - previous_position.row) / interval;
     let delta_x = (to.col - from.col) * f32::from(cell_width);
     let delta_y = (to.row - from.row) * f32::from(line_height);
     let distance = (delta_x / f32::from(cell_width))
         .abs()
         .max((delta_y / f32::from(line_height)).abs());
-    if distance == 0.0 {
+    if distance == 0.0 && velocity_col == 0.0 && velocity_row == 0.0 {
         return base;
     }
 
-    // A jelly cursor stretches most at launch and relaxes as it reaches the
-    // target. The small distance term makes a page-wise jump more elastic
-    // without letting a long redraw produce an enormous cursor.
-    let launch = (1.0 - progress).sqrt();
+    // A jelly cursor stretches with its current speed and relaxes towards the
+    // target. The distance term keeps a jump between split windows readable,
+    // while the cap prevents a redraw storm from producing a huge cursor.
+    let velocity = velocity_col.hypot(velocity_row);
+    let speed_factor = (velocity / 12.0).clamp(0.0, 1.0);
+    let distance_factor = (distance / 8.0).clamp(0.0, 1.0);
     let settle = (PI * progress).sin().max(0.0);
     let stretch_ratio =
-        ((0.055 + distance.min(6.0) * 0.025) * (0.35 + 0.65 * launch) + 0.025 * settle).min(0.28);
+        (0.055 + 0.22 * speed_factor + 0.06 * distance_factor + 0.025 * settle).min(0.4);
 
     let base_width = f32::from(base.size.width);
     let base_height = f32::from(base.size.height);
-    let (x, y, width, height) = if delta_x.abs() >= delta_y.abs() {
+    let horizontal = velocity_col.abs().max(delta_x.abs()) >= velocity_row.abs().max(delta_y.abs());
+    let (x, y, width, height) = if horizontal {
         let extra = f32::from(cell_width) * stretch_ratio;
         let height = (base_height * (1.0 - stretch_ratio * 0.42)).max(1.0);
+        let direction = if velocity_col.abs() > 0.001 {
+            velocity_col
+        } else {
+            delta_x
+        };
         (
-            f32::from(base.origin.x) - if delta_x > 0.0 { extra } else { 0.0 },
+            f32::from(base.origin.x) - if direction > 0.0 { extra } else { 0.0 },
             f32::from(base.origin.y) + (base_height - height) / 2.0,
             base_width + extra,
             height,
@@ -767,9 +966,14 @@ fn animated_cursor_bounds(
     } else {
         let extra = f32::from(line_height) * stretch_ratio;
         let width = (base_width * (1.0 - stretch_ratio * 0.42)).max(1.0);
+        let direction = if velocity_row.abs() > 0.001 {
+            velocity_row
+        } else {
+            delta_y
+        };
         (
             f32::from(base.origin.x) + (base_width - width) / 2.0,
-            f32::from(base.origin.y) - if delta_y > 0.0 { extra } else { 0.0 },
+            f32::from(base.origin.y) - if direction > 0.0 { extra } else { 0.0 },
             width,
             base_height + extra,
         )
@@ -836,5 +1040,31 @@ mod tests {
         assert!(!element.cell_is_in_viewport(1, 1));
         assert_eq!(element.offset_for_cell(1, 2), point(px(0.0), px(10.0)));
         assert_eq!(element.offset_for_cell(0, 2), point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn moving_cursor_stretches_towards_its_previous_position() {
+        let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(400.0), px(200.0)));
+        let mode = CursorModeInfo::default();
+        let animation = CursorAnimation::new(
+            CursorVisualPosition {
+                row: 0,
+                col: 1,
+                width: 1,
+            },
+            CursorVisualPosition {
+                row: 0,
+                col: 8,
+                width: 1,
+            },
+        );
+        let now = animation.started_at + Duration::from_millis(24);
+        let position = animation.position_at(now);
+        let base = cursor_bounds_at(bounds, px(10.0), px(20.0), position, mode);
+        let stretched = animated_cursor_bounds(bounds, px(10.0), px(20.0), animation, mode, now);
+
+        assert!(stretched.size.width > base.size.width);
+        assert!(stretched.size.height < base.size.height);
+        assert!(stretched.origin.x < base.origin.x);
     }
 }

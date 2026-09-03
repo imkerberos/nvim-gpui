@@ -25,7 +25,7 @@ mod visual;
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };
-pub use element::{GridElement, GridPrepaintState};
+pub use element::{CursorElement, GridElement, GridPrepaintState};
 pub use model::{
     CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
     GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
@@ -33,13 +33,16 @@ pub use model::{
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
 
 use cache::{ShapingStyle, StyledTextRun};
-use element::jelly_progress;
 #[cfg(test)]
-use element::{cursor_bounds, cursor_colors};
+use element::cursor_bounds;
+pub(crate) use element::cursor_colors;
+use element::jelly_progress;
 #[cfg(test)]
 use model::cursor_geometry;
 use model::{blink_visible, CursorVisualPositionF};
-use visual::{highlight_colors, push_background, visual_cell_overlaps_cursor};
+#[cfg(test)]
+use visual::visual_cell_overlaps_cursor;
+use visual::{highlight_colors, push_background};
 
 #[cfg(test)]
 mod tests;

@@ -12,6 +12,7 @@ use crate::{
 use gpui::px;
 use std::ffi::OsString;
 use std::rc::Rc;
+use std::time::Instant;
 
 #[test]
 fn cli_keeps_unknown_arguments_for_neovim() {
@@ -280,6 +281,48 @@ fn cursor_grid_is_committed_only_at_flush() {
 
     assert_eq!(app.cursor_grid, 2);
     assert_eq!(app.pending_cursor_grid, None);
+}
+
+#[test]
+fn cursor_move_between_grids_uses_one_screen_animation() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 1,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 0,
+        col: 1,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 2,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::WinPos {
+        grid: 2,
+        win: Vec::new(),
+        row: 2,
+        col: 5,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+        grid: 2,
+        row: 0,
+        col: 2,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    assert_eq!(app.cursor_grid, 2);
+    assert!(app
+        .cursor_animation
+        .is_some_and(|animation| animation.is_active(Instant::now())));
 }
 
 #[test]

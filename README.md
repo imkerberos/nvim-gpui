@@ -12,13 +12,9 @@ Neovide or a terminal UI.
 
 ## Features
 
-- Embedded Neovim by default.
-- Open files and projects from the command line.
-- Split windows and floating windows.
 - Unicode and CJK text support.
-- Configurable cursor styles and smooth cursor movement.
-- Image previews for plugins such as `snacks.nvim`.
-- Native macOS application, Dock icon, and `gpvim` command.
+- Bundled Nerd Font support.
+- Image support for plugins such as `snacks.nvim`.
 
 ## Quick start
 
@@ -166,9 +162,8 @@ Unknown arguments are passed through to embedded Neovim.
 
 ## Current limitations
 
-The project is still being developed. Mouse input, clipboard integration,
-reconnecting after a lost session, and some advanced plugin interfaces are
-not yet complete.
+The project is still being developed. Mouse input, reconnecting after a lost
+session, and some advanced plugin interfaces are not yet complete.
 
 ## License
 

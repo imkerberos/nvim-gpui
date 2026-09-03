@@ -207,7 +207,6 @@ pub struct CursorVisualPosition {
 pub struct CursorAnimation {
     pub(super) from: CursorVisualPositionF,
     pub(super) to: CursorVisualPositionF,
-    pub(super) target: CursorVisualPosition,
     pub(super) started_at: Instant,
     pub(super) duration: Duration,
 }
@@ -239,7 +238,6 @@ impl CursorAnimation {
         Self {
             from: from.into(),
             to: target.into(),
-            target,
             started_at: Instant::now(),
             duration: Self::DURATION,
         }
@@ -254,14 +252,9 @@ impl CursorAnimation {
         Self {
             from,
             to: target.into(),
-            target,
             started_at: now,
             duration: Self::DURATION,
         }
-    }
-
-    pub(super) fn targets(&self, target: CursorVisualPosition) -> bool {
-        self.target == target
     }
 
     pub(super) fn progress(&self, now: Instant) -> f32 {
@@ -278,7 +271,7 @@ impl CursorAnimation {
         }
     }
 
-    pub(super) fn is_active(&self, now: Instant) -> bool {
+    pub(crate) fn is_active(&self, now: Instant) -> bool {
         self.progress(now) < 1.0
     }
 }

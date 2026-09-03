@@ -138,10 +138,7 @@ struct GridRenderOptions<'a> {
     line_height: Pixels,
     gui_font: &'a GuiFontSpec,
     gui_wide_font: &'a GuiFontSpec,
-    cursor_mode: grid::CursorModeInfo,
     cursor_blink_started_at: Instant,
-    cursor_animation: Option<grid::CursorAnimation>,
-    cursor_visible: bool,
     viewport_offset: Pixels,
 }
 
@@ -169,13 +166,6 @@ impl NvimGpui {
             .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
             .with_shaping_cache(Rc::clone(&self.shaping_cache))
             .with_nerd_fallback_mode(self.settings.fallback_mode)
-            .with_cursor_animation(options.cursor_animation)
-            .with_cursor_visible(options.cursor_visible)
-            .with_cursor_mode(if options.cursor_visible {
-                options.cursor_mode
-            } else {
-                grid::CursorModeInfo::default()
-            })
             .with_cursor_blink_started_at(options.cursor_blink_started_at)
             .with_viewport_offset(point(px(0.0), options.viewport_offset))
             .with_nerd_font_mode(true);
@@ -312,6 +302,43 @@ impl Render for NvimGpui {
         self.viewport_animations
             .retain(|_, animation| animation.is_active(now));
         let viewport_animations = self.viewport_animations.clone();
+        let cursor_element = grid_ready.then(|| {
+            let model = self.active_cursor_model()?;
+            let position = self.current_cursor_screen_position()?;
+            let local_position = model.cursor_visual_position()?;
+            let (cursor_foreground, cursor_background) =
+                grid::cursor_colors(&model, local_position, cursor_mode);
+            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
+                self.grid_element(
+                    Rc::clone(&model),
+                    GridRenderOptions {
+                        placement: self.grid_placement(self.cursor_grid),
+                        width: model.width(),
+                        height: model.height(),
+                        cell_width,
+                        line_height,
+                        gui_font: &gui_font,
+                        gui_wide_font: &gui_wide_font,
+                        cursor_blink_started_at,
+                        viewport_offset: px(0.0),
+                    },
+                )
+            });
+            Some(
+                grid::CursorElement::new(position, cursor_background, cursor_mode)
+                    .with_local_position(local_position)
+                    .with_glyph_foreground(cursor_foreground)
+                    .with_glyph_source(glyph_source)
+                    .with_animation(
+                        self.cursor_animation
+                            .filter(|animation| animation.is_active(now)),
+                    )
+                    .with_metrics(cell_width, line_height)
+                    .with_grid_size(self.grid.width(), self.grid.height())
+                    .with_blink_started_at(cursor_blink_started_at),
+            )
+        });
+        let cursor_element = cursor_element.flatten();
         let mut editor = div()
             .flex_1()
             .relative()
@@ -340,10 +367,7 @@ impl Render for NvimGpui {
                 line_height,
                 gui_font: &gui_font,
                 gui_wide_font: &gui_wide_font,
-                cursor_mode,
                 cursor_blink_started_at,
-                cursor_animation: self.cursor_animation,
-                cursor_visible: self.cursor_grid == 1,
                 viewport_offset: current_offset,
             };
             let mut main_layer = div()
@@ -356,8 +380,6 @@ impl Render for NvimGpui {
 
             if let Some(animation) = main_animation {
                 let old_options = GridRenderOptions {
-                    cursor_animation: None,
-                    cursor_visible: false,
                     viewport_offset: old_offset,
                     ..main_options
                 };
@@ -408,10 +430,7 @@ impl Render for NvimGpui {
                     line_height,
                     gui_font: &gui_font,
                     gui_wide_font: &gui_wide_font,
-                    cursor_mode,
                     cursor_blink_started_at,
-                    cursor_animation: None,
-                    cursor_visible: self.cursor_grid == grid_id,
                     viewport_offset: current_offset,
                 };
                 let mut layer = div()
@@ -427,7 +446,6 @@ impl Render for NvimGpui {
                     .overflow_hidden();
                 if let Some(animation) = animation {
                     let old_options = GridRenderOptions {
-                        cursor_visible: false,
                         viewport_offset: old_offset,
                         ..options
                     };
@@ -442,6 +460,18 @@ impl Render for NvimGpui {
                 ));
                 layer = layer.child(self.image_surface(grid_id, &image_layers, options));
                 editor = editor.child(layer);
+            }
+
+            if let Some(cursor_element) = cursor_element {
+                editor = editor.child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .w_full()
+                        .h_full()
+                        .child(cursor_element),
+                );
             }
         }
 
