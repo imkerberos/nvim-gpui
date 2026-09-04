@@ -2,6 +2,22 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.4.0] - 2026-09-04
+
+### Improved
+
+- Refactored multigrid rendering around an explicit compositor frame with
+  shared layer geometry, clipping, paint order, and semantic layer context.
+- Routed mouse hit testing through compositor layers, including topmost float
+  selection and drag/release capture for the original grid.
+- Centralized highlight resolution for default colors, floating surfaces,
+  reverse, blend, dim, cursor, decorations, and inline composition text.
+- Separated Neovim's logical cell spans from glyph metrics; wide cells now
+  follow protocol continuation markers and Nerd Font symbols no longer consume
+  adjacent padding cells.
+- Calculated IME cursor offsets from Unicode grapheme and display-width rules,
+  including the `ambiwidth` and `emoji` UI options.
+
 ## [0.3.0] - 2026-09-04
 
 ### Added
