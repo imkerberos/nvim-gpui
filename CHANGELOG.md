@@ -2,6 +2,30 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.3.0] - 2026-09-04
+
+### Added
+
+- Inline system IME composition with marked text and caret tracking across
+  multigrid layouts.
+- Local system clipboard integration through Neovim's `nvim_paste` API.
+- Remote clipboard bridging for Neovim sessions connected over RPC.
+- Configurable paste shortcut, including Cmd-V, Ctrl-V, and disabled states.
+- Bounded asynchronous file logging with `flexi_logger`.
+- Settings UI for fonts, fallback behavior, startup state, image cache size,
+  paste shortcut, and the command-line helper.
+
+### Improved
+
+- Redraw state is applied atomically at `flush`, with stronger protocol and
+  session lifecycle coverage.
+- IME coordinates follow the active cursor grid instead of assuming the main
+  grid.
+- GUI, widget, Neovim window, grid, and application state modules are more
+  clearly separated.
+- Development documentation now describes the IME, clipboard, and logging
+  behavior and the current macOS-only platform scope.
+
 ## [0.2.0] - 2026-09-03
 
 ### Added
