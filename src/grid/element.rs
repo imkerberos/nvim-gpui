@@ -32,7 +32,6 @@ pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
     texts: Vec<PaintedText>,
-    surface_background: Option<Hsla>,
     viewport_bounds: Option<Bounds<Pixels>>,
 }
 
@@ -675,9 +674,6 @@ impl Element for GridElement {
             backgrounds,
             overlines,
             texts,
-            surface_background: self
-                .default_background_override
-                .map(|color| rgb(color).into()),
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
     }
@@ -694,10 +690,6 @@ impl Element for GridElement {
     ) {
         if let Some(input_handler) = self.input_handler.as_mut() {
             input_handler(bounds, window, cx);
-        }
-
-        if let Some(background) = prepaint.surface_background {
-            window.paint_quad(fill(bounds, background));
         }
 
         for (bounds, background, in_viewport) in &prepaint.backgrounds {
