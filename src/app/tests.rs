@@ -15,7 +15,7 @@ use crate::{
 use gpui::{point, px};
 use std::ffi::OsString;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[test]
 fn cli_keeps_unknown_arguments_for_neovim() {
@@ -221,6 +221,7 @@ fn nvim_title_updates_the_window_title_model() {
     app.apply_nvim_event(NvimEvent::SetTitle {
         title: "nvim — README.md".to_owned(),
     });
+    app.apply_nvim_event(NvimEvent::Flush);
 
     assert_eq!(app.window_title, "nvim — README.md");
 }
@@ -245,6 +246,7 @@ fn nvim_icon_and_ui_options_update_the_client_model() {
         name: "ambiwidth".to_owned(),
         value: "single".to_owned(),
     });
+    app.apply_nvim_event(NvimEvent::Flush);
 
     assert_eq!(app.window_icon, "nvim-document");
     assert_eq!(app.linespace, 3.0);
@@ -272,6 +274,7 @@ fn nvim_mode_info_and_mode_change_select_the_cursor_style() {
         mode: "i".to_owned(),
         mode_idx: 0,
     });
+    app.apply_nvim_event(NvimEvent::Flush);
 
     assert_eq!(app.current_cursor_mode(), mode);
     assert_eq!(app.state.mode, "I");
@@ -509,6 +512,76 @@ fn highlight_definitions_are_applied_before_the_next_flush() {
     app.apply_nvim_event(NvimEvent::Flush);
 
     assert_eq!(app.grid.highlight(HighlightId(9)), Some(attrs));
+}
+
+#[test]
+fn highlight_changes_to_other_grids_wait_for_flush() {
+    let mut app = NvimGpui::default();
+    let attrs = HighlightAttrs {
+        foreground: Some(0xabcdef),
+        ..Default::default()
+    };
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 2,
+        width: 2,
+        height: 1,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+    assert!(app
+        .other_grids
+        .get(&2)
+        .unwrap()
+        .highlight(HighlightId(9))
+        .is_none());
+
+    app.apply_nvim_event(NvimEvent::HlAttrDefine {
+        id: HighlightId(9),
+        attrs: attrs.clone(),
+    });
+
+    assert!(app
+        .other_grids
+        .get(&2)
+        .unwrap()
+        .highlight(HighlightId(9))
+        .is_none());
+    assert_eq!(
+        app.pending_other_grids
+            .get(&2)
+            .and_then(|grid| grid.highlight(HighlightId(9))),
+        Some(attrs.clone())
+    );
+
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    assert_eq!(
+        app.other_grids
+            .get(&2)
+            .and_then(|grid| grid.highlight(HighlightId(9))),
+        Some(attrs)
+    );
+}
+
+#[test]
+fn redraw_metadata_becomes_visible_at_flush() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::SetTitle {
+        title: "pending title".to_owned(),
+    });
+    app.apply_nvim_event(NvimEvent::OptionSet {
+        name: "linespace".to_owned(),
+        value: "3".to_owned(),
+    });
+
+    assert_eq!(app.window_title, DEFAULT_WINDOW_TITLE);
+    assert_eq!(app.linespace, 0.0);
+
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    assert_eq!(app.window_title, "pending title");
+    assert_eq!(app.linespace, 3.0);
 }
 
 #[test]
@@ -775,6 +848,24 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
     assert_eq!(animation.previous_grid.rows()[0].cells()[0].text, "old");
     assert_eq!(app.other_grids[&2].rows()[0].cells()[0].text, "new");
     assert_eq!(app.grid_placements[&2].viewport_margins.unwrap().top, 1);
+}
+
+#[test]
+fn delayed_viewport_animation_starts_when_presented() {
+    let started_at = Instant::now() - Duration::from_secs(1);
+    let mut animation = super::ViewportAnimation {
+        previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
+        scroll_delta: 1,
+        started_at,
+        presented: false,
+    };
+    let presented_at = Instant::now();
+
+    animation.mark_presented(presented_at);
+
+    assert!(animation.presented);
+    assert_eq!(animation.started_at, presented_at);
+    assert!(animation.is_active(presented_at));
 }
 
 #[test]

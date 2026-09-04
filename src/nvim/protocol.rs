@@ -99,6 +99,12 @@ pub(super) fn mouse_event_notification_frame(
 }
 
 pub(super) fn parse_hl_attr_define(args: &[Value]) -> Result<NvimEvent, String> {
+    if !(2..=4).contains(&args.len()) {
+        return Err(format!(
+            "hl_attr_define expects 2 to 4 arguments, got {}",
+            args.len()
+        ));
+    }
     let id = args[0]
         .as_u64()
         .ok_or_else(|| "hl_attr_define has an invalid highlight id".to_owned())?;
@@ -119,6 +125,12 @@ pub(super) fn parse_ui_highlight_name(value: &Value) -> Option<String> {
 }
 
 pub(super) fn parse_mode_info_set(args: &[Value]) -> Result<NvimEvent, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "mode_info_set expects 2 arguments, got {}",
+            args.len()
+        ));
+    }
     let cursor_style_enabled = bool_value(&args[0])
         .ok_or_else(|| "mode_info_set has an invalid cursor_style_enabled flag".to_owned())?;
     let modes = args[1]
@@ -266,6 +278,12 @@ pub(super) fn parse_bool(value: &Value, name: &str) -> Result<bool, String> {
 }
 
 pub(super) fn parse_grid_line(args: &[Value]) -> Result<NvimEvent, String> {
+    if !(4..=5).contains(&args.len()) {
+        return Err(format!(
+            "grid_line expects 4 to 5 arguments, got {}",
+            args.len()
+        ));
+    }
     let grid = args[0]
         .as_u64()
         .ok_or_else(|| "grid_line has an invalid grid id".to_owned())?;
@@ -316,7 +334,14 @@ pub(super) fn parse_grid_line(args: &[Value]) -> Result<NvimEvent, String> {
         row,
         col_start,
         cells,
-        wraps_to_next: args.get(4).and_then(bool_value).unwrap_or(false),
+        wraps_to_next: args
+            .get(4)
+            .map(|value| {
+                bool_value(value)
+                    .ok_or_else(|| "grid_line has an invalid wraps_to_next flag".to_owned())
+            })
+            .transpose()?
+            .unwrap_or(false),
     })
 }
 

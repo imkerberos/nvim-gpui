@@ -60,9 +60,13 @@ impl NvimGpui {
                 // of once per cell/window/style update.
                 let mut batch = Vec::with_capacity(64);
                 batch.push(event);
-                while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
+                let mut reached_flush = matches!(&batch[0], NvimEvent::Flush);
+                while !reached_flush && batch.len() < MAX_EVENTS_PER_UI_UPDATE {
                     match events.try_recv() {
-                        Ok(event) => batch.push(event),
+                        Ok(event) => {
+                            reached_flush = matches!(&event, NvimEvent::Flush);
+                            batch.push(event);
+                        }
                         Err(async_channel::TryRecvError::Empty)
                         | Err(async_channel::TryRecvError::Closed) => break,
                     }
@@ -78,6 +82,16 @@ impl NvimGpui {
                     NvimEvent::Disconnected { reason } => Some(reason.clone()),
                     _ => None,
                 });
+                let should_notify = batch.iter().any(|event| {
+                    matches!(
+                        event,
+                        NvimEvent::ApiReady { .. }
+                            | NvimEvent::UiAttached { .. }
+                            | NvimEvent::Flush
+                            | NvimEvent::Error(_)
+                            | NvimEvent::Disconnected { .. }
+                    )
+                });
                 if weak
                     .update(cx, |this, cx| {
                         for event in batch {
@@ -86,11 +100,22 @@ impl NvimGpui {
                         if let Some(reason) = disconnect_reason {
                             this.handle_disconnect(reason, cx);
                         }
-                        cx.notify();
+                        if should_notify {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
                     break;
+                }
+                // Let GPUI present the committed frame before processing the
+                // next queued redraw. Without an executor yield, a rapid
+                // sequence of page updates can keep this task runnable and
+                // make all intermediate viewport animations invisible.
+                if should_notify {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1))
+                        .await;
                 }
             }
         }));
@@ -187,6 +212,7 @@ impl NvimGpui {
     }
 
     fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
+        self.discard_pending_redraw();
         log::info!(target: "nvim_gpui::state", "Neovim disconnected: reason={reason:?}");
         match reason {
             DisconnectReason::Requested => {}
@@ -276,6 +302,7 @@ impl NvimGpui {
         self.startup_flush_seen = false;
         self.theme = initial_theme;
         self.pending_theme = None;
+        self.pending_redraw = None;
         self.ui_options.clear();
         self.other_grids.clear();
         self.pending_other_grids.clear();
@@ -302,5 +329,53 @@ impl NvimGpui {
         self.clipboard_task = None;
         self.window_title = DEFAULT_WINDOW_TITLE.to_owned();
         self.window_icon = "nvim-gpui".to_owned();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_nvim_session_discards_old_committed_and_pending_state() {
+        let mut app = NvimGpui::default();
+        app.state.mode = "INSERT".to_owned();
+        app.other_grids
+            .insert(2, Rc::new(grid::GridModel::new(4, 2)));
+        app.pending_grid = Some(Rc::new(grid::GridModel::new(3, 1)));
+        app.pending_other_grids
+            .insert(3, Rc::new(grid::GridModel::new(2, 1)));
+        app.pending_grid_placements
+            .insert(3, GridPlacement::default());
+        app.pending_destroyed_grids.insert(4);
+        app.pending_cursor_grid = Some(3);
+        app.pending_theme = Some(NvimTheme {
+            default_background: Some(0x101010),
+            ..Default::default()
+        });
+        app.begin_pending_redraw();
+        app.system_ime.replace_and_mark_text(None, "compose", None);
+
+        let next_theme = NvimTheme {
+            normal_background: Some(0x202020),
+            ..Default::default()
+        };
+        app.reset_nvim_session(next_theme);
+
+        assert!(app.other_grids.is_empty());
+        assert!(app.pending_grid.is_none());
+        assert!(app.pending_other_grids.is_empty());
+        assert!(app.pending_grid_placements.is_empty());
+        assert!(app.pending_destroyed_grids.is_empty());
+        assert!(app.pending_cursor_grid.is_none());
+        assert!(app.pending_theme.is_none());
+        assert!(app.pending_redraw.is_none());
+        assert_eq!(
+            app.grid_size,
+            Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT))
+        );
+        assert_eq!(app.theme.normal_background, Some(0x202020));
+        assert_eq!(app.state.mode, "NORMAL");
+        assert!(app.system_ime.is_empty());
     }
 }

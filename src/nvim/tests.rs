@@ -10,7 +10,10 @@ use super::protocol::{
 use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
-use super::{DisconnectReason, NvimCapabilities, NvimEvent, NvimProcess, NvimTheme, NVIM_EXITED};
+use super::{
+    disconnect_reason, DisconnectReason, NvimCapabilities, NvimEvent, NvimProcess, NvimTheme,
+    NVIM_EXITED,
+};
 use crate::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
 use rmpv::Value;
@@ -462,6 +465,30 @@ fn an_eof_is_classified_as_a_normal_nvim_exit() {
 }
 
 #[test]
+fn disconnect_reason_distinguishes_shutdown_transport_and_protocol_failures() {
+    assert_eq!(
+        disconnect_reason(&Ok(()), true, false, Some(true)),
+        DisconnectReason::Requested
+    );
+    assert_eq!(
+        disconnect_reason(&Err(NVIM_EXITED.to_owned()), false, false, Some(true)),
+        DisconnectReason::CleanExit
+    );
+    assert_eq!(
+        disconnect_reason(&Err(NVIM_EXITED.to_owned()), false, true, None),
+        DisconnectReason::TransportClosed
+    );
+    assert_eq!(
+        disconnect_reason(&Err(NVIM_EXITED.to_owned()), false, false, Some(false)),
+        DisconnectReason::UnexpectedExit
+    );
+    assert_eq!(
+        disconnect_reason(&Err("malformed redraw".to_owned()), false, false, None),
+        DisconnectReason::ProtocolError("malformed redraw".to_owned())
+    );
+}
+
+#[test]
 fn startup_environment_parser_keeps_nul_delimited_values() {
     let environment = parse_environment(b"PATH=/nix/bin\0NVIM_APPNAME=nvim-gpui\0");
 
@@ -586,6 +613,81 @@ fn redraw_option_set_becomes_a_typed_event() {
             value: "Monaco:h12".to_owned(),
         }
     );
+}
+
+#[test]
+fn malformed_redraw_is_rejected_before_any_event_is_emitted() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![
+        Value::Array(vec![Value::from("mouse_on")]),
+        Value::Array(vec![
+            Value::from("grid_resize"),
+            Value::Array(vec![
+                Value::from(1),
+                Value::from(80),
+                Value::from("invalid height"),
+            ]),
+        ]),
+    ]);
+
+    let error = handle_notification("redraw", &params, &sender)
+        .expect_err("malformed redraw should be rejected");
+
+    assert!(error.contains("grid_resize"));
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn malformed_known_redraw_payload_is_not_silently_ignored() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![Value::from("grid_clear")])]);
+
+    let error = handle_notification("redraw", &params, &sender)
+        .expect_err("missing redraw payload should be rejected");
+
+    assert!(error.contains("grid_clear"));
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn unknown_redraw_events_are_skipped_without_blocking_flush() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![
+        Value::Array(vec![
+            Value::from("future_redraw_event"),
+            Value::Boolean(true),
+        ]),
+        Value::Array(vec![Value::from("flush")]),
+    ]);
+
+    handle_notification("redraw", &params, &sender).expect("unknown redraw should be skipped");
+
+    assert_eq!(
+        receiver.try_recv().expect("flush should be available"),
+        NvimEvent::Flush
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn malformed_optional_grid_line_flag_is_rejected() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("grid_line"),
+        Value::Array(vec![
+            Value::from(1),
+            Value::from(0),
+            Value::from(0),
+            Value::Array(Vec::new()),
+            Value::from("invalid wrap flag"),
+        ]),
+    ])]);
+
+    let error = handle_notification("redraw", &params, &sender)
+        .expect_err("invalid grid_line flag should be rejected");
+
+    assert!(error.contains("wraps_to_next"));
+    assert!(receiver.try_recv().is_err());
 }
 
 #[test]

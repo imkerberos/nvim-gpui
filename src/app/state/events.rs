@@ -2,6 +2,18 @@ use super::*;
 
 impl NvimGpui {
     pub(crate) fn apply_nvim_event(&mut self, event: NvimEvent) {
+        if !matches!(
+            &event,
+            NvimEvent::ApiReady { .. }
+                | NvimEvent::UiAttached { .. }
+                | NvimEvent::Flush
+                | NvimEvent::Error(_)
+                | NvimEvent::Disconnected { .. }
+                | NvimEvent::UiSend { .. }
+        ) {
+            self.begin_pending_redraw();
+        }
+
         match event {
             NvimEvent::ApiReady {
                 version,
@@ -21,6 +33,9 @@ impl NvimGpui {
                     target: "nvim_gpui::state",
                     "Neovim UI attached: width={width}, height={height}"
                 );
+                // The initial mouse option is queried during the RPC
+                // handshake rather than delivered in a redraw batch.
+                self.commit_pending_redraw();
                 self.rpc_status = format!("rpc: attached {width}×{height}");
             }
             NvimEvent::GridResized {
@@ -252,70 +267,63 @@ impl NvimGpui {
                 }
             }
             NvimEvent::OptionSet { name, value } => {
-                self.ui_options.insert(name.clone(), value.clone());
+                if matches!(name.as_str(), "guifont" | "guifontwide" | "linespace") {
+                    self.ime_coordinates_dirty = true;
+                }
+                let pending = self.pending_redraw_mut();
+                pending.ui_options.insert(name.clone(), value.clone());
                 match name.as_str() {
                     "mouse" => {
-                        self.mouse_option = value;
-                        self.mouse_enabled = self.mouse_option_allows_current_mode();
+                        pending.mouse_option = value;
+                        pending.mouse_enabled = Self::mouse_option_allows_mode(
+                            &pending.mouse_option,
+                            &pending.nvim_mode,
+                        );
                     }
                     "guifont" => {
-                        self.ime_coordinates_dirty = true;
-                        self.guifont = Some(value);
-                        self.resolved_grid_font = None;
-                        self.resolved_grid_wide_font = None;
-                        self.last_resize = None;
-                        self.shaping_cache.borrow_mut().clear();
+                        pending.guifont = Some(value);
                     }
                     "guifontwide" => {
-                        self.ime_coordinates_dirty = true;
-                        self.guifontwide = Some(value);
-                        self.resolved_grid_wide_font = None;
-                        self.last_resize = None;
-                        self.shaping_cache.borrow_mut().clear();
+                        pending.guifontwide = Some(value);
                     }
                     "linespace" => {
-                        self.ime_coordinates_dirty = true;
-                        self.linespace = parse_non_negative_float(&value).unwrap_or(0.0);
-                        self.last_resize = None;
-                    }
-                    "arabicshape" | "ambiwidth" | "emoji" | "termguicolors" => {
-                        self.shaping_cache.borrow_mut().clear();
+                        pending.linespace = parse_non_negative_float(&value).unwrap_or(0.0);
                     }
                     _ => {}
                 }
             }
             NvimEvent::SetTitle { title } => {
                 if !title.is_empty() {
-                    self.window_title = title;
+                    self.pending_redraw_mut().window_title = title;
                 }
             }
             NvimEvent::SetIcon { icon } => {
-                self.window_icon = icon;
+                self.pending_redraw_mut().window_icon = icon;
             }
             NvimEvent::ModeInfoSet {
                 cursor_style_enabled,
                 modes,
             } => {
-                self.cursor_style_enabled = cursor_style_enabled;
-                self.cursor_modes = modes;
-                self.cursor_blink_started_at = Instant::now();
+                let pending = self.pending_redraw_mut();
+                pending.cursor_style_enabled = cursor_style_enabled;
+                pending.cursor_modes = modes;
+                pending.cursor_blink_started_at = Instant::now();
             }
             NvimEvent::ModeChanged { mode, mode_idx } => {
                 self.ime_coordinates_dirty = true;
-                self.input_router.set_nvim_mode(&mode);
+                let pending = self.pending_redraw_mut();
+                pending.input_router.set_nvim_mode(&mode);
                 log::info!(
                     target: "nvim_gpui::state",
                     "Neovim mode changed: mode={mode}, mode_idx={mode_idx}, input_target={:?}",
-                    self.input_router.target()
+                    pending.input_router.target()
                 );
-                if self.input_router.target() != InputTarget::SystemIme {
-                    self.system_ime.clear();
-                }
-                self.state.mode = mode.to_ascii_uppercase();
-                self.nvim_mode = mode;
-                self.mouse_enabled = self.mouse_option_allows_current_mode();
-                self.cursor_mode_index = mode_idx as usize;
-                self.cursor_blink_started_at = Instant::now();
+                pending.editor_mode = mode.to_ascii_uppercase();
+                pending.nvim_mode = mode;
+                pending.mouse_enabled =
+                    Self::mouse_option_allows_mode(&pending.mouse_option, &pending.nvim_mode);
+                pending.cursor_mode_index = mode_idx as usize;
+                pending.cursor_blink_started_at = Instant::now();
             }
             NvimEvent::UiSend { data } => self.apply_ui_send(&data),
             NvimEvent::MouseEnabled(enabled) => {
@@ -323,11 +331,12 @@ impl NvimGpui {
                     target: "nvim_gpui::state",
                     "Neovim mouse input enabled: {enabled}"
                 );
-                self.mouse_enabled = enabled;
+                self.pending_redraw_mut().mouse_enabled = enabled;
             }
             NvimEvent::Flush => {
                 self.commit_pending_grid();
                 self.commit_pending_theme();
+                self.commit_pending_redraw();
                 self.ime_coordinates_dirty = true;
                 self.startup_flush_seen = true;
                 self.update_startup_grid_ready();

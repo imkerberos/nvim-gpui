@@ -5,7 +5,107 @@ mod grid_state;
 mod layers;
 mod lifecycle;
 
+pub(super) struct PendingRedrawState {
+    ui_options: HashMap<String, String>,
+    guifont: Option<String>,
+    guifontwide: Option<String>,
+    window_title: String,
+    window_icon: String,
+    mouse_option: String,
+    mouse_enabled: bool,
+    nvim_mode: String,
+    linespace: f32,
+    cursor_style_enabled: bool,
+    cursor_modes: Vec<grid::CursorModeInfo>,
+    cursor_mode_index: usize,
+    cursor_blink_started_at: Instant,
+    input_router: InputRouter,
+    editor_mode: String,
+}
+
 impl NvimGpui {
+    fn begin_pending_redraw(&mut self) {
+        if self.pending_redraw.is_some() {
+            return;
+        }
+
+        self.pending_redraw = Some(PendingRedrawState {
+            ui_options: self.ui_options.clone(),
+            guifont: self.guifont.clone(),
+            guifontwide: self.guifontwide.clone(),
+            window_title: self.window_title.clone(),
+            window_icon: self.window_icon.clone(),
+            mouse_option: self.mouse_option.clone(),
+            mouse_enabled: self.mouse_enabled,
+            nvim_mode: self.nvim_mode.clone(),
+            linespace: self.linespace,
+            cursor_style_enabled: self.cursor_style_enabled,
+            cursor_modes: self.cursor_modes.clone(),
+            cursor_mode_index: self.cursor_mode_index,
+            cursor_blink_started_at: self.cursor_blink_started_at,
+            input_router: self.input_router,
+            editor_mode: self.state.mode.clone(),
+        });
+    }
+
+    fn pending_redraw_mut(&mut self) -> &mut PendingRedrawState {
+        self.begin_pending_redraw();
+        self.pending_redraw
+            .as_mut()
+            .expect("pending redraw was initialized")
+    }
+
+    pub(super) fn commit_pending_redraw(&mut self) {
+        let Some(pending) = self.pending_redraw.take() else {
+            return;
+        };
+
+        let guifont_changed = self.guifont != pending.guifont;
+        let guifontwide_changed = self.guifontwide != pending.guifontwide;
+        let linespace_changed = (self.linespace - pending.linespace).abs() > f32::EPSILON;
+        let shaping_option_changed = ["arabicshape", "ambiwidth", "emoji", "termguicolors"]
+            .iter()
+            .any(|key| self.ui_options.get(*key) != pending.ui_options.get(*key));
+
+        self.ui_options = pending.ui_options;
+        self.guifont = pending.guifont;
+        self.guifontwide = pending.guifontwide;
+        self.window_title = pending.window_title;
+        self.window_icon = pending.window_icon;
+        self.mouse_option = pending.mouse_option;
+        self.mouse_enabled = pending.mouse_enabled;
+        self.nvim_mode = pending.nvim_mode;
+        self.linespace = pending.linespace;
+        self.cursor_style_enabled = pending.cursor_style_enabled;
+        self.cursor_modes = pending.cursor_modes;
+        self.cursor_mode_index = pending.cursor_mode_index;
+        self.cursor_blink_started_at = pending.cursor_blink_started_at;
+        self.input_router = pending.input_router;
+        self.state.mode = pending.editor_mode;
+
+        if self.input_router.target() != InputTarget::SystemIme {
+            self.system_ime.clear();
+        }
+        if guifont_changed {
+            self.resolved_grid_font = None;
+            self.resolved_grid_wide_font = None;
+            self.ime_coordinates_dirty = true;
+            self.last_resize = None;
+        }
+        if guifontwide_changed {
+            self.resolved_grid_wide_font = None;
+            self.ime_coordinates_dirty = true;
+            self.last_resize = None;
+        }
+        if linespace_changed {
+            self.ime_coordinates_dirty = true;
+            self.last_resize = None;
+        }
+        if shaping_option_changed {
+            self.shaping_cache.borrow_mut().clear();
+        }
+    }
+
     pub(super) fn apply_runtime_settings(&mut self) {
         self.nerd_font_family = self
             .bundled_nerd_font_registered
@@ -20,7 +120,7 @@ impl NvimGpui {
         }
     }
 
-    pub(super) fn update_settings(&mut self, next: settings::Settings) {
+    pub(crate) fn update_settings(&mut self, next: settings::Settings) {
         self.settings = next;
         self.apply_runtime_settings();
         self.settings_save_error = self.settings.save().err();

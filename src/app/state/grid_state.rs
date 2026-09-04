@@ -48,11 +48,15 @@ impl NvimGpui {
     ) {
         self.pending_grid_mut()
             .set_default_colors(foreground, background, special);
-        for model in self.other_grids.values_mut() {
-            Rc::make_mut(model).set_default_colors(foreground, background, special);
+        let grid_ids = self.other_grids.keys().copied().collect::<Vec<_>>();
+        for grid in grid_ids {
+            self.pending_grid_mut_for(grid)
+                .set_default_colors(foreground, background, special);
         }
-        for model in self.pending_other_grids.values_mut() {
-            Rc::make_mut(model).set_default_colors(foreground, background, special);
+        for (grid, model) in &mut self.pending_other_grids {
+            if !self.other_grids.contains_key(grid) {
+                Rc::make_mut(model).set_default_colors(foreground, background, special);
+            }
         }
     }
 
@@ -62,12 +66,26 @@ impl NvimGpui {
         attrs: grid::HighlightAttrs,
     ) {
         self.pending_grid_mut().set_highlight(id, attrs.clone());
-        for model in self.other_grids.values_mut() {
-            Rc::make_mut(model).set_highlight(id, attrs.clone());
+        let grid_ids = self.other_grids.keys().copied().collect::<Vec<_>>();
+        for grid in grid_ids {
+            self.pending_grid_mut_for(grid)
+                .set_highlight(id, attrs.clone());
         }
-        for model in self.pending_other_grids.values_mut() {
-            Rc::make_mut(model).set_highlight(id, attrs.clone());
+        for (grid, model) in &mut self.pending_other_grids {
+            if !self.other_grids.contains_key(grid) {
+                Rc::make_mut(model).set_highlight(id, attrs.clone());
+            }
         }
+    }
+
+    pub(crate) fn discard_pending_redraw(&mut self) {
+        self.pending_grid = None;
+        self.pending_other_grids.clear();
+        self.pending_grid_placements.clear();
+        self.pending_destroyed_grids.clear();
+        self.pending_cursor_grid = None;
+        self.pending_theme = None;
+        self.pending_redraw = None;
     }
 
     pub(crate) fn set_grid_placement(&mut self, grid: u64, placement: GridPlacement) {
@@ -247,6 +265,7 @@ impl NvimGpui {
                 previous_grid,
                 scroll_delta: viewport.scroll_delta,
                 started_at: Instant::now(),
+                presented: false,
             },
         );
     }

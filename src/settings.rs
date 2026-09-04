@@ -11,28 +11,33 @@ const SETTINGS_FILE_ENV: &str = "NVIM_GPUI_SETTINGS_FILE";
 pub const DEFAULT_IMAGE_CACHE_SIZE_MB: u32 = 128;
 pub const IMAGE_CACHE_SIZE_OPTIONS_MB: &[u32] = &[64, 128, 256, 512, 1024];
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PasteShortcut {
     #[default]
     CmdV,
     CtrlV,
+    Custom(String),
     Disabled,
 }
 
 impl PasteShortcut {
-    pub fn key(self) -> &'static str {
+    pub fn key(&self) -> &str {
         match self {
             Self::CmdV => "cmd-v",
             Self::CtrlV => "ctrl-v",
+            Self::Custom(key) => key,
             Self::Disabled => "disabled",
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            Self::CmdV => "Cmd-V",
-            Self::CtrlV => "Ctrl-V",
-            Self::Disabled => "Disabled",
+            Self::CmdV => "Cmd-V".to_owned(),
+            Self::CtrlV => "Ctrl-V".to_owned(),
+            Self::Custom(key) => gpui::Keystroke::parse(key)
+                .map(|keystroke| keystroke.to_string())
+                .unwrap_or_else(|_| key.clone()),
+            Self::Disabled => "Disabled".to_owned(),
         }
     }
 
@@ -41,20 +46,45 @@ impl PasteShortcut {
             "cmd-v" => Some(Self::CmdV),
             "ctrl-v" => Some(Self::CtrlV),
             "disabled" => Some(Self::Disabled),
-            _ => None,
+            _ => {
+                let keystroke = gpui::Keystroke::parse(value).ok()?;
+                keystroke
+                    .modifiers
+                    .modified()
+                    .then(|| Self::Custom(value.to_owned()))
+            }
         }
     }
 
-    pub fn matches(self, keystroke: &gpui::Keystroke) -> bool {
-        let expected = match self {
-            Self::CmdV => gpui::Keystroke::parse("cmd-v"),
-            Self::CtrlV => gpui::Keystroke::parse("ctrl-v"),
-            Self::Disabled => return false,
-        };
-        let Ok(expected) = expected else {
+    pub fn from_keystroke(keystroke: &gpui::Keystroke) -> Option<Self> {
+        if !keystroke.modifiers.modified() || keystroke.key.is_empty() {
+            return None;
+        }
+
+        let key = keystroke.unparse();
+        Some(match key.as_str() {
+            "cmd-v" => Self::CmdV,
+            "ctrl-v" => Self::CtrlV,
+            _ => Self::Custom(key),
+        })
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    fn parsed_keystroke(&self) -> Option<gpui::Keystroke> {
+        match self {
+            Self::Disabled => None,
+            _ => gpui::Keystroke::parse(self.key()).ok(),
+        }
+    }
+
+    pub fn matches(&self, keystroke: &gpui::Keystroke) -> bool {
+        let Some(expected) = self.parsed_keystroke() else {
             return false;
         };
-        expected.modifiers == keystroke.modifiers && expected.key == keystroke.key
+        keystroke.should_match(&gpui::KeybindingKeystroke::from_keystroke(expected))
     }
 }
 
@@ -299,5 +329,26 @@ mod tests {
         assert!(!PasteShortcut::CmdV.matches(&ctrl_v));
         assert!(PasteShortcut::CtrlV.matches(&ctrl_v));
         assert!(!PasteShortcut::Disabled.matches(&cmd_v));
+    }
+
+    #[test]
+    fn paste_shortcut_accepts_custom_modified_keystrokes() {
+        let keystroke = gpui::Keystroke::parse("cmd-shift-v").expect("shortcut should parse");
+        let shortcut = PasteShortcut::from_keystroke(&keystroke).expect("shortcut is modified");
+
+        assert_eq!(shortcut, PasteShortcut::Custom("cmd-shift-v".to_owned()));
+        assert!(shortcut.matches(&keystroke));
+        assert_eq!(shortcut.key(), "cmd-shift-v");
+    }
+
+    #[test]
+    fn paste_shortcut_rejects_unmodified_key_recordings() {
+        let key = gpui::Keystroke::parse("v").expect("key should parse");
+
+        assert!(PasteShortcut::from_keystroke(&key).is_none());
+        assert_eq!(
+            parse_settings("paste_shortcut=v\n").paste_shortcut,
+            PasteShortcut::CmdV
+        );
     }
 }

@@ -1,6 +1,7 @@
 pub mod app;
 mod clipboard;
 pub mod grid;
+pub(crate) mod gui;
 pub mod helper;
 pub mod image_store;
 pub mod input;
@@ -8,6 +9,7 @@ mod logging;
 pub mod nvim;
 pub mod platform;
 pub mod settings;
+pub(crate) mod widgets;
 
 use std::{env, ffi::OsString, fs, path::PathBuf};
 

@@ -1,7 +1,8 @@
 use crate::{
     grid,
     grid::GridElement,
-    helper, image_store,
+    gui::{AboutWindow, SettingsWindow},
+    image_store,
     image_store::{GridId, ImageId, KittyEvent},
     input,
     input::{
@@ -9,7 +10,9 @@ use crate::{
         InputTarget, SystemImeState,
     },
     nvim::{self, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
-    platform, settings, CliOptions, NvimConnection,
+    platform, settings,
+    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
+    CliOptions, NvimConnection,
 };
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
@@ -28,12 +31,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BACKGROUND: u32 = 0x1e1e2e;
-const SURFACE: u32 = 0x181825;
-const SURFACE_BRIGHT: u32 = 0x313244;
-const TEXT: u32 = 0xcdd6f4;
-const MUTED_TEXT: u32 = 0x7f849c;
-const ACCENT: u32 = 0x89b4fa;
 const DEFAULT_GRID_WIDTH: u32 = 80;
 const DEFAULT_GRID_HEIGHT: u32 = 24;
 const DEFAULT_GRID_FONT_SIZE: f32 = 14.0;
@@ -54,7 +51,6 @@ const MIN_WINDOW_WIDTH: f32 = 80.0;
 const MIN_WINDOW_HEIGHT: f32 = 44.0;
 const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
 const DEFAULT_WINDOW_TITLE: &str = "gpvim";
-const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const LOGO_ASSET: &str = "neovim-gpui.png";
 const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
 const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
@@ -181,7 +177,7 @@ struct GridViewportMargins {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GridPlacement {
+pub(crate) struct GridPlacement {
     row: i64,
     col: i64,
     width: u64,
@@ -202,7 +198,7 @@ struct GridPlacement {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ImageLayer {
+pub(crate) struct ImageLayer {
     image: ImageId,
     grid: u64,
     row: usize,
@@ -217,6 +213,7 @@ struct ViewportAnimation {
     previous_grid: Rc<grid::GridModel>,
     scroll_delta: i64,
     started_at: Instant,
+    presented: bool,
 }
 
 impl ViewportAnimation {
@@ -228,6 +225,13 @@ impl ViewportAnimation {
 
     fn is_active(&self, now: Instant) -> bool {
         self.progress(now) < 1.0
+    }
+
+    fn mark_presented(&mut self, now: Instant) {
+        if !self.presented {
+            self.started_at = now;
+            self.presented = true;
+        }
     }
 
     fn offsets(&self, now: Instant, max_delta: usize, line_height: Pixels) -> (Pixels, Pixels) {
@@ -262,7 +266,7 @@ impl Default for GridPlacement {
     }
 }
 
-struct NvimGpui {
+pub(crate) struct NvimGpui {
     focus_handle: Option<FocusHandle>,
     state: EditorState,
     grid: Rc<grid::GridModel>,
@@ -324,9 +328,44 @@ struct NvimGpui {
     about_window: Option<WindowHandle<AboutWindow>>,
     theme: NvimTheme,
     pending_theme: Option<NvimTheme>,
+    pending_redraw: Option<state::PendingRedrawState>,
     nvim_grid_ready: bool,
     startup_resize_target: Option<(u32, u32)>,
     startup_flush_seen: bool,
+}
+
+impl NvimGpui {
+    pub(crate) fn settings_snapshot(&self) -> (settings::Settings, Option<String>, Option<String>) {
+        (
+            self.settings.clone(),
+            self.settings_save_error.clone(),
+            self.cli_install_error.clone(),
+        )
+    }
+
+    pub(crate) fn settings_value(&self) -> settings::Settings {
+        self.settings.clone()
+    }
+
+    pub(crate) fn set_cli_install_error(&mut self, error: Option<String>) {
+        self.cli_install_error = error;
+    }
+
+    pub(crate) fn settings_window_handle(&self) -> Option<WindowHandle<SettingsWindow>> {
+        self.settings_window
+    }
+
+    pub(crate) fn set_settings_window_handle(&mut self, handle: WindowHandle<SettingsWindow>) {
+        self.settings_window = Some(handle);
+    }
+
+    pub(crate) fn about_window_handle(&self) -> Option<WindowHandle<AboutWindow>> {
+        self.about_window
+    }
+
+    pub(crate) fn set_about_window_handle(&mut self, handle: WindowHandle<AboutWindow>) {
+        self.about_window = Some(handle);
+    }
 }
 
 impl Default for NvimGpui {
@@ -392,6 +431,7 @@ impl Default for NvimGpui {
             about_window: None,
             theme: NvimTheme::default(),
             pending_theme: None,
+            pending_redraw: None,
             nvim_grid_ready: true,
             startup_resize_target: None,
             startup_flush_seen: false,
@@ -407,9 +447,9 @@ mod windows;
 pub(crate) use startup::run;
 use windows::{
     initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
-    parse_guifont_spec, parse_non_negative_float, themed_titlebar, themed_titlebar_enabled,
-    themed_titlebar_options, AboutWindow, DebugWindow, SettingsWindow,
+    parse_guifont_spec, parse_non_negative_float, DebugWindow,
 };
+pub(crate) use windows::{themed_titlebar, themed_titlebar_enabled, themed_titlebar_options};
 
 #[cfg(test)]
 mod tests;

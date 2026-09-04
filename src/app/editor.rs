@@ -401,6 +401,13 @@ impl Render for NvimGpui {
         let cell_width = gui_font.cell_width(window);
         let grid_ready = self.nvim_grid_ready;
         let now = Instant::now();
+        for animation in self.viewport_animations.values_mut() {
+            // Redraw processing can take longer than the animation duration,
+            // especially for a large screen update. Start the clock when this
+            // frame is actually about to be rendered so the first visible
+            // frame cannot consume the whole animation.
+            animation.mark_presented(now);
+        }
         self.viewport_animations
             .retain(|_, animation| animation.is_active(now));
         let viewport_animations = self.viewport_animations.clone();
@@ -612,8 +619,8 @@ impl Render for NvimGpui {
 }
 
 impl NvimGpui {
-    pub(super) fn mouse_option_allows_current_mode(&self) -> bool {
-        let mode = self.nvim_mode.chars().next().unwrap_or('n');
+    pub(super) fn mouse_option_allows_mode(mouse_option: &str, nvim_mode: &str) -> bool {
+        let mode = nvim_mode.chars().next().unwrap_or('n');
         let required = match mode {
             'i' | 'R' | 's' | 'S' => 'i',
             'v' | 'V' | '\u{16}' => 'v',
@@ -622,10 +629,10 @@ impl NvimGpui {
             // Terminal-mode mouse input is enabled by `a`, which is the
             // useful GUI behavior even though the option predates terminal
             // mode as a separate mode code.
-            't' => return self.mouse_option.contains('a'),
+            't' => return mouse_option.contains('a'),
             _ => 'n',
         };
-        self.mouse_option.contains('a') || self.mouse_option.contains(required)
+        mouse_option.contains('a') || mouse_option.contains(required)
     }
 
     pub(super) fn nvim_mouse_position(
