@@ -320,6 +320,7 @@ impl NvimGpui {
         self.image_sources.clear();
         self.mouse_option = "nvi".to_owned();
         self.mouse_enabled = true;
+        self.mouse_capture = None;
         self.nvim_mode = "n".to_owned();
         self.input_router = InputRouter::default();
         self.system_ime.clear();

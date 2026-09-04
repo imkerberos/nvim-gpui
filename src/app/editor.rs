@@ -641,23 +641,40 @@ impl NvimGpui {
         mouse_option.contains('a') || mouse_option.contains(required)
     }
 
+    #[cfg(test)]
     pub(super) fn nvim_mouse_position(
         position: gpui::Point<Pixels>,
         cell_width: Pixels,
         line_height: Pixels,
     ) -> (u64, u64) {
-        let editor_y = f32::from(position.y)
-            - if themed_titlebar_enabled() {
-                THEMED_TITLEBAR_HEIGHT
-            } else {
-                0.0
-            };
-        (
-            (editor_y / f32::from(line_height)).max(0.0).floor() as u64,
-            (f32::from(position.x) / f32::from(cell_width))
-                .max(0.0)
-                .floor() as u64,
-        )
+        let (row, col) =
+            compositor::CompositorFrame::point_in_grid_space(position, cell_width, line_height);
+        (row.max(0.0).floor() as u64, col.max(0.0).floor() as u64)
+    }
+
+    fn mouse_target_at(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+    ) -> Option<compositor::MouseTarget> {
+        let gui_font = self.current_grid_font(window);
+        let cell_width = gui_font.cell_width(window);
+        let line_height = gui_font.line_height(window, self.linespace);
+        self.compositor_frame()
+            .hit_test(position, cell_width, line_height)
+    }
+
+    fn mouse_target_for_grid(
+        &mut self,
+        grid_id: u64,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+    ) -> Option<compositor::MouseTarget> {
+        let gui_font = self.current_grid_font(window);
+        let cell_width = gui_font.cell_width(window);
+        let line_height = gui_font.line_height(window, self.linespace);
+        self.compositor_frame()
+            .target_for_grid(grid_id, position, cell_width, line_height)
     }
 
     fn send_mouse(
@@ -665,22 +682,30 @@ impl NvimGpui {
         button: &str,
         action: &str,
         modifiers: gpui::Modifiers,
-        position: gpui::Point<Pixels>,
-        window: &Window,
+        target: Option<compositor::MouseTarget>,
     ) {
+        let Some(target) = target else {
+            return;
+        };
         if !self.mouse_enabled {
             return;
         }
-        let gui_font = self.current_grid_font(window);
-        let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.linespace);
-        let (row, col) = Self::nvim_mouse_position(position, cell_width, line_height);
         let modifier = input::nvim_mouse_modifiers(modifiers);
         if let Some(nvim) = self.nvim.as_ref() {
-            if let Err(error) = nvim.send_mouse(button, action, modifier, 0, row, col) {
+            if let Err(error) = nvim.send_mouse(
+                button,
+                action,
+                modifier,
+                target.grid_id,
+                target.row,
+                target.col,
+            ) {
                 log::error!(
                     target: "nvim_gpui::input",
-                    "mouse event failed: button={button}, action={action}, row={row}, col={col}: {error}"
+                    "mouse event failed: button={button}, action={action}, grid={}, row={}, col={}: {error}",
+                    target.grid_id,
+                    target.row,
+                    target.col
                 );
                 self.rpc_status = format!("rpc mouse error: {error}");
             }
@@ -696,12 +721,13 @@ impl NvimGpui {
         if let Some(focus_handle) = self.focus_handle.as_ref() {
             window.focus(focus_handle);
         }
+        let target = self.mouse_target_at(event.position, window);
+        self.mouse_capture = target.map(|target| target.grid_id);
         self.send_mouse(
             input::nvim_mouse_button(event.button),
             "press",
             event.modifiers,
-            event.position,
-            window,
+            target,
         );
         window.prevent_default();
     }
@@ -712,12 +738,16 @@ impl NvimGpui {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
+        let target = self
+            .mouse_capture
+            .take()
+            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
+            .or_else(|| self.mouse_target_at(event.position, window));
         self.send_mouse(
             input::nvim_mouse_button(event.button),
             "release",
             event.modifiers,
-            event.position,
-            window,
+            target,
         );
         window.prevent_default();
     }
@@ -732,7 +762,11 @@ impl NvimGpui {
             .pressed_button
             .map(|button| (input::nvim_mouse_button(button), "drag"))
             .unwrap_or(("move", "move"));
-        self.send_mouse(button, action, event.modifiers, event.position, window);
+        let target = self
+            .mouse_capture
+            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
+            .or_else(|| self.mouse_target_at(event.position, window));
+        self.send_mouse(button, action, event.modifiers, target);
         window.prevent_default();
     }
 
@@ -765,17 +799,32 @@ impl NvimGpui {
         let y_steps = self.scroll_remainder.y.trunc() as i32;
         self.scroll_remainder.x -= x_steps as f32;
         self.scroll_remainder.y -= y_steps as f32;
-        let (row, col) = Self::nvim_mouse_position(event.position, cell_width, line_height);
         let modifier = input::nvim_mouse_modifiers(event.modifiers);
+        let target = self
+            .compositor_frame()
+            .hit_test(event.position, cell_width, line_height);
 
         if let Some(nvim) = self.nvim.as_ref() {
+            let Some(target) = target else {
+                window.prevent_default();
+                return;
+            };
             for _ in 0..x_steps.unsigned_abs() {
                 let action = if x_steps > 0 { "right" } else { "left" };
-                if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
-                {
+                if let Err(error) = nvim.send_mouse(
+                    "wheel",
+                    action,
+                    modifier.clone(),
+                    target.grid_id,
+                    target.row,
+                    target.col,
+                ) {
                     log::error!(
                         target: "nvim_gpui::input",
-                        "horizontal wheel event failed: action={action}, row={row}, col={col}: {error}"
+                        "horizontal wheel event failed: action={action}, grid={}, row={}, col={}: {error}",
+                        target.grid_id,
+                        target.row,
+                        target.col
                     );
                     self.rpc_status = format!("rpc mouse error: {error}");
                     break;
@@ -783,11 +832,20 @@ impl NvimGpui {
             }
             for _ in 0..y_steps.unsigned_abs() {
                 let action = if y_steps > 0 { "up" } else { "down" };
-                if let Err(error) = nvim.send_mouse("wheel", action, modifier.clone(), 0, row, col)
-                {
+                if let Err(error) = nvim.send_mouse(
+                    "wheel",
+                    action,
+                    modifier.clone(),
+                    target.grid_id,
+                    target.row,
+                    target.col,
+                ) {
                     log::error!(
                         target: "nvim_gpui::input",
-                        "vertical wheel event failed: action={action}, row={row}, col={col}: {error}"
+                        "vertical wheel event failed: action={action}, grid={}, row={}, col={}: {error}",
+                        target.grid_id,
+                        target.row,
+                        target.col
                     );
                     self.rpc_status = format!("rpc mouse error: {error}");
                     break;

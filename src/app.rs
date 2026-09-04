@@ -17,9 +17,9 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
     Context, ElementInputHandler, Entity, FocusHandle, Focusable, Image, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, SharedString,
-    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowHandle,
-    WindowKind, WindowOptions,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent,
+    SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea,
+    WindowHandle, WindowKind, WindowOptions,
 };
 use std::{
     borrow::Cow,
@@ -287,6 +287,7 @@ pub(crate) struct NvimGpui {
     ui_options: HashMap<String, String>,
     mouse_option: String,
     mouse_enabled: bool,
+    mouse_capture: Option<u64>,
     nvim_mode: String,
     scroll_remainder: gpui::Point<f32>,
     linespace: f32,
@@ -399,6 +400,7 @@ impl Default for NvimGpui {
             ui_options: HashMap::new(),
             mouse_option: "nvi".to_owned(),
             mouse_enabled: true,
+            mouse_capture: None,
             nvim_mode: "n".to_owned(),
             scroll_remainder: point(0.0, 0.0),
             linespace: 0.0,

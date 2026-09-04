@@ -41,6 +41,13 @@ impl GridRect {
             height,
         }
     }
+
+    fn contains(self, row: f32, col: f32) -> bool {
+        row >= self.row as f32
+            && col >= self.col as f32
+            && row < self.row as f32 + self.height as f32
+            && col < self.col as f32 + self.width as f32
+    }
 }
 
 /// One complete logical layer in a compositor frame.
@@ -97,6 +104,75 @@ impl CompositorLayer {
 #[derive(Debug, Clone)]
 pub(super) struct CompositorFrame {
     pub(super) layers: Vec<CompositorLayer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MouseTarget {
+    pub(super) grid_id: u64,
+    pub(super) row: u64,
+    pub(super) col: u64,
+}
+
+impl CompositorFrame {
+    /// Convert a GPUI point into the screen grid coordinate space used by
+    /// multigrid placements. Keep this next to hit testing so mouse routing
+    /// and the legacy main-grid coordinate helper cannot drift apart.
+    pub(super) fn point_in_grid_space(
+        position: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> (f32, f32) {
+        let editor_y = f32::from(position.y)
+            - if themed_titlebar_enabled() {
+                THEMED_TITLEBAR_HEIGHT
+            } else {
+                0.0
+            };
+        (
+            editor_y / f32::from(line_height),
+            f32::from(position.x) / f32::from(cell_width),
+        )
+    }
+
+    /// Return the topmost visible layer that is allowed to receive mouse
+    /// input at this screen point. Layers are stored in paint order, so the
+    /// reverse traversal mirrors the visual hit-test order.
+    pub(super) fn hit_test(
+        &self,
+        position: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> Option<MouseTarget> {
+        let (row, col) = Self::point_in_grid_space(position, cell_width, line_height);
+        self.layers.iter().rev().find_map(|layer| {
+            (layer.placement.mouse_enabled && layer.surface_rect.contains(row, col)).then(|| {
+                MouseTarget {
+                    grid_id: layer.grid_id,
+                    row: (row - layer.surface_rect.row as f32).floor().max(0.0) as u64,
+                    col: (col - layer.surface_rect.col as f32).floor().max(0.0) as u64,
+                }
+            })
+        })
+    }
+
+    /// Resolve a point against a previously captured grid. Drag release and
+    /// move events must continue going to the grid that received the press,
+    /// even after the pointer leaves its visual rectangle.
+    pub(super) fn target_for_grid(
+        &self,
+        grid_id: u64,
+        position: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> Option<MouseTarget> {
+        let layer = self.layers.iter().find(|layer| layer.grid_id == grid_id)?;
+        let (row, col) = Self::point_in_grid_space(position, cell_width, line_height);
+        Some(MouseTarget {
+            grid_id,
+            row: (row - layer.surface_rect.row as f32).floor().max(0.0) as u64,
+            col: (col - layer.surface_rect.col as f32).floor().max(0.0) as u64,
+        })
+    }
 }
 
 impl NvimGpui {
@@ -252,5 +328,137 @@ mod tests {
         assert_eq!(layer.surface_rect.width, 10);
         assert_eq!(layer.surface_rect.height, 6);
         assert_eq!(layer.clip_rect, layer.surface_rect);
+    }
+
+    #[test]
+    fn hit_test_chooses_the_topmost_mouse_enabled_layer() {
+        let mut app = NvimGpui::default();
+        app.other_grids
+            .insert(2, Rc::new(grid::GridModel::new(10, 5)));
+        app.other_grids
+            .insert(3, Rc::new(grid::GridModel::new(4, 3)));
+        app.grid_placements.insert(
+            2,
+            GridPlacement {
+                row: 2,
+                col: 3,
+                width: 10,
+                height: 5,
+                kind: GridLayerKind::Float,
+                visible: true,
+                compindex: 1,
+                ..Default::default()
+            },
+        );
+        app.grid_placements.insert(
+            3,
+            GridPlacement {
+                row: 3,
+                col: 4,
+                width: 4,
+                height: 3,
+                kind: GridLayerKind::Float,
+                visible: true,
+                compindex: 2,
+                ..Default::default()
+            },
+        );
+
+        let frame = app.compositor_frame();
+        let titlebar = if themed_titlebar_enabled() {
+            THEMED_TITLEBAR_HEIGHT
+        } else {
+            0.0
+        };
+        let target = frame
+            .hit_test(point(px(45.0), px(titlebar + 60.0)), px(10.0), px(15.0))
+            .expect("overlapping float should receive the click");
+
+        assert_eq!(
+            target,
+            MouseTarget {
+                grid_id: 3,
+                row: 1,
+                col: 0
+            }
+        );
+    }
+
+    #[test]
+    fn hit_test_skips_a_mouse_disabled_float() {
+        let mut app = NvimGpui::default();
+        app.other_grids
+            .insert(2, Rc::new(grid::GridModel::new(5, 3)));
+        app.grid_placements.insert(
+            2,
+            GridPlacement {
+                row: 1,
+                col: 1,
+                width: 5,
+                height: 3,
+                kind: GridLayerKind::Float,
+                mouse_enabled: false,
+                visible: true,
+                compindex: 2,
+                ..Default::default()
+            },
+        );
+
+        let frame = app.compositor_frame();
+        let titlebar = if themed_titlebar_enabled() {
+            THEMED_TITLEBAR_HEIGHT
+        } else {
+            0.0
+        };
+        let target = frame
+            .hit_test(point(px(15.0), px(titlebar + 30.0)), px(10.0), px(15.0))
+            .expect("main grid should remain the fallback target");
+
+        assert_eq!(target.grid_id, 1);
+        assert_eq!((target.row, target.col), (2, 1));
+    }
+
+    #[test]
+    fn captured_grid_keeps_receiving_pointer_coordinates_outside_its_rect() {
+        let mut app = NvimGpui::default();
+        app.other_grids
+            .insert(2, Rc::new(grid::GridModel::new(4, 2)));
+        app.grid_placements.insert(
+            2,
+            GridPlacement {
+                row: 2,
+                col: 3,
+                width: 4,
+                height: 2,
+                kind: GridLayerKind::Float,
+                visible: true,
+                compindex: 1,
+                ..Default::default()
+            },
+        );
+
+        let frame = app.compositor_frame();
+        let titlebar = if themed_titlebar_enabled() {
+            THEMED_TITLEBAR_HEIGHT
+        } else {
+            0.0
+        };
+        let target = frame
+            .target_for_grid(
+                2,
+                point(px(100.0), px(titlebar + 120.0)),
+                px(10.0),
+                px(15.0),
+            )
+            .expect("captured visible grid should resolve outside its bounds");
+
+        assert_eq!(
+            target,
+            MouseTarget {
+                grid_id: 2,
+                row: 6,
+                col: 7
+            }
+        );
     }
 }
