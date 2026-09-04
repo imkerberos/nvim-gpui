@@ -332,6 +332,7 @@ impl NvimGpui {
         self.clipboard_task = None;
         self.window_title = DEFAULT_WINDOW_TITLE.to_owned();
         self.window_icon = "nvim-gpui".to_owned();
+        self.display_options = grid::DisplayOptions::default();
     }
 }
 

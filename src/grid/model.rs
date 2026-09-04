@@ -5,6 +5,77 @@ pub struct HighlightId(pub u64);
 
 pub const DEFAULT_HIGHLIGHT: HighlightId = HighlightId(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AmbiguousWidth {
+    #[default]
+    Single,
+    Double,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmojiWidth {
+    Text,
+    #[default]
+    Emoji,
+}
+
+/// Display-related Neovim options that affect shaping or terminal layout.
+///
+/// The raw `option_set` map remains useful for diagnostics, but rendering
+/// code should consume this typed state so invalid or unknown option strings
+/// cannot silently change layout decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DisplayOptions {
+    pub ambiwidth: AmbiguousWidth,
+    pub emoji: EmojiWidth,
+    pub arabicshape: bool,
+    pub termguicolors: bool,
+}
+
+impl DisplayOptions {
+    /// Apply one redraw `option_set` value. Return whether the option is one
+    /// understood by the display layer; invalid values leave the old value in
+    /// place and return false.
+    pub fn apply_option(&mut self, name: &str, value: &str) -> bool {
+        match name {
+            "ambiwidth" => match value {
+                "single" => self.ambiwidth = AmbiguousWidth::Single,
+                "double" => self.ambiwidth = AmbiguousWidth::Double,
+                _ => return false,
+            },
+            "emoji" => {
+                self.emoji = match parse_display_bool(value) {
+                    Some(true) => EmojiWidth::Emoji,
+                    Some(false) => EmojiWidth::Text,
+                    None => return false,
+                }
+            }
+            "arabicshape" => {
+                self.arabicshape = match parse_display_bool(value) {
+                    Some(value) => value,
+                    None => return false,
+                }
+            }
+            "termguicolors" => {
+                self.termguicolors = match parse_display_bool(value) {
+                    Some(value) => value,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+}
+
+fn parse_display_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "boolean(true)" => Some(true),
+        "0" | "false" | "no" | "off" | "boolean(false)" => Some(false),
+        _ => None,
+    }
+}
+
 /// The RGB attributes announced by Neovim's `hl_attr_define` event.
 ///
 /// `None` is intentional: Neovim uses absent colors to mean "use the current

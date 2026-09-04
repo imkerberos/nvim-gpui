@@ -46,7 +46,7 @@ pub struct GridElement {
     shaping_cache: SharedShapedLineCache,
     wide_font: Option<(String, Pixels)>,
     nerd_fallback_font: Option<(String, Pixels)>,
-    default_background_override: Option<u32>,
+    highlight_context: HighlightContext,
     viewport_margins: (usize, usize, usize, usize),
     viewport_offset: gpui::Point<Pixels>,
     glyph_coverage_cache: SharedGlyphCoverageCache,
@@ -66,7 +66,7 @@ impl GridElement {
             shaping_cache: ShapedLineCache::shared(),
             wide_font: None,
             nerd_fallback_font: None,
-            default_background_override: None,
+            highlight_context: HighlightContext::Main,
             viewport_margins: (0, 0, 0, 0),
             viewport_offset: point(px(0.0), px(0.0)),
             glyph_coverage_cache: GlyphCoverageCache::shared(),
@@ -105,12 +105,9 @@ impl GridElement {
         self
     }
 
-    /// Use this background for cells in this grid whose highlight does not
-    /// specify one. Multigrid floating windows need this because Neovim can
-    /// represent their implicit `NormalFloat` fill with the default highlight
-    /// id while still expecting the window surface to remain opaque.
-    pub fn with_default_background(mut self, background: Option<u32>) -> Self {
-        self.default_background_override = background;
+    /// Resolve highlights using the semantic layer that owns this grid.
+    pub fn with_highlight_context(mut self, context: HighlightContext) -> Self {
+        self.highlight_context = context;
         self
     }
 
@@ -245,11 +242,8 @@ impl GridElement {
             .find(|cell| {
                 (cell.grid_start..cell.grid_start + cell.grid_len).contains(&position.col)
             })?;
-        let attrs = self
-            .model
-            .highlight_ref(cell.highlight)
-            .cloned()
-            .unwrap_or_default();
+        let resolved = resolve_highlight(&self.model, cell.highlight, self.highlight_context);
+        let attrs = resolved.attrs;
         if cell.text.is_empty() || is_kitty_placeholder(&cell.text) || attrs.conceal {
             return None;
         }
@@ -398,12 +392,9 @@ impl Element for GridElement {
         // Inline composition contributes glyphs only. Its background must
         // remain the background of the underlying grid cell (for example,
         // CursorLine), including after the composition is cleared.
-        let ime_foreground = highlight_colors(
-            model.as_ref(),
-            DEFAULT_HIGHLIGHT,
-            self.default_background_override,
-        )
-        .0;
+        let ime_style =
+            resolve_highlight(model.as_ref(), DEFAULT_HIGHLIGHT, self.highlight_context);
+        let ime_foreground = ime_style.foreground;
         let ime_paint = self.ime_composition.as_ref().and_then(|composition| {
             if composition.text.is_empty()
                 || composition.row >= model.height()
@@ -416,10 +407,7 @@ impl Element for GridElement {
             // a decoration-specific highlight. IME preedit is client-side
             // input, so it must use the grid's normal text attributes instead
             // of inheriting that cell's virtual-text color.
-            let attrs = model
-                .highlight_ref(DEFAULT_HIGHLIGHT)
-                .cloned()
-                .unwrap_or_default();
+            let attrs = ime_style.attrs.clone();
             let text = composition.text.clone();
             let marked_start = composition.marked_range.start.min(text.len());
             let marked_end = composition
@@ -434,10 +422,7 @@ impl Element for GridElement {
                 underline,
                 strikethrough: attrs.strikethrough.then(|| StrikethroughStyle {
                     thickness: px(1.0),
-                    color: attrs
-                        .special
-                        .or(attrs.foreground)
-                        .map(|color| rgb(color).into()),
+                    color: Some(ime_style.special),
                 }),
             };
             let marked_style = Some(UnderlineStyle {
@@ -488,15 +473,11 @@ impl Element for GridElement {
                 cell.row == row && cell.grid_start < end && start < cell.grid_start + cell.grid_len
             });
             let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
-            let attrs = model
-                .highlight_ref(cell.highlight)
-                .map(Cow::Borrowed)
-                .unwrap_or_else(|| Cow::Owned(HighlightAttrs::default()));
-            let (foreground, background) = highlight_colors(
-                model.as_ref(),
-                cell.highlight,
-                self.default_background_override,
-            );
+            let resolved =
+                resolve_highlight(model.as_ref(), cell.highlight, self.highlight_context);
+            let attrs = &resolved.attrs;
+            let foreground = resolved.foreground;
+            let background = resolved.background;
             if attrs.blink {
                 has_blinking_text = true;
             }
@@ -527,18 +508,12 @@ impl Element for GridElement {
                     || attrs.underdashed)
                     .then(|| UnderlineStyle {
                         thickness: px(1.0),
-                        color: attrs
-                            .special
-                            .or(attrs.foreground)
-                            .map(|color| rgb(color).into()),
+                        color: Some(resolved.special),
                         wavy: attrs.undercurl,
                     });
                 let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
                     thickness: px(1.0),
-                    color: attrs
-                        .special
-                        .or(attrs.foreground)
-                        .map(|color| rgb(color).into()),
+                    color: Some(resolved.special),
                 });
                 Some(ShapingStyle {
                     font: cell_font,

@@ -149,51 +149,103 @@ fn is_nerd_symbol(text: &str) -> bool {
             || ('\u{100000}'..='\u{10fffd}').contains(&character))
 }
 
-pub(super) fn highlight_colors(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightContext {
+    Main,
+    Floating { background: Option<u32> },
+    Message { background: Option<u32> },
+}
+
+impl HighlightContext {
+    pub fn background_override(self) -> Option<u32> {
+        match self {
+            Self::Main => None,
+            Self::Floating { background } | Self::Message { background } => background,
+        }
+    }
+}
+
+/// Highlight attributes resolved against grid defaults and the owning layer.
+///
+/// Keeping the original attributes alongside resolved colors lets the paint
+/// pass use one authoritative result for conceal, font flags, decorations,
+/// reverse, dim, and blend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedHighlight {
+    pub attrs: HighlightAttrs,
+    pub foreground: Hsla,
+    pub background: Option<Hsla>,
+    pub special: Hsla,
+}
+
+pub fn resolve_highlight(
     model: &GridModel,
     highlight: HighlightId,
-    background_override: Option<u32>,
-) -> (Hsla, Option<Hsla>) {
-    let attrs = model
-        .highlight_ref(highlight)
-        .map(Cow::Borrowed)
-        .unwrap_or_else(|| Cow::Owned(HighlightAttrs::default()));
-    let (default_foreground, default_background, _) = model.default_colors();
+    context: HighlightContext,
+) -> ResolvedHighlight {
+    let attrs = model.highlight_ref(highlight).cloned().unwrap_or_default();
+    let (default_foreground, default_background, default_special) = model.default_colors();
     let foreground = attrs
         .foreground
         .or(default_foreground)
         .unwrap_or(DEFAULT_FOREGROUND);
-    // A terminal paints every cell, including a blank cell. In a multigrid
-    // float, Neovim can use the default highlight id for an implicit cell
-    // even though that id already contains the main grid's explicit
-    // background. Prefer the float surface for that id; explicit non-default
-    // highlights still retain their own background.
     let background = if highlight == DEFAULT_HIGHLIGHT {
-        background_override
+        context
+            .background_override()
             .or(attrs.background)
             .or(default_background)
     } else {
         attrs
             .background
-            .or(background_override)
+            .or(context.background_override())
             .or(default_background)
     }
     .unwrap_or(DEFAULT_BACKGROUND);
+    let special = attrs
+        .special
+        .or(default_special)
+        .or(attrs.foreground)
+        .or(default_foreground)
+        .unwrap_or(DEFAULT_FOREGROUND);
     let mut foreground: Hsla = rgb(foreground).into();
+    let mut background: Hsla = rgb(background).into();
     if attrs.dim {
         foreground.a *= 0.6;
     }
-    foreground.a *= blend_alpha(attrs.blend);
+    let alpha = blend_alpha(attrs.blend);
+    foreground.a *= alpha;
+    background.a *= alpha;
 
     if attrs.reverse {
-        let mut background_color: Hsla = rgb(background).into();
-        background_color.a *= blend_alpha(attrs.blend);
-        (background_color, Some(foreground))
+        ResolvedHighlight {
+            attrs,
+            foreground: background,
+            background: Some(foreground),
+            special: rgb(special).into(),
+        }
     } else {
-        let mut background: Hsla = rgb(background).into();
-        background.a *= blend_alpha(attrs.blend);
-        (foreground, Some(background))
+        ResolvedHighlight {
+            attrs,
+            foreground,
+            background: Some(background),
+            special: rgb(special).into(),
+        }
     }
+}
+
+#[cfg(test)]
+pub(super) fn highlight_colors(
+    model: &GridModel,
+    highlight: HighlightId,
+    background_override: Option<u32>,
+) -> (Hsla, Option<Hsla>) {
+    let context = background_override
+        .map(|background| HighlightContext::Floating {
+            background: Some(background),
+        })
+        .unwrap_or(HighlightContext::Main);
+    let style = resolve_highlight(model, highlight, context);
+    (style.foreground, style.background)
 }
 
 fn blend_alpha(blend: Option<u8>) -> f32 {

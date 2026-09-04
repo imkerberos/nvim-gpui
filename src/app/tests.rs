@@ -5,8 +5,8 @@ use super::{
 };
 use crate::{
     grid::{
-        CursorModeInfo, CursorShape, CursorVisualPosition, GridLineCell, HighlightAttrs,
-        HighlightId,
+        AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
+        EmojiWidth, GridLineCell, HighlightAttrs, HighlightId,
     },
     image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
     nvim::NvimEvent,
@@ -251,6 +251,41 @@ fn nvim_icon_and_ui_options_update_the_client_model() {
     assert_eq!(app.window_icon, "nvim-document");
     assert_eq!(app.linespace, 3.0);
     assert_eq!(app.ui_options.get("ambiwidth"), Some(&"single".to_owned()));
+    assert_eq!(
+        app.display_options,
+        DisplayOptions {
+            ambiwidth: AmbiguousWidth::Single,
+            emoji: EmojiWidth::Emoji,
+            arabicshape: false,
+            termguicolors: false,
+        }
+    );
+}
+
+#[test]
+fn typed_display_options_are_committed_at_flush() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::OptionSet {
+        name: "ambiwidth".to_owned(),
+        value: "double".to_owned(),
+    });
+    app.apply_nvim_event(NvimEvent::OptionSet {
+        name: "emoji".to_owned(),
+        value: "false".to_owned(),
+    });
+    app.apply_nvim_event(NvimEvent::OptionSet {
+        name: "arabicshape".to_owned(),
+        value: "true".to_owned(),
+    });
+
+    assert_eq!(app.display_options, DisplayOptions::default());
+
+    app.apply_nvim_event(NvimEvent::Flush);
+
+    assert_eq!(app.display_options.ambiwidth, AmbiguousWidth::Double);
+    assert_eq!(app.display_options.emoji, EmojiWidth::Text);
+    assert!(app.display_options.arabicshape);
 }
 
 #[test]

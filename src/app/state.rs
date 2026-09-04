@@ -7,6 +7,7 @@ mod lifecycle;
 
 pub(super) struct PendingRedrawState {
     ui_options: HashMap<String, String>,
+    display_options: grid::DisplayOptions,
     guifont: Option<String>,
     guifontwide: Option<String>,
     window_title: String,
@@ -31,6 +32,7 @@ impl NvimGpui {
 
         self.pending_redraw = Some(PendingRedrawState {
             ui_options: self.ui_options.clone(),
+            display_options: self.display_options,
             guifont: self.guifont.clone(),
             guifontwide: self.guifontwide.clone(),
             window_title: self.window_title.clone(),
@@ -63,11 +65,10 @@ impl NvimGpui {
         let guifont_changed = self.guifont != pending.guifont;
         let guifontwide_changed = self.guifontwide != pending.guifontwide;
         let linespace_changed = (self.linespace - pending.linespace).abs() > f32::EPSILON;
-        let shaping_option_changed = ["arabicshape", "ambiwidth", "emoji", "termguicolors"]
-            .iter()
-            .any(|key| self.ui_options.get(*key) != pending.ui_options.get(*key));
+        let display_options_changed = self.display_options != pending.display_options;
 
         self.ui_options = pending.ui_options;
+        self.display_options = pending.display_options;
         self.guifont = pending.guifont;
         self.guifontwide = pending.guifontwide;
         self.window_title = pending.window_title;
@@ -101,7 +102,7 @@ impl NvimGpui {
             self.ime_coordinates_dirty = true;
             self.last_resize = None;
         }
-        if shaping_option_changed {
+        if display_options_changed {
             self.shaping_cache.borrow_mut().clear();
         }
     }

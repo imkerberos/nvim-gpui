@@ -245,18 +245,32 @@ struct GridRenderOptions<'a> {
 }
 
 impl NvimGpui {
+    fn highlight_context_for_layer(
+        &self,
+        kind: compositor::GridLayerKind,
+    ) -> grid::HighlightContext {
+        match kind {
+            compositor::GridLayerKind::Float => grid::HighlightContext::Floating {
+                background: self.theme.normal_float_background,
+            },
+            compositor::GridLayerKind::Message => grid::HighlightContext::Message {
+                background: self.theme.normal_float_background,
+            },
+            compositor::GridLayerKind::Main
+            | compositor::GridLayerKind::Window
+            | compositor::GridLayerKind::External => grid::HighlightContext::Main,
+        }
+    }
+
     fn grid_element(
         &self,
         model: Rc<grid::GridModel>,
         options: GridRenderOptions<'_>,
     ) -> GridElement {
+        let highlight_context = self.highlight_context_for_layer(options.placement.kind);
         let mut element = GridElement::with_shared_model(model)
             .with_metrics(options.cell_width, options.line_height)
-            .with_default_background(
-                (options.placement.z_index > 0 || options.placement.compindex >= 0)
-                    .then_some(self.theme.normal_float_background)
-                    .flatten(),
-            )
+            .with_highlight_context(highlight_context)
             .with_wide_font(
                 options.gui_wide_font.family.clone(),
                 px(options.gui_wide_font.size),
@@ -447,13 +461,19 @@ impl Render for NvimGpui {
                         )
                     })
                     .unwrap_or(position);
-                let (cursor_foreground, cursor_background) =
-                    grid::cursor_colors(&model, local_position, cursor_mode);
+                let cursor_placement = self.grid_placement(self.cursor_grid);
+                let cursor_context = self.highlight_context_for_layer(cursor_placement.kind);
+                let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
+                    &model,
+                    local_position,
+                    cursor_mode,
+                    cursor_context,
+                );
                 let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
                     self.grid_element(
                         Rc::clone(&model),
                         GridRenderOptions {
-                            placement: self.grid_placement(self.cursor_grid),
+                            placement: cursor_placement,
                             width: model.width(),
                             height: model.height(),
                             cell_width,

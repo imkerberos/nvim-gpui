@@ -276,6 +276,7 @@ impl NvimGpui {
                 }
                 let pending = self.pending_redraw_mut();
                 pending.ui_options.insert(name.clone(), value.clone());
+                pending.display_options.apply_option(&name, &value);
                 match name.as_str() {
                     "mouse" => {
                         pending.mouse_option = value;

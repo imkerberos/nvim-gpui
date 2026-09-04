@@ -5,7 +5,6 @@ use gpui::{
     StrikethroughStyle, Style, TextRun, UnderlineStyle, Window,
 };
 use std::{
-    borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     f32::consts::PI,
@@ -30,9 +29,11 @@ pub use cache::{
 pub use cursor::CursorElement;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
-    CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
-    GridCursor, GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
+    AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition,
+    DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow,
+    HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
+pub use visual::{HighlightContext, ResolvedHighlight};
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
 
 /// Transient text supplied by the platform IME.
@@ -87,14 +88,18 @@ pub fn ime_text_cell_offset(
 use cache::{ShapingStyle, StyledTextRun};
 #[cfg(test)]
 use cursor::cursor_bounds;
+#[cfg(test)]
 pub(crate) use cursor::cursor_colors;
+pub(crate) use cursor::cursor_colors_with_context;
 use cursor::jelly_progress;
 #[cfg(test)]
 use model::cursor_geometry;
 use model::{blink_visible, CursorVisualPositionF};
 #[cfg(test)]
+use visual::highlight_colors;
+#[cfg(test)]
 use visual::visual_cell_overlaps_cursor;
-use visual::{highlight_colors, push_background};
+use visual::{push_background, resolve_highlight};
 
 #[cfg(test)]
 mod tests;

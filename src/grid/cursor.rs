@@ -258,14 +258,24 @@ pub(super) fn cursor_bounds(
     cursor_bounds_at(grid_bounds, cell_width, line_height, position.into(), mode)
 }
 
+#[cfg(test)]
 pub(crate) fn cursor_colors(
     model: &GridModel,
     position: CursorVisualPosition,
     mode: CursorModeInfo,
 ) -> (Hsla, Hsla) {
-    let default_colors = highlight_colors(model, DEFAULT_HIGHLIGHT, None);
+    cursor_colors_with_context(model, position, mode, HighlightContext::Main)
+}
+
+pub(crate) fn cursor_colors_with_context(
+    model: &GridModel,
+    position: CursorVisualPosition,
+    mode: CursorModeInfo,
+    context: HighlightContext,
+) -> (Hsla, Hsla) {
+    let default_colors = resolve_highlight(model, DEFAULT_HIGHLIGHT, context);
     let default_background = default_colors
-        .1
+        .background
         .unwrap_or_else(|| rgb(DEFAULT_BACKGROUND).into());
     let cell_highlight = model
         .rows()
@@ -278,12 +288,18 @@ pub(crate) fn cursor_colors(
         // Neovim defines attr_id 0 as a request to swap the current cell's
         // foreground and background, rather than as a normal highlight id.
         Some(DEFAULT_HIGHLIGHT) => {
-            let (cell_foreground, cell_background) = highlight_colors(model, cell_highlight, None);
-            (cell_background.unwrap_or(default_colors.0), cell_foreground)
+            let cell_style = resolve_highlight(model, cell_highlight, context);
+            (
+                cell_style.background.unwrap_or(default_colors.foreground),
+                cell_style.foreground,
+            )
         }
         Some(attr_id) => {
-            let (foreground, background) = highlight_colors(model, attr_id, None);
-            (foreground, background.unwrap_or(default_background))
+            let style = resolve_highlight(model, attr_id, context);
+            (
+                style.foreground,
+                style.background.unwrap_or(default_background),
+            )
         }
         None => (default_background, rgb(BLUE_FOREGROUND).into()),
     }

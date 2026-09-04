@@ -1,8 +1,9 @@
 use super::{
     blink_visible, cursor_bounds, cursor_colors, cursor_geometry, highlight_colors, jelly_progress,
-    CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition, GridCell,
-    GridLineCell, GridModel, GridRow, HighlightAttrs, HighlightId, VisualCell, VisualCellBuilder,
-    VisualCellKind, DEFAULT_HIGHLIGHT,
+    resolve_highlight, AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape,
+    CursorVisualPosition, DisplayOptions, EmojiWidth, GridCell, GridLineCell, GridModel, GridRow,
+    HighlightAttrs, HighlightContext, HighlightId, VisualCell, VisualCellBuilder, VisualCellKind,
+    DEFAULT_HIGHLIGHT,
 };
 use gpui::{point, px, size, Bounds};
 use std::time::{Duration, Instant};
@@ -22,6 +23,83 @@ fn wide_character_occupies_two_grid_cells() {
     assert_eq!(cells[0].grid_len, 2);
     assert_eq!(cells[0].text, "界");
     assert_eq!(cells[0].kind, VisualCellKind::WideCharacter);
+}
+
+#[test]
+fn display_options_parse_known_values_without_corrupting_state() {
+    let mut options = DisplayOptions::default();
+
+    assert!(options.apply_option("ambiwidth", "double"));
+    assert!(options.apply_option("emoji", "false"));
+    assert!(options.apply_option("arabicshape", "true"));
+    assert!(options.apply_option("termguicolors", "1"));
+    assert_eq!(options.ambiwidth, AmbiguousWidth::Double);
+    assert_eq!(options.emoji, EmojiWidth::Text);
+    assert!(options.arabicshape);
+    assert!(options.termguicolors);
+
+    assert!(!options.apply_option("ambiwidth", "invalid"));
+    assert!(!options.apply_option("emoji", "maybe"));
+    assert!(!options.apply_option("unknown", "true"));
+    assert_eq!(options.ambiwidth, AmbiguousWidth::Double);
+    assert_eq!(options.emoji, EmojiWidth::Text);
+}
+
+#[test]
+fn highlight_resolution_uses_layer_context_and_preserves_explicit_colors() {
+    let mut model = GridModel::new(1, 1);
+    model.set_default_colors(Some(0xffffff), Some(0x101010), Some(0x00ff00));
+    model.set_highlight(
+        HighlightId(42),
+        HighlightAttrs {
+            foreground: Some(0xabcdef),
+            background: Some(0x223344),
+            ..Default::default()
+        },
+    );
+
+    let main = resolve_highlight(&model, DEFAULT_HIGHLIGHT, HighlightContext::Main);
+    assert_eq!(main.foreground, gpui::rgb(0xffffff).into());
+    assert_eq!(main.background, Some(gpui::rgb(0x101010).into()));
+    assert_eq!(main.special, gpui::rgb(0x00ff00).into());
+
+    let floating = resolve_highlight(
+        &model,
+        DEFAULT_HIGHLIGHT,
+        HighlightContext::Floating {
+            background: Some(0x556677),
+        },
+    );
+    assert_eq!(floating.background, Some(gpui::rgb(0x556677).into()));
+
+    let explicit = resolve_highlight(
+        &model,
+        HighlightId(42),
+        HighlightContext::Floating {
+            background: Some(0x556677),
+        },
+    );
+    assert_eq!(explicit.foreground, gpui::rgb(0xabcdef).into());
+    assert_eq!(explicit.background, Some(gpui::rgb(0x223344).into()));
+}
+
+#[test]
+fn highlight_resolution_applies_reverse_after_color_resolution() {
+    let mut model = GridModel::new(1, 1);
+    model.set_highlight(
+        HighlightId(42),
+        HighlightAttrs {
+            foreground: Some(0xabcdef),
+            background: Some(0x223344),
+            reverse: true,
+            ..Default::default()
+        },
+    );
+
+    let resolved = resolve_highlight(&model, HighlightId(42), HighlightContext::Main);
+
+    assert_eq!(resolved.foreground, gpui::rgb(0x223344).into());
+    assert_eq!(resolved.background, Some(gpui::rgb(0xabcdef).into()));
 }
 
 #[test]
