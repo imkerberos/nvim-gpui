@@ -492,13 +492,15 @@ impl Render for NvimGpui {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if grid_ready {
+            let compositor_frame = self.compositor_frame();
             // A grid and its Kitty placements must share one compositing
             // layer. Keeping images as siblings of all grids lets a later
             // floating grid paint over an image that belongs to an earlier
             // grid, which is not how Neovim's multigrid compositor behaves.
-            let main_placement = self.grid_placements.get(&1).copied().unwrap_or_default();
-            let main_width = self.grid.width();
-            let main_height = self.grid.height();
+            let main_layer = &compositor_frame.layers[0];
+            let main_placement = main_layer.placement;
+            let main_width = main_layer.content_rect.width as usize;
+            let main_height = main_layer.content_rect.height as usize;
             let main_animation = viewport_animations.get(&1);
             let (old_offset, current_offset) = main_animation
                 .map(|animation| animation.offsets(now, main_height, line_height))
@@ -546,11 +548,15 @@ impl Render for NvimGpui {
             main_layer = main_layer.child(self.image_surface(1, &image_layers, main_options));
             editor = editor.child(main_layer);
 
-            for (grid_id, model, placement) in self.visible_grid_layers() {
-                let width = placement.width.max(model.width() as u64);
-                let height = placement.height.max(model.height() as u64);
-                let model_width = model.width();
-                let model_height = model.height();
+            for compositor_layer in compositor_frame.layers.iter().skip(1) {
+                let grid_id = compositor_layer.grid_id;
+                let model = Rc::clone(&compositor_layer.model);
+                let placement = compositor_layer.placement;
+                let content_rect = compositor_layer.content_rect;
+                let surface_rect = compositor_layer.surface_rect;
+                let clip_rect = compositor_layer.clip_rect;
+                let model_width = content_rect.width as usize;
+                let model_height = content_rect.height as usize;
                 let animation = viewport_animations.get(&grid_id);
                 let (old_offset, current_offset) = animation
                     .map(|animation| animation.offsets(now, model_height, line_height))
@@ -568,10 +574,10 @@ impl Render for NvimGpui {
                 };
                 let mut layer = div()
                     .absolute()
-                    .left(px(placement.col as f32 * f32::from(cell_width)))
-                    .top(px(placement.row as f32 * f32::from(line_height)))
-                    .w(px(width as f32 * f32::from(cell_width)))
-                    .h(px(height as f32 * f32::from(line_height)))
+                    .left(px(surface_rect.col as f32 * f32::from(cell_width)))
+                    .top(px(surface_rect.row as f32 * f32::from(line_height)))
+                    .w(px(clip_rect.width as f32 * f32::from(cell_width)))
+                    .h(px(clip_rect.height as f32 * f32::from(line_height)))
                     // Kitty images are children of their owning grid. Keep
                     // an oversized preview inside that grid's compositor
                     // bounds so it cannot cover a neighbouring picker pane

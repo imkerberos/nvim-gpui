@@ -1,25 +1,14 @@
 use super::*;
 
 impl NvimGpui {
+    #[cfg(test)]
     pub(crate) fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {
-        let mut layers = self
-            .other_grids
-            .iter()
-            .filter_map(|(grid, model)| {
-                let placement = self.grid_placements.get(grid).copied()?;
-                placement
-                    .visible
-                    .then(|| (*grid, Rc::clone(model), placement))
-            })
-            .collect::<Vec<_>>();
-        layers.sort_by(|left, right| {
-            left.2
-                .compindex
-                .cmp(&right.2.compindex)
-                .then_with(|| left.2.z_index.cmp(&right.2.z_index))
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        layers
+        self.compositor_frame()
+            .layers
+            .into_iter()
+            .filter(|layer| layer.kind != compositor::GridLayerKind::Main)
+            .map(|layer| (layer.grid_id, layer.model, layer.placement))
+            .collect()
     }
 
     pub(crate) fn visible_image_layers(&self) -> Vec<ImageLayer> {

@@ -152,6 +152,7 @@ impl NvimGpui {
                 placement.height = height;
                 placement.z_index = 0;
                 placement.compindex = -1;
+                placement.kind = super::super::compositor::GridLayerKind::Window;
                 placement.mouse_enabled = true;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
@@ -175,6 +176,7 @@ impl NvimGpui {
                 placement.col = screen_col;
                 placement.z_index = zindex;
                 placement.compindex = compindex;
+                placement.kind = super::super::compositor::GridLayerKind::Float;
                 placement.mouse_enabled = mouse_enabled;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
@@ -239,6 +241,7 @@ impl NvimGpui {
                 placement.width = grid_width;
                 placement.z_index = zindex;
                 placement.compindex = compindex;
+                placement.kind = super::super::compositor::GridLayerKind::Message;
                 placement.visible = true;
                 placement.message_scrolled = scrolled;
                 placement.message_separator = sep_char.chars().next();
@@ -247,6 +250,7 @@ impl NvimGpui {
             NvimEvent::WinExternalPos { grid, win: _ } => {
                 self.ime_coordinates_dirty = true;
                 let mut placement = self.grid_placement(grid);
+                placement.kind = super::super::compositor::GridLayerKind::External;
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }

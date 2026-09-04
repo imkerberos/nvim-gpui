@@ -190,6 +190,7 @@ pub(crate) struct GridPlacement {
     /// Whether Neovim allows this floating grid to receive mouse input.
     /// Neovim uses this when the client sends `nvim_input_mouse` with grid 0.
     mouse_enabled: bool,
+    kind: compositor::GridLayerKind,
     visible: bool,
     viewport: Option<GridViewport>,
     viewport_margins: Option<GridViewportMargins>,
@@ -257,6 +258,7 @@ impl Default for GridPlacement {
             z_index: 0,
             compindex: -1,
             mouse_enabled: true,
+            kind: compositor::GridLayerKind::Window,
             visible: false,
             viewport: None,
             viewport_margins: None,
@@ -445,6 +447,7 @@ impl Default for NvimGpui {
     }
 }
 
+mod compositor;
 mod editor;
 mod startup;
 mod state;
