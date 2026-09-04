@@ -170,6 +170,29 @@ fn grid_line_updates_unicode_cells_repeats_and_wrap_state() {
 }
 
 #[test]
+fn grid_line_repeat_zero_does_not_consume_a_cell() {
+    let mut model = GridModel::new(3, 1);
+
+    model.apply_grid_line(
+        0,
+        0,
+        &[
+            GridLineCell::new("a", HighlightId(1), 1),
+            GridLineCell::new(" ", DEFAULT_HIGHLIGHT, 0),
+            GridLineCell::new("b", HighlightId(2), 1),
+        ],
+        false,
+    );
+
+    assert_eq!(model.rows()[0].cells()[0].text, "a");
+    assert_eq!(model.rows()[0].cells()[0].highlight, HighlightId(1));
+    assert_eq!(model.rows()[0].cells()[1].text, "b");
+    assert_eq!(model.rows()[0].cells()[1].highlight, HighlightId(2));
+    assert_eq!(model.rows()[0].cells()[2].text, " ");
+    assert_eq!(model.rows()[0].cells()[2].highlight, DEFAULT_HIGHLIGHT);
+}
+
+#[test]
 fn mixed_ascii_and_wide_cells_keep_their_grid_columns() {
     let mut model = GridModel::new(6, 1);
 

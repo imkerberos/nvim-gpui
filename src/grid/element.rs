@@ -32,6 +32,7 @@ pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
     texts: Vec<PaintedText>,
+    surface_background: Option<Hsla>,
     viewport_bounds: Option<Bounds<Pixels>>,
 }
 
@@ -395,6 +396,15 @@ impl Element for GridElement {
         let mut overlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
+        // Inline composition contributes glyphs only. Its background must
+        // remain the background of the underlying grid cell (for example,
+        // CursorLine), including after the composition is cleared.
+        let ime_foreground = highlight_colors(
+            model.as_ref(),
+            DEFAULT_HIGHLIGHT,
+            self.default_background_override,
+        )
+        .0;
         let ime_paint = self.ime_composition.as_ref().and_then(|composition| {
             if composition.text.is_empty()
                 || composition.row >= model.height()
@@ -407,10 +417,10 @@ impl Element for GridElement {
             // a decoration-specific highlight. IME preedit is client-side
             // input, so it must use the grid's normal text attributes instead
             // of inheriting that cell's virtual-text color.
-            let highlight = DEFAULT_HIGHLIGHT;
-            let attrs = model.highlight_ref(highlight).cloned().unwrap_or_default();
-            let (foreground, _) =
-                highlight_colors(model.as_ref(), highlight, self.default_background_override);
+            let attrs = model
+                .highlight_ref(DEFAULT_HIGHLIGHT)
+                .cloned()
+                .unwrap_or_default();
             let text = composition.text.clone();
             let marked_start = composition.marked_range.start.min(text.len());
             let marked_end = composition
@@ -421,7 +431,7 @@ impl Element for GridElement {
             let make_style = |underline| ShapingStyle {
                 font: normal_font.clone(),
                 font_size: normal_font_size,
-                foreground,
+                foreground: ime_foreground,
                 underline,
                 strikethrough: attrs.strikethrough.then(|| StrikethroughStyle {
                     thickness: px(1.0),
@@ -433,7 +443,7 @@ impl Element for GridElement {
             };
             let marked_style = Some(UnderlineStyle {
                 thickness: px(1.0),
-                color: Some(foreground),
+                color: Some(ime_foreground),
                 wavy: false,
             });
             let plain_style = make_style(None);
@@ -665,6 +675,9 @@ impl Element for GridElement {
             backgrounds,
             overlines,
             texts,
+            surface_background: self
+                .default_background_override
+                .map(|color| rgb(color).into()),
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
     }
@@ -681,6 +694,10 @@ impl Element for GridElement {
     ) {
         if let Some(input_handler) = self.input_handler.as_mut() {
             input_handler(bounds, window, cx);
+        }
+
+        if let Some(background) = prepaint.surface_background {
+            window.paint_quad(fill(bounds, background));
         }
 
         for (bounds, background, in_viewport) in &prepaint.backgrounds {

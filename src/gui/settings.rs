@@ -2,8 +2,9 @@ use crate::{
     app::{themed_titlebar, themed_titlebar_enabled, NvimGpui},
     helper, settings,
     widgets::{
-        setting_combo_box, setting_combo_option, setting_option_button, setting_row,
-        setting_section, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
+        setting_checkbox, setting_combo_box, setting_combo_option, setting_option_button,
+        setting_row, setting_section, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT,
+        TEXT,
     },
 };
 use gpui::{
@@ -24,6 +25,7 @@ enum SettingsCombo {
     NerdFont,
     FallbackMode,
     StartupMaximized,
+    LogLevel,
     ImageCacheSize,
 }
 
@@ -269,8 +271,66 @@ impl Render for SettingsWindow {
             },
             self.open_combo == Some(SettingsCombo::StartupMaximized),
             startup_options,
-            paste_shortcut_icon_font,
+            paste_shortcut_icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::StartupMaximized, cx)),
+        );
+
+        let quit_on_window_close = setting_checkbox(
+            "settings-quit-on-window-close",
+            "Quit when the main window closes",
+            current.quit_on_window_close,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(
+                    |settings| {
+                        settings.quit_on_window_close = !settings.quit_on_window_close;
+                    },
+                    cx,
+                );
+            }),
+        );
+
+        let allow_multiple_instances = setting_checkbox(
+            "settings-allow-multiple-instances",
+            "Allow multiple instances",
+            current.allow_multiple_instances,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(
+                    |settings| {
+                        settings.allow_multiple_instances = !settings.allow_multiple_instances;
+                    },
+                    cx,
+                );
+            }),
+        );
+
+        let mut log_options = div().w_full().flex().flex_col();
+        for (index, level) in [
+            settings::LogLevel::Off,
+            settings::LogLevel::Error,
+            settings::LogLevel::Warn,
+            settings::LogLevel::Info,
+            settings::LogLevel::Debug,
+            settings::LogLevel::Trace,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            log_options = log_options.child(setting_combo_option(
+                ("settings-log-level", index),
+                level.label(),
+                current.log_level == level,
+                cx.listener(move |this, _, _, cx| {
+                    this.apply_setting(|settings| settings.log_level = level, cx);
+                }),
+            ));
+        }
+        let log_options = setting_combo_box(
+            "settings-log-level-combo",
+            current.log_level.label(),
+            self.open_combo == Some(SettingsCombo::LogLevel),
+            log_options,
+            paste_shortcut_icon_font,
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::LogLevel, cx)),
         );
 
         let source = self.source.clone();
@@ -310,12 +370,29 @@ impl Render for SettingsWindow {
             .text_color(rgb(TEXT))
             .child(div().text_lg().child("Settings"))
             .child(setting_section(
-                "Startup",
-                setting_row(
-                    "Startup maximized",
-                    "Open the main editor window in its maximized state.",
-                    startup_options,
-                ),
+                "Application behavior",
+                div()
+                    .w_full()
+                    .child(setting_row(
+                        "Startup maximized",
+                        "Open the main editor window in its maximized state.",
+                        startup_options,
+                    ))
+                    .child(setting_row(
+                        "Quit behavior",
+                        "Choose whether closing the main editor window also exits nvim-gpui.",
+                        quit_on_window_close,
+                    ))
+                    .child(setting_row(
+                        "Instance behavior",
+                        "Allow another nvim-gpui process to run at the same time.",
+                        allow_multiple_instances,
+                    ))
+                    .child(setting_row(
+                        "Log level",
+                        "Write runtime logs at the selected level. Logging is disabled by default.",
+                        log_options,
+                    )),
             ))
             .child(setting_section(
                 "Font and image",

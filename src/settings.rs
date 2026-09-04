@@ -11,6 +11,64 @@ const SETTINGS_FILE_ENV: &str = "NVIM_GPUI_SETTINGS_FILE";
 pub const DEFAULT_IMAGE_CACHE_SIZE_MB: u32 = 128;
 pub const IMAGE_CACHE_SIZE_OPTIONS_MB: &[u32] = &[64, 128, 256, 512, 1024];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogLevel {
+    #[default]
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Error => "Error",
+            Self::Warn => "Warn",
+            Self::Info => "Info",
+            Self::Debug => "Debug",
+            Self::Trace => "Trace",
+        }
+    }
+
+    pub fn filter(self) -> log::LevelFilter {
+        match self {
+            Self::Off => log::LevelFilter::Off,
+            Self::Error => log::LevelFilter::Error,
+            Self::Warn => log::LevelFilter::Warn,
+            Self::Info => log::LevelFilter::Info,
+            Self::Debug => log::LevelFilter::Debug,
+            Self::Trace => log::LevelFilter::Trace,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            "trace" => Some(Self::Trace),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PasteShortcut {
     #[default]
@@ -166,6 +224,9 @@ pub struct Settings {
     pub nerd_font: NerdFontChoice,
     pub fallback_mode: FallbackMode,
     pub startup_maximized: bool,
+    pub quit_on_window_close: bool,
+    pub allow_multiple_instances: bool,
+    pub log_level: LogLevel,
     pub image_cache_size_mb: u32,
     pub paste_shortcut: PasteShortcut,
 }
@@ -176,6 +237,9 @@ impl Default for Settings {
             nerd_font: NerdFontChoice::default(),
             fallback_mode: FallbackMode::default(),
             startup_maximized: false,
+            quit_on_window_close: true,
+            allow_multiple_instances: true,
+            log_level: LogLevel::default(),
             image_cache_size_mb: DEFAULT_IMAGE_CACHE_SIZE_MB,
             paste_shortcut: PasteShortcut::default(),
         }
@@ -207,10 +271,13 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nimage_cache_size_mb={}\npaste_shortcut={}\n",
+            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\n",
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
+            self.quit_on_window_close,
+            self.allow_multiple_instances,
+            self.log_level.key(),
             self.image_cache_size_mb,
             self.paste_shortcut.key()
         )
@@ -237,6 +304,21 @@ fn parse_settings(contents: &str) -> Settings {
             "startup_maximized" => {
                 if let Ok(value) = value.trim().parse() {
                     settings.startup_maximized = value;
+                }
+            }
+            "quit_on_window_close" => {
+                if let Ok(value) = value.trim().parse() {
+                    settings.quit_on_window_close = value;
+                }
+            }
+            "allow_multiple_instances" => {
+                if let Ok(value) = value.trim().parse() {
+                    settings.allow_multiple_instances = value;
+                }
+            }
+            "log_level" => {
+                if let Some(value) = LogLevel::parse(value.trim()) {
+                    settings.log_level = value;
                 }
             }
             "image_cache_size_mb" => {
@@ -291,7 +373,7 @@ pub(crate) fn application_support_directory() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_settings, FallbackMode, NerdFontChoice, PasteShortcut, Settings};
+    use super::{parse_settings, FallbackMode, LogLevel, NerdFontChoice, PasteShortcut, Settings};
 
     #[test]
     fn defaults_are_conservative_and_use_a_128_mb_image_cache() {
@@ -299,6 +381,9 @@ mod tests {
         assert_eq!(Settings::default().nerd_font, NerdFontChoice::Symbols);
         assert_eq!(Settings::default().fallback_mode, FallbackMode::Auto);
         assert!(!Settings::default().startup_maximized);
+        assert!(Settings::default().quit_on_window_close);
+        assert!(Settings::default().allow_multiple_instances);
+        assert_eq!(Settings::default().log_level, LogLevel::Off);
         assert_eq!(Settings::default().paste_shortcut, PasteShortcut::CmdV);
         assert_eq!(NerdFontChoice::Symbols.family(), "Symbols Nerd Font");
         assert_eq!(
@@ -310,14 +395,46 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nunknown=x\nimage_cache_size_mb=1\n",
+            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nunknown=x\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
         assert_eq!(settings.fallback_mode, FallbackMode::Force);
         assert!(settings.startup_maximized);
+        assert!(!settings.quit_on_window_close);
+        assert!(!settings.allow_multiple_instances);
+        assert_eq!(settings.log_level, LogLevel::Debug);
         assert_eq!(settings.image_cache_size_mb, 512);
         assert_eq!(settings.paste_shortcut, PasteShortcut::CtrlV);
+    }
+
+    #[test]
+    fn log_levels_map_to_filters_and_ignore_invalid_values() {
+        assert_eq!(LogLevel::Off.filter(), log::LevelFilter::Off);
+        assert_eq!(LogLevel::Error.filter(), log::LevelFilter::Error);
+        assert_eq!(LogLevel::Warn.filter(), log::LevelFilter::Warn);
+        assert_eq!(LogLevel::Info.filter(), log::LevelFilter::Info);
+        assert_eq!(LogLevel::Debug.filter(), log::LevelFilter::Debug);
+        assert_eq!(LogLevel::Trace.filter(), log::LevelFilter::Trace);
+        assert_eq!(
+            parse_settings("log_level=invalid\n").log_level,
+            LogLevel::Off
+        );
+    }
+
+    #[test]
+    fn new_runtime_settings_are_written_to_the_persistent_file() {
+        let settings = Settings {
+            quit_on_window_close: false,
+            allow_multiple_instances: false,
+            log_level: LogLevel::Trace,
+            ..Settings::default()
+        };
+
+        let contents = settings.to_file_contents();
+        assert!(contents.contains("quit_on_window_close=false\n"));
+        assert!(contents.contains("allow_multiple_instances=false\n"));
+        assert!(contents.contains("log_level=trace\n"));
     }
 
     #[test]

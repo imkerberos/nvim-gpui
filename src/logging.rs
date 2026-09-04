@@ -1,12 +1,11 @@
 use flexi_logger::{Cleanup, Criterion, FileSpec, Logger, Naming, WriteMode};
-use log::LevelFilter;
 use std::{env, fs, path::PathBuf};
 
 const LOG_DIRECTORY_ENV: &str = "NVIM_GPUI_LOG_DIR";
 const LOG_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const ROTATED_LOG_FILES: usize = 5;
 
-pub(crate) fn init() -> Result<flexi_logger::LoggerHandle, String> {
+pub(crate) fn init(level: crate::settings::LogLevel) -> Result<flexi_logger::LoggerHandle, String> {
     let directory =
         log_directory().ok_or_else(|| "could not determine the log directory".to_owned())?;
     fs::create_dir_all(&directory).map_err(|error| {
@@ -16,9 +15,12 @@ pub(crate) fn init() -> Result<flexi_logger::LoggerHandle, String> {
         )
     })?;
 
-    let logger = Logger::try_with_env_or_str("info").unwrap_or_else(|error| {
-        eprintln!("[logging] invalid RUST_LOG ({error}); using info");
-        Logger::with(LevelFilter::Info)
+    let logger = Logger::try_with_env_or_str(level.key()).unwrap_or_else(|error| {
+        eprintln!(
+            "[logging] invalid RUST_LOG ({error}); using {}",
+            level.key()
+        );
+        Logger::with(level.filter())
     });
 
     let logger = logger
@@ -44,6 +46,15 @@ pub(crate) fn init() -> Result<flexi_logger::LoggerHandle, String> {
         ROTATED_LOG_FILES
     );
     Ok(logger)
+}
+
+pub(crate) fn set_level(logger: &flexi_logger::LoggerHandle, level: crate::settings::LogLevel) {
+    if let Err(error) = logger.parse_new_spec(level.key()) {
+        eprintln!(
+            "[logging] could not apply log level {}: {error}",
+            level.key()
+        );
+    }
 }
 
 fn log_directory() -> Option<PathBuf> {

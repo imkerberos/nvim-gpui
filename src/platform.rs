@@ -4,6 +4,9 @@ use std::borrow::Cow;
 pub const SYMBOLS_NERD_FONT_FAMILY: &str = "Symbols Nerd Font";
 pub const SYMBOLS_NERD_FONT_MONO_FAMILY: &str = "Symbols Nerd Font Mono";
 
+#[cfg(target_os = "macos")]
+const APPLICATION_BUNDLE_IDENTIFIER: &str = "dev.nvim-gpui";
+
 const SYMBOLS_NERD_FONT: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFont-Regular.ttf");
 const SYMBOLS_NERD_FONT_MONO: &[u8] =
     include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
@@ -69,6 +72,35 @@ pub fn install_dock_icon() -> Result<(), String> {
     // though NSApplication expects a valid icon for this operation.
     unsafe { NSApp(marker).setApplicationIconImage(Some(&image)) };
     Ok(())
+}
+
+/// Activates the already-running AppBundle instance, if there is one.
+///
+/// This is used when the user disables multiple instances. The current
+/// process is included in LaunchServices' result, so its PID is skipped.
+#[cfg(target_os = "macos")]
+pub fn activate_existing_instance() -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    use objc2_foundation::ns_string;
+
+    let current_pid = std::process::id();
+    let applications = NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!(
+        APPLICATION_BUNDLE_IDENTIFIER
+    ));
+    for application in applications.iter() {
+        if application.processIdentifier() as u32 == current_pid || application.isTerminated() {
+            continue;
+        }
+
+        let _ = application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        return true;
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_existing_instance() -> bool {
+    false
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -253,7 +253,7 @@ impl NvimGpui {
         let mut element = GridElement::with_shared_model(model)
             .with_metrics(options.cell_width, options.line_height)
             .with_default_background(
-                (options.placement.compindex >= 0)
+                (options.placement.z_index > 0 || options.placement.compindex >= 0)
                     .then_some(self.theme.normal_float_background)
                     .flatten(),
             )

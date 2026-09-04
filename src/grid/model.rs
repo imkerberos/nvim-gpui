@@ -146,7 +146,9 @@ impl GridLineCell {
         Self {
             text: text.into(),
             highlight,
-            repeat: repeat.max(1),
+            // Neovim can send repeat=0 as a zero-width redraw marker. Keep
+            // it intact so the grid update does not consume a cell.
+            repeat,
         }
     }
 }

@@ -186,7 +186,9 @@ platforms it falls back to the normal system clipboard.
 
 Runtime logs are written to `~/Library/Application Support/nvim-gpui/logs` on
 macOS. Set `NVIM_GPUI_LOG_DIR` to use another directory. The default log
-level is `info`; use `RUST_LOG` for more detail, for example:
+level is `off`. Choose `Off`, `Error`, `Warn`, `Info`, `Debug`, or `Trace` in
+Settings → `启动和退出`. `RUST_LOG` can still override the initial level for
+development, for example:
 
 ```sh
 RUST_LOG=nvim_gpui=debug gpvim

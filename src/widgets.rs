@@ -95,6 +95,42 @@ pub(crate) fn setting_combo_option(
         )
 }
 
+pub(crate) fn setting_checkbox(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    checked: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    div()
+        .id(id)
+        .w_full()
+        .h(px(36.0))
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_sm()
+        .text_color(rgb(TEXT))
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(
+            div()
+                .w(px(18.0))
+                .h(px(18.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .border_1()
+                .border_color(rgb(if checked { ACCENT } else { SURFACE_BRIGHT }))
+                .bg(rgb(if checked { ACCENT } else { SURFACE }))
+                .text_sm()
+                .text_color(rgb(BACKGROUND))
+                .child(if checked { "✓" } else { "" }),
+        )
+        .child(label)
+}
+
 pub(crate) fn setting_option_button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,

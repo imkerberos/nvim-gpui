@@ -7,6 +7,7 @@ impl NvimGpui {
         nerd_font_registered: bool,
         app_settings: settings::Settings,
         initial_theme: Option<NvimTheme>,
+        logger: Option<flexi_logger::LoggerHandle>,
     ) -> Self {
         let nvim_available = nvim.is_ok();
         match &nvim {
@@ -29,6 +30,7 @@ impl NvimGpui {
             },
             nvim: nvim.ok(),
             settings: app_settings,
+            logger,
             theme: initial_theme.unwrap_or_default(),
             ..Self::default()
         };

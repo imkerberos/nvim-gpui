@@ -225,8 +225,10 @@ used so logging does not block the UI or RPC path. The logger handle remains
 alive for the lifetime of `main`, allowing the asynchronous writer to flush
 when the application exits.
 
-The default level is `info`, and `RUST_LOG` uses the normal `log` filter
-syntax. Useful diagnostics include:
+The default level is `off`. The Settings → `启动和退出` panel can change the
+level at runtime and persists `Off`, `Error`, `Warn`, `Info`, `Debug`, or
+`Trace`. `RUST_LOG` still overrides the initial level for development and uses
+the normal `log` filter syntax. Useful diagnostics include:
 
 ```sh
 RUST_LOG=nvim_gpui=debug gpvim --debug-window

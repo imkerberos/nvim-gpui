@@ -1030,6 +1030,42 @@ fn redraw_grid_line_preserves_highlight_repeat_and_wrap() {
 }
 
 #[test]
+fn redraw_grid_line_preserves_zero_repeat_markers() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("grid_line"),
+        Value::Array(vec![
+            Value::from(1),
+            Value::from(0),
+            Value::from(0),
+            Value::Array(vec![Value::Array(vec![
+                Value::from(" "),
+                Value::from(0),
+                Value::from(0),
+            ])]),
+            Value::Boolean(false),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver.try_recv().expect("event should be available"),
+        NvimEvent::GridLine {
+            grid: 1,
+            row: 0,
+            col_start: 0,
+            cells: vec![crate::grid::GridLineCell::new(
+                " ",
+                crate::grid::DEFAULT_HIGHLIGHT,
+                0,
+            )],
+            wraps_to_next: false,
+        }
+    );
+}
+
+#[test]
 fn redraw_multigrid_window_events_are_decoded() {
     let (sender, receiver) = unbounded();
     let params = Value::Array(vec![

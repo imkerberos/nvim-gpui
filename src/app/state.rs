@@ -121,6 +121,11 @@ impl NvimGpui {
     }
 
     pub(crate) fn update_settings(&mut self, next: settings::Settings) {
+        if self.settings.log_level != next.log_level {
+            if let Some(logger) = self.logger.as_ref() {
+                crate::logging::set_level(logger, next.log_level);
+            }
+        }
         self.settings = next;
         self.apply_runtime_settings();
         self.settings_save_error = self.settings.save().err();

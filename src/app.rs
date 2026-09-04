@@ -321,6 +321,7 @@ pub(crate) struct NvimGpui {
     nerd_font_family: Option<String>,
     glyph_coverage_cache: grid::SharedGlyphCoverageCache,
     settings: settings::Settings,
+    logger: Option<flexi_logger::LoggerHandle>,
     bundled_nerd_font_registered: bool,
     settings_save_error: Option<String>,
     cli_install_error: Option<String>,
@@ -345,6 +346,10 @@ impl NvimGpui {
 
     pub(crate) fn settings_value(&self) -> settings::Settings {
         self.settings.clone()
+    }
+
+    pub(crate) fn should_quit_on_window_close(&self) -> bool {
+        self.settings.quit_on_window_close
     }
 
     pub(crate) fn set_cli_install_error(&mut self, error: Option<String>) {
@@ -424,6 +429,7 @@ impl Default for NvimGpui {
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
             settings: settings::Settings::default(),
+            logger: None,
             bundled_nerd_font_registered: false,
             settings_save_error: None,
             cli_install_error: None,

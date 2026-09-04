@@ -192,7 +192,12 @@ fn main() {
         }
     };
 
-    let _logger = match logging::init() {
+    let app_settings = settings::Settings::load();
+    if !app_settings.allow_multiple_instances && platform::activate_existing_instance() {
+        return;
+    }
+
+    let logger = match logging::init(app_settings.log_level) {
         Ok(logger) => Some(logger),
         Err(error) => {
             eprintln!("[logging] {error}");
@@ -247,5 +252,5 @@ fn main() {
         );
     }
 
-    app::run(options);
+    app::run(options, app_settings, logger);
 }
