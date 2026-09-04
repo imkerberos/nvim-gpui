@@ -1,4 +1,6 @@
 use super::*;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HighlightId(pub u64);
@@ -65,6 +67,44 @@ impl DisplayOptions {
             _ => return false,
         }
         true
+    }
+
+    /// Return the number of terminal cells occupied by client-side text.
+    ///
+    /// Neovim remains the authority for cells received through `grid_line`.
+    /// This method is only for text that is not in that protocol stream, such
+    /// as an IME composition. Extended grapheme clusters are kept together so
+    /// combining marks and emoji sequences cannot move the temporary cursor
+    /// independently of their base glyph.
+    pub fn text_cell_width(self, text: &str) -> usize {
+        text.graphemes(true)
+            .map(|grapheme| self.grapheme_cell_width(grapheme))
+            .sum()
+    }
+
+    fn grapheme_cell_width(self, grapheme: &str) -> usize {
+        // unicode-width follows the Unicode default for U+FE0F. Neovim's
+        // 'emoji' option can explicitly disable that presentation width, so
+        // remove the selector before measuring in text mode. Wide emoji
+        // codepoints remain wide through the normal Unicode width table.
+        let measured = if self.emoji == EmojiWidth::Text && grapheme.contains('\u{fe0f}') {
+            let without_emoji_presentation: String = grapheme
+                .chars()
+                .filter(|character| *character != '\u{fe0f}')
+                .collect();
+            self.unicode_width(&without_emoji_presentation)
+        } else {
+            self.unicode_width(grapheme)
+        };
+
+        measured
+    }
+
+    fn unicode_width(self, text: &str) -> usize {
+        match self.ambiwidth {
+            AmbiguousWidth::Single => text.width(),
+            AmbiguousWidth::Double => text.width_cjk(),
+        }
     }
 }
 

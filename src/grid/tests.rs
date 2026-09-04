@@ -46,6 +46,26 @@ fn display_options_parse_known_values_without_corrupting_state() {
 }
 
 #[test]
+fn client_text_width_follows_ambiwidth_emoji_and_grapheme_rules() {
+    let single = DisplayOptions::default();
+
+    assert_eq!(single.text_cell_width("ascii"), 5);
+    assert_eq!(single.text_cell_width("中"), 2);
+    assert_eq!(single.text_cell_width("e\u{301}"), 1);
+    assert_eq!(single.text_cell_width("👩‍💻"), 2);
+    assert_eq!(single.text_cell_width("☀️"), 2);
+
+    let mut double = single;
+    assert!(double.apply_option("ambiwidth", "double"));
+    assert_eq!(double.text_cell_width("·"), 2);
+
+    let mut text_emoji = single;
+    assert!(text_emoji.apply_option("emoji", "false"));
+    assert_eq!(text_emoji.text_cell_width("☀️"), 1);
+    assert_eq!(text_emoji.text_cell_width("👩‍💻"), 2);
+}
+
+#[test]
 fn highlight_resolution_uses_layer_context_and_preserves_explicit_colors() {
     let mut model = GridModel::new(1, 1);
     model.set_default_colors(Some(0xffffff), Some(0x101010), Some(0x00ff00));
@@ -126,7 +146,7 @@ fn cursor_highlight_only_applies_to_the_cursor_row() {
 }
 
 #[test]
-fn nerd_symbol_and_following_space_share_a_two_cell_visual_span() {
+fn nerd_symbol_and_following_space_keep_separate_logical_spans() {
     let row = GridRow::new(vec![
         GridCell::text("\u{f0239}", DEFAULT_HIGHLIGHT),
         GridCell::text(" ", DEFAULT_HIGHLIGHT),
@@ -134,10 +154,13 @@ fn nerd_symbol_and_following_space_share_a_two_cell_visual_span() {
 
     let cells = VisualCellBuilder::new(true).build_row(0, &row);
 
-    assert_eq!(cells.len(), 1);
+    assert_eq!(cells.len(), 2);
     assert_eq!(cells[0].grid_start, 0);
-    assert_eq!(cells[0].grid_len, 2);
+    assert_eq!(cells[0].grid_len, 1);
     assert_eq!(cells[0].kind, VisualCellKind::NerdSymbol);
+    assert_eq!(cells[1].grid_start, 1);
+    assert_eq!(cells[1].grid_len, 1);
+    assert_eq!(cells[1].kind, VisualCellKind::Text);
 }
 
 #[test]

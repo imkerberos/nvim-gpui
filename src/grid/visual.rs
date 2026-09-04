@@ -99,34 +99,13 @@ impl VisualCellBuilder {
                 continue;
             }
 
-            let is_nerd_symbol = self.nerd_font_mode && is_nerd_symbol(&cell.text);
-            let has_symbol_padding = is_nerd_symbol
-                && cells.get(col + 1).is_some_and(|next| {
-                    next.highlight == cell.highlight
-                        && next.kind != CellKind::WideContinuation
-                        && next.text == " "
-                });
-
-            if has_symbol_padding {
-                f(VisualCell {
-                    row,
-                    grid_start: col,
-                    grid_len: 2,
-                    text: cell.text.clone(),
-                    highlight: cell.highlight,
-                    kind: VisualCellKind::NerdSymbol,
-                });
-                col += 2;
-                continue;
-            }
-
             f(VisualCell {
                 row,
                 grid_start: col,
                 grid_len: 1,
                 text: cell.text.clone(),
                 highlight: cell.highlight,
-                kind: if is_nerd_symbol {
+                kind: if self.nerd_font_mode && is_nerd_symbol(&cell.text) {
                     VisualCellKind::NerdSymbol
                 } else {
                     VisualCellKind::Text

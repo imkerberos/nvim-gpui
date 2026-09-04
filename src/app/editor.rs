@@ -201,19 +201,10 @@ impl NvimGpui {
         composition: &grid::ImeComposition,
         screen_position: grid::CursorVisualPosition,
         local_position: grid::CursorVisualPosition,
-        window: &Window,
-        gui_font: &GuiFontSpec,
-        cell_width: Pixels,
     ) -> grid::CursorVisualPosition {
         let selected_start = composition.selected_range.start.min(composition.text.len());
         let prefix = &composition.text[..selected_start];
-        let offset = grid::ime_text_cell_offset(
-            window,
-            &gui_font.family,
-            px(gui_font.size),
-            prefix,
-            cell_width,
-        );
+        let offset = grid::ime_text_cell_offset(prefix, self.display_options);
         let screen_row = screen_position
             .row
             .saturating_sub(local_position.row)
@@ -451,14 +442,7 @@ impl Render for NvimGpui {
                 let position = ime_composition
                     .as_ref()
                     .map(|composition| {
-                        self.system_ime_cursor_position(
-                            composition,
-                            position,
-                            local_position,
-                            window,
-                            &gui_font,
-                            cell_width,
-                        )
+                        self.system_ime_cursor_position(composition, position, local_position)
                     })
                     .unwrap_or(position);
                 let cursor_placement = self.grid_placement(self.cursor_grid);

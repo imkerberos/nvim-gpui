@@ -159,18 +159,6 @@ impl GridElement {
         self
     }
 
-    fn effective_cell_width(&self, window: &Window) -> Pixels {
-        let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
-        let font = text_style.font();
-
-        window
-            .text_system()
-            .ch_advance(window.text_system().resolve_font(&font), font_size)
-            .map(|advance| advance.max(px(1.0)))
-            .unwrap_or(self.cell_width)
-    }
-
     fn font_for_cell(
         &mut self,
         window: &Window,
@@ -363,7 +351,7 @@ impl Element for GridElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = (self.effective_cell_width(window) * self.model.width()).into();
+        style.size.width = (self.cell_width * self.model.width()).into();
         style.size.height = (self.line_height * self.model.height()).into();
         (window.request_layout(style, [], cx), ())
     }
@@ -380,7 +368,7 @@ impl Element for GridElement {
         let text_style = window.text_style();
         let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
         let normal_font = text_style.font();
-        let cell_width = self.effective_cell_width(window);
+        let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let model = Rc::clone(&self.model);
         let now = Instant::now();
