@@ -1,0 +1,20 @@
+# Contract for a staged, application-private Rime runtime.
+#
+# This file describes the artifact layout only. It does not pin an upstream
+# librime version or contain platform binaries; those will be supplied by the
+# platform-specific builders.
+
+[layout]
+version = 1
+library_directory = "lib"
+data_directory = "data"
+modules_directory = "modules"
+
+[platform.macos]
+library_names = ["librime.dylib", "librime.1.dylib"]
+
+[platform.windows]
+library_names = ["rime.dll", "librime.dll"]
+
+[platform.linux]
+library_names = ["librime.so", "librime.so.1"]
