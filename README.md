@@ -26,6 +26,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - Unicode and CJK text support.
 - Bundled Nerd Font support.
 - Image support for plugins such as `snacks.nvim`.
+- Built-in Rime input method in the macOS AppBundle.
 
 ## Quick start
 
@@ -52,6 +53,30 @@ directly:
 ```sh
 open -a nvim-gpui
 ```
+
+## Built-in Rime input
+
+The macOS AppBundle includes a private `librime` runtime and a small,
+read-only starter data set. User dictionaries and custom schemas are stored
+outside the bundle in nvim-gpui's application-support directory; the bundled
+Rime data is not `~/Library/Rime`.
+
+To enable it, open Settings → IME:
+
+1. Select `Rime` as the input method.
+2. Click `Detect` for the librime directory and leave the path empty.
+3. Leave the Rime data directory empty so the AppBundle data is discovered.
+4. Leave the user data directory empty to use
+   `~/Library/Application Support/nvim-gpui/rime`, or choose another writable
+   directory.
+5. Click `Test`, then restart nvim-gpui after changing runtime paths.
+
+Rime starts disabled even when it is selected as the backend. Press the
+default macOS activation shortcut `Cmd-\` to toggle it, then enter Insert
+mode and type with Rime. The bundled runtime is selected automatically when
+the application is launched from the AppBundle; do not set
+`NVIM_GPUI_RIME_LIBRARY` or `NVIM_GPUI_RIME_SHARED_DIR` when testing that
+path.
 
 ## Temporary trust for unsigned builds
 

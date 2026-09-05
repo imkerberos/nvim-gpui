@@ -59,7 +59,7 @@ just ci           # fmt-check, clippy, and test
 just run          # launch the development GUI
 just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
 just dmg          # build the arch-named compressed macOS DMG on macOS
-just rime-runtime-macos # build and validate the pinned macOS librime runtime
+just rime-runtime-macos # build and validate the macOS librime runtime
 just rime-runtime-windows # build and validate the pinned Windows runtime
 just bundle-windows # build the Windows directory bundle
 just rime-runtime-check # validate a staged application-private Rime runtime
@@ -82,6 +82,34 @@ The development Neovim profile is at
 `config/nvim-gpui/init.lua`. It loads the Nix-provided plugins without cloning
 or downloading them. Its current test profile enables `snacks.image`, the
 Markdown parser, and the Kitty capability fallback used by the GUI.
+
+## Repository layout
+
+The repository is split into protocol/state code, reusable rendering modules,
+GUI windows, and platform packaging:
+
+| Path | Responsibility |
+| --- | --- |
+| `src/main.rs` | Process entry point, CLI parsing, and GPUI startup. |
+| `src/app.rs`, `src/app/` | Main application entity, redraw state, lifecycle, compositor, editor rendering, and titlebar/windows. |
+| `src/grid.rs`, `src/grid/` | Terminal cell model, shaping/cache, cursor, highlight resolution, and the custom grid element. |
+| `src/nvim.rs`, `src/nvim/` | Embedded/remote Neovim transport, MessagePack-RPC protocol, environment, session, and version handling. |
+| `src/gui.rs`, `src/gui/` | Standalone Settings and About windows. |
+| `src/input.rs` | System IME, Rime, and Neovim input routing. |
+| `src/rime.rs` | GPUI-independent native librime loading, session handling, context, and runtime discovery. |
+| `src/clipboard.rs`, `src/image_store.rs`, `src/logging.rs` | Clipboard bridge, Kitty image storage, and asynchronous application logging. |
+| `src/settings.rs`, `src/platform.rs`, `src/helper.rs`, `src/widgets.rs` | Persistent settings, platform integration, CLI helper installation, and shared GUI widgets. |
+| `config/nvim-gpui/` | Isolated Neovim configuration used by the development shell. |
+| `packaging/rime/` | librime source-build manifests/builders and curated starter-data selection. |
+| `packaging/macos/`, `packaging/windows/` | AppBundle validation and platform bundle scripts. |
+| `scripts/` | Release metadata, runtime staging/validation, and starter-data tooling. |
+| `.github/workflows/` | macOS CI and macOS-only release automation. |
+| `assets/` | Icons, screenshots, and bundled Nerd Fonts. |
+| `.cache/`, `tmp/` | Ignored build outputs, runtime artifacts, Neovim state, and temporary files. |
+
+The Rust module roots such as `app.rs`, `grid.rs`, `nvim.rs`, and `gui.rs`
+remain public entry points for their respective module trees; implementation
+details live in the adjacent directories after the refactor.
 
 The reusable native backend is in `src/rime.rs`; it does not depend on GPUI,
 Neovim, or the input router. It loads `rime_get_api` dynamically and keeps
@@ -121,16 +149,18 @@ be forced with `NVIM_GPUI_RIME_DEPLOY=1`.
 ## Architecture
 
 - `src/main.rs` parses process-level startup arguments and starts GPUI.
-- `src/app.rs` owns the application state, windows, layout, settings, and
-  Neovim event dispatch.
+- `src/app.rs` and `src/app/` own the application entity, lifecycle, windows,
+  layout, compositor state, settings integration, and Neovim event dispatch.
 - `src/clipboard.rs` owns GPUI system clipboard access, `nvim_paste` text
   insertion, and the remote clipboard provider bridge.
-- `src/nvim.rs` owns embedded/remote MessagePack-RPC, redraw decoding,
-  environment selection, and child-process lifecycle.
-- `src/grid.rs` contains the logical cell model and the single custom
-  `GridElement`. It retains one logical cell per terminal position, coalesces
-  ordinary neighboring text into shaped lines, and paints Unicode/wide cells
-  without creating one GPUI element per cell.
+- `src/nvim.rs` and `src/nvim/` own embedded/remote MessagePack-RPC, redraw
+  decoding, environment selection, transport, and child-process lifecycle.
+- `src/grid.rs` and `src/grid/` contain the logical cell model and the single
+  custom `GridElement`. The model retains one logical cell per terminal
+  position, coalesces ordinary neighboring text into shaped lines, and paints
+  Unicode/wide cells without creating one GPUI element per cell.
+- `src/gui.rs` and `src/gui/` contain the standalone Settings and About
+  windows; shared controls such as the path editor live in `src/widgets.rs`.
 - `src/input.rs` is the `InputRouter` boundary for Neovim, system IME, and the
   native Rime backend in `src/rime.rs`.
 - `src/image_store.rs` owns Kitty Graphics Protocol transfers, placements,
@@ -314,37 +344,39 @@ inherit the interactive shell's complete `PATH` and Neovim-related variables.
 
 ## Packaging
 
-### Built-in Rime runtime — in progress
+### Built-in Rime runtime
 
-The native Rime backend is integrated, but packaging librime with the
-application is not complete yet. This work must not be described as a shipped
-feature until the runtime artifacts and clean-environment smoke tests pass on
-the target platforms.
+The native Rime backend and the application-private macOS runtime are
+implemented and verified. The macOS AppBundle carries librime and a small
+starter-data set, so the packaged application does not need a system or Nix
+librime installation at runtime. Windows has a local builder and directory
+bundle, but those remain outside CI/CD until they can be compiled and tested on
+a Windows host. Linux initially uses a system librime; a bundled Linux
+runtime is reserved for a future self-contained package.
 
-The target packaging policy is:
+The packaging policy is:
 
-- macOS and Windows ship a private librime runtime with nvim-gpui;
-- Linux initially uses a system librime, with a bundled runtime reserved for a
-  future self-contained package;
-- the runtime includes librime's dependent libraries and dynamically loaded
-  modules, not only the main library file;
-- a small read-only starter `rime-data` set is shipped with the application;
-  user dictionaries and user schemas remain in nvim-gpui's application data
-  directory;
+- macOS ships a private librime runtime and curated starter data;
+- Windows has the same intended private-runtime layout, with local-only
+  builder and bundle tasks until Windows-host validation is available;
+- Linux uses a system librime for now;
+- the runtime includes librime's dependent libraries and any dynamically
+  loaded modules, not only the main library file;
+- the starter `rime-data` set is read-only and intentionally small; user
+  dictionaries and user schemas remain in nvim-gpui's application data
+  directory; and
 - `prebuilt/` and `build/` remain librime's internal directories below the
   application-owned Rime user-data directory and are not user settings.
 
-The runtime resolver now uses an explicit Settings path first, then the
-`NVIM_GPUI_RIME_LIBRARY` development override, then the application bundle on
-macOS/Windows, and finally platform system paths where supported. The bundled
-runtime layout is described by `packaging/rime/runtime.toml`, and
-`scripts/rime_runtime.py` can stage and validate a platform artifact. The
-macOS source builder and AppBundle integration are now implemented. The
-Windows source builder is implemented as a PowerShell wrapper around
-librime's official `install-boost.bat` and `build.bat` flow, but it still needs
-real compilation and clean-environment verification on a Windows host. Until
-then, development and the ignored backend smoke test continue to use
-`NVIM_GPUI_RIME_LIBRARY` and `NVIM_GPUI_RIME_SHARED_DIR`.
+The runtime resolver gives an explicit Settings path precedence, then checks
+the development environment override, the application bundle, and supported
+system locations. The bundled runtime layout is described by
+`packaging/rime/runtime.toml`, and `scripts/rime_runtime.py` stages and
+validates platform artifacts. The macOS source builder, runtime staging, and
+AppBundle integration are complete. The Windows source builder is a
+PowerShell wrapper around librime's official `install-boost.bat` and
+`build.bat` flow; it remains a local validation path because this checkout
+does not currently have a Windows host.
 
 The Nix development shell exposes nixpkgs' `rime-data` only as the default
 starter-data build input through `NVIM_GPUI_RIME_STARTER_DATA`. The builders
@@ -358,22 +390,39 @@ A staged runtime has this contract:
 ```text
 rime-runtime/
 ├── lib/       # librime and its runtime libraries
-├── modules/   # optional dynamically loaded librime modules
+├── modules/   # optional external dynamically loaded librime modules
 └── data/      # read-only curated starter Rime data
+```
+
+The macOS build enables merged plugins, so the librime plugins shipped by the
+source tree are linked into `lib/librime.1.16.1.dylib`. Consequently,
+`modules/` is normally empty for the current macOS runtime; it is retained in
+the contract for future external plugins. The versioned library names keep
+their symlink relationships:
+
+```text
+lib/librime.1.16.1.dylib       # regular file
+lib/librime.1.dylib -> librime.1.16.1.dylib
+lib/librime.dylib -> librime.1.dylib
 ```
 
 Use `just rime-runtime SOURCE` to copy an already-built artifact into
 `.cache/rime-runtime`, or `just rime-runtime-check` to validate an existing
-staging directory. On macOS, `just rime-runtime-macos` builds the pinned
-librime source and stages it, provided
-`NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data` is set. The macOS builder
-uses merged plugins and static third-party dependencies, defaults to a
-universal arm64/x86_64 dylib, and rejects Nix/Homebrew runtime paths. The
-starter data is a build input, not the user's Rime directory; user dictionaries
-remain in the application-private user-data directory. These tasks validate
-the runtime layout; the macOS `bundle` task copies the validated runtime into
-the AppBundle, and the Windows `bundle-windows` task copies it into a
-directory bundle.
+staging directory. On macOS, run:
+
+```sh
+just rime-runtime-macos
+just bundle
+```
+
+The macOS builder uses merged plugins and static third-party dependencies,
+defaults to a universal arm64/x86_64 dylib, and rejects Nix/Homebrew runtime
+paths. Set `NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data` only when a
+different curated data source is needed. The starter data is a build input,
+not the user's Rime directory; user dictionaries remain in the
+application-private user-data directory. `just bundle` copies the validated
+runtime into the AppBundle while preserving library symlinks. `just dmg`
+then creates the compressed macOS package.
 
 On Windows, run `just rime-runtime-windows` from a PowerShell-capable
 development environment with CMake, Git, Python 3.11+, and the Visual
@@ -410,7 +459,10 @@ silently fall back to a system librime. It creates:
 .cache/macos/nvim-gpui.app/
 ├── Contents/MacOS/nvim-gpui
 ├── Contents/Resources/gpvim
-├── Contents/Resources/rime/lib/librime.dylib
+├── Contents/Resources/rime/lib/librime.1.16.1.dylib
+├── Contents/Resources/rime/lib/librime.1.dylib -> librime.1.16.1.dylib
+├── Contents/Resources/rime/lib/librime.dylib -> librime.1.dylib
+├── Contents/Resources/rime/modules/        # usually empty with merged plugins
 ├── Contents/Resources/rime/data/...
 ├── Contents/Resources/neovim-gpui_1024x1024_1024x1024.icns
 └── Contents/Info.plist
