@@ -1,6 +1,22 @@
 use super::*;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
+use nvim_gpui::rime::{RimeBackend, RimeConfig};
 
 impl NvimGpui {
+    pub(crate) fn test_rime_configuration_with_settings(
+        app_settings: settings::Settings,
+    ) -> Result<(), String> {
+        let config = rime_config_from_settings(&app_settings, Some(false))?;
+        let backend = RimeBackend::new(config)?;
+        backend.context().map(|_| ()).map_err(|error| {
+            format!("Rime session was created but context loading failed: {error}")
+        })
+    }
+
     pub(crate) fn new(
         nvim: Result<NvimProcess, String>,
         cx: &mut Context<Self>,
@@ -38,6 +54,14 @@ impl NvimGpui {
         this.bundled_nerd_font_registered = nerd_font_registered;
         this.nvim_grid_ready = !nvim_available;
         this.apply_runtime_settings();
+        this.rime_backend = initialize_rime_backend(&this.settings);
+        if this.rime_backend.is_some() {
+            // Keep the runtime toggle off for every fresh process. Selecting
+            // Rime in Settings or using the activation shortcut enables it
+            // explicitly; the first Insert mode therefore remains on the
+            // system IME.
+            log::info!(target: "nvim_gpui::rime", "Rime backend available");
+        }
 
         if this.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
             this.start_remote_clipboard_bridge(cx);
@@ -56,23 +80,14 @@ impl NvimGpui {
     ) {
         self.event_task = Some(cx.spawn(async move |weak, cx| {
             while let Ok(event) = events.recv().await {
-                // A single Neovim redraw notification can contain hundreds
-                // of typed events. Drain the events that are already
-                // available and invalidate GPUI once for the batch instead
-                // of once per cell/window/style update.
-                let mut batch = Vec::with_capacity(64);
-                batch.push(event);
-                let mut reached_flush = matches!(&batch[0], NvimEvent::Flush);
-                while !reached_flush && batch.len() < MAX_EVENTS_PER_UI_UPDATE {
-                    match events.try_recv() {
-                        Ok(event) => {
-                            reached_flush = matches!(&event, NvimEvent::Flush);
-                            batch.push(event);
-                        }
-                        Err(async_channel::TryRecvError::Empty)
-                        | Err(async_channel::TryRecvError::Closed) => break,
-                    }
-                }
+                // A redraw Flush is a Neovim transaction boundary, not a
+                // required GPUI presentation boundary. Keep all events in
+                // order, including events after Flush, and present the latest
+                // complete state once for this batch. This is important for
+                // key repeat: an invalid motion can still produce a Flush,
+                // but there is no useful intermediate frame to present.
+                let batch = collect_event_batch(event, &events);
+                let has_queued_events = !events.is_empty();
                 if batch.len() > 1 {
                     log::debug!(
                         target: "nvim_gpui::state",
@@ -110,14 +125,14 @@ impl NvimGpui {
                 {
                     break;
                 }
-                // Let GPUI present the committed frame before processing the
-                // next queued redraw. Without an executor yield, a rapid
-                // sequence of page updates can keep this task runnable and
-                // make all intermediate viewport animations invisible.
-                if should_notify {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(1))
-                        .await;
+
+                // Do not sleep for a millisecond after every Flush. If more
+                // redraw data is already queued, yield once so GPUI can run
+                // its frame and dispatch pending input, then continue with
+                // the next losslessly coalesced batch. When the queue is
+                // empty, the next recv().await already yields naturally.
+                if has_queued_events {
+                    futures_lite::future::yield_now().await;
                 }
             }
         }));
@@ -322,7 +337,12 @@ impl NvimGpui {
         self.mouse_enabled = true;
         self.mouse_capture = None;
         self.nvim_mode = "n".to_owned();
-        self.input_router = InputRouter::default();
+        self.input_router = InputRouter::new(InputRouterConfig {
+            rime_enabled: false,
+        });
+        self.reset_rime_composition();
+        self.rime_menu_open = false;
+        self.rime_menu_message = None;
         self.system_ime.clear();
         self.scroll_remainder = point(0.0, 0.0);
         self.cursor_style_enabled = false;
@@ -334,11 +354,151 @@ impl NvimGpui {
         self.window_icon = "nvim-gpui".to_owned();
         self.display_options = grid::DisplayOptions::default();
     }
+
+    pub(crate) fn redeploy_rime(&mut self, cx: &mut Context<Self>) {
+        self.reset_rime_composition();
+        let result = self
+            .rime_backend
+            .as_mut()
+            .ok_or_else(|| "Rime backend is unavailable".to_owned())
+            .and_then(RimeBackend::redeploy);
+
+        self.rime_menu_message = Some(match result {
+            Ok(()) => {
+                log::info!(
+                    target: "nvim_gpui::rime",
+                    "Rime data redeployed from titlebar menu"
+                );
+                "Rime data redeployed successfully.".to_owned()
+            }
+            Err(error) => {
+                log::error!(target: "nvim_gpui::rime", "Rime data redeploy failed: {error}");
+                format!("Rime redeploy failed: {error}")
+            }
+        });
+        self.rime_menu_open = true;
+        cx.notify();
+    }
+
+    pub(crate) fn open_rime_user_data_directory(&mut self, cx: &mut Context<Self>) {
+        let result = rime_config_from_settings(&self.settings, Some(false))
+            .and_then(|config| crate::logging::open_directory(&config.user_data));
+
+        match result {
+            Ok(()) => {
+                log::info!(target: "nvim_gpui::rime", "opened Rime user data directory");
+                self.rime_menu_open = false;
+                self.rime_menu_message = None;
+            }
+            Err(error) => {
+                log::error!(
+                    target: "nvim_gpui::rime",
+                    "could not open Rime user data directory: {error}"
+                );
+                self.rime_menu_message = Some(format!("Could not open user settings: {error}"));
+                self.rime_menu_open = true;
+            }
+        }
+        cx.notify();
+    }
+}
+
+fn initialize_rime_backend(app_settings: &settings::Settings) -> Option<RimeBackend> {
+    let config = rime_config_from_settings(app_settings, None).ok()?;
+    match RimeBackend::new(config) {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            log::warn!(target: "nvim_gpui::rime", "Rime backend unavailable: {error}");
+            None
+        }
+    }
+}
+
+fn rime_config_from_settings(
+    app_settings: &settings::Settings,
+    deploy_override: Option<bool>,
+) -> Result<RimeConfig, String> {
+    let shared_data = configured_path(&app_settings.rime_data_dir, "NVIM_GPUI_RIME_SHARED_DIR")
+        .ok_or_else(|| "Rime shared data directory is not configured".to_owned())?;
+    let user_data = configured_path(&app_settings.rime_user_data_dir, "NVIM_GPUI_RIME_USER_DIR")
+        .or_else(|| settings::application_support_directory().map(|path| path.join("rime")))
+        .ok_or_else(|| "Rime user data directory is not available".to_owned())?;
+    // These are librime's internal working directories. Keep them under the
+    // user data directory instead of exposing them as user-configurable paths.
+    let prebuilt_data = user_data.join("prebuilt");
+    let staging_data = user_data.join("build");
+    let deploy = deploy_override.unwrap_or_else(|| {
+        env::var("NVIM_GPUI_RIME_DEPLOY")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+            .unwrap_or_else(|_| !directory_has_entries(&staging_data))
+    });
+
+    Ok(RimeConfig {
+        library: if app_settings.rime_library_auto_detect {
+            env::var_os("NVIM_GPUI_RIME_LIBRARY")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        } else {
+            configured_path(&app_settings.rime_library_dir, "NVIM_GPUI_RIME_LIBRARY")
+        },
+        shared_data,
+        user_data,
+        prebuilt_data: Some(prebuilt_data),
+        staging_data: Some(staging_data),
+        deploy,
+    })
+}
+
+fn configured_path(setting: &str, environment: &str) -> Option<PathBuf> {
+    (!setting.trim().is_empty())
+        .then(|| PathBuf::from(setting.trim()))
+        .or_else(|| env::var_os(environment).map(PathBuf::from))
+}
+
+fn directory_has_entries(path: &Path) -> bool {
+    fs::read_dir(path)
+        .ok()
+        .and_then(|mut entries| entries.next())
+        .is_some()
+}
+
+fn collect_event_batch(
+    first: NvimEvent,
+    events: &async_channel::Receiver<NvimEvent>,
+) -> Vec<NvimEvent> {
+    let mut batch = Vec::with_capacity(64);
+    batch.push(first);
+
+    while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
+        match events.try_recv() {
+            Ok(event) => batch.push(event),
+            Err(async_channel::TryRecvError::Empty) | Err(async_channel::TryRecvError::Closed) => {
+                break
+            }
+        }
+    }
+
+    batch
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redraw_batch_does_not_stop_at_first_flush() {
+        let (sender, receiver) = async_channel::unbounded();
+        sender.try_send(NvimEvent::Flush).unwrap();
+        sender.try_send(NvimEvent::GridClear { grid: 1 }).unwrap();
+        sender.try_send(NvimEvent::Flush).unwrap();
+
+        let batch = collect_event_batch(NvimEvent::GridClear { grid: 1 }, &receiver);
+
+        assert_eq!(batch.len(), 4);
+        assert!(matches!(batch[1], NvimEvent::Flush));
+        assert!(matches!(batch[2], NvimEvent::GridClear { grid: 1 }));
+        assert!(matches!(batch[3], NvimEvent::Flush));
+    }
 
     #[test]
     fn reset_nvim_session_discards_old_committed_and_pending_state() {

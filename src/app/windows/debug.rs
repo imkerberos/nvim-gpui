@@ -95,6 +95,7 @@ impl Render for DebugWindow {
                 SURFACE,
                 TEXT,
                 None,
+                None,
             ));
         }
         root.child(debug_content)

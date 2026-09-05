@@ -30,6 +30,7 @@ impl Render for AboutWindow {
                     BACKGROUND,
                     TEXT,
                     None,
+                    None,
                 ))
                 .child(
                     div()

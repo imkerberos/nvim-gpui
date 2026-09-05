@@ -1,4 +1,6 @@
 use super::*;
+use gpui::FontFallbacks;
+use unicode_segmentation::UnicodeSegmentation;
 
 impl Focusable for NvimGpui {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -149,7 +151,7 @@ impl EntityInputHandler for NvimGpui {
 }
 
 impl NvimGpui {
-    fn with_system_ime_input_handler(
+    fn with_ime_input_handler(
         &self,
         element: GridElement,
         grid: u64,
@@ -157,11 +159,16 @@ impl NvimGpui {
         invalidate_coordinates: bool,
         composition: Option<&grid::ImeComposition>,
     ) -> GridElement {
+        let owns_composition = self.composition_grid() == Some(grid);
+        let element = if owns_composition {
+            element.with_ime_composition(composition.cloned())
+        } else {
+            element
+        };
         if self.ime_input_grid != Some(grid) {
             return element;
         }
 
-        let element = element.with_ime_composition(composition.cloned());
         element.with_input_handler(move |bounds, window, cx| {
             let focus_handle = entity.read(cx).focus_handle.clone();
             if let Some(focus_handle) = focus_handle {
@@ -184,6 +191,18 @@ impl NvimGpui {
         })
     }
 
+    fn composition_grid(&self) -> Option<u64> {
+        match self.input_router.target() {
+            InputTarget::SystemIme => self.ime_input_grid,
+            InputTarget::Rime => self
+                .rime_context
+                .as_ref()
+                .filter(|context| !context.preedit.is_empty())
+                .map(|_| self.cursor_grid),
+            InputTarget::Neovim => None,
+        }
+    }
+
     fn system_ime_composition(&self) -> Option<grid::ImeComposition> {
         let marked_range = self.system_ime.marked_range_utf8()?;
         let cursor = self.ime_cursor_position()?;
@@ -196,7 +215,33 @@ impl NvimGpui {
         })
     }
 
-    fn system_ime_cursor_position(
+    fn rime_composition(&self) -> Option<grid::ImeComposition> {
+        let context = self.rime_context.as_ref()?;
+        if context.preedit.is_empty() {
+            return None;
+        }
+        let cursor = self.active_cursor_model()?.cursor_visual_position()?;
+        let text = context.preedit.clone();
+        let text_len = text.len();
+        let cursor_pos = context.cursor_pos.min(text_len);
+        Some(grid::ImeComposition {
+            row: cursor.row,
+            col: cursor.col,
+            text: text.into(),
+            marked_range: 0..text_len,
+            selected_range: cursor_pos..cursor_pos,
+        })
+    }
+
+    fn active_ime_composition(&self) -> Option<grid::ImeComposition> {
+        match self.input_router.target() {
+            InputTarget::SystemIme => self.system_ime_composition(),
+            InputTarget::Rime => self.rime_composition(),
+            InputTarget::Neovim => None,
+        }
+    }
+
+    fn ime_cursor_position_for_composition(
         &self,
         composition: &grid::ImeComposition,
         screen_position: grid::CursorVisualPosition,
@@ -220,6 +265,231 @@ impl NvimGpui {
             width: 1,
         }
     }
+
+    fn rime_candidate_popup(
+        &self,
+        gui_font: &GuiFontSpec,
+        gui_wide_font: &GuiFontSpec,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> Option<gpui::Div> {
+        if self.input_router.target() != InputTarget::Rime {
+            return None;
+        }
+        let context = self.rime_context.as_ref()?;
+        if context.candidates.is_empty() {
+            return None;
+        }
+        let position = self.current_cursor_screen_position()?;
+        let popup_background = self.theme.normal_float_background.unwrap_or(SURFACE);
+        let popup_foreground = self.theme_foreground();
+        let horizontal =
+            self.settings.rime_candidate_layout == settings::RimeCandidateLayout::Horizontal;
+        let page = context.page_no.saturating_add(1);
+        let page_label = page.to_string();
+        let cell_width_px = f32::from(cell_width);
+        let candidate_widths = context
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let marker_width = self
+                    .display_options
+                    .text_cell_width(candidate_marker(index));
+                let text_width = self.display_options.text_cell_width(&candidate.text);
+                let mut width = 8.0 + (marker_width + 1 + text_width) as f32 * cell_width_px;
+                if let Some(comment) = candidate.comment.as_deref() {
+                    width +=
+                        8.0 + self.display_options.text_cell_width(comment) as f32 * cell_width_px;
+                }
+                width
+            })
+            .collect::<Vec<_>>();
+        let page_indicator_width = 16.0 + (page_label.len() + 2) as f32 * cell_width_px;
+        let content_width = if horizontal {
+            candidate_widths.iter().sum::<f32>() + page_indicator_width
+        } else {
+            candidate_widths
+                .iter()
+                .copied()
+                .reduce(f32::max)
+                .unwrap_or_default()
+                .max(page_indicator_width)
+        };
+        let popup_width = px(content_width.max(12.0 * cell_width_px));
+        let row_count = if horizontal {
+            1
+        } else {
+            context.candidates.len() + 1
+        };
+        let popup_height = px((row_count as f32 + 1.0) * f32::from(line_height));
+        let viewport_width = self
+            .grid_size
+            .map(|(width, _)| width as f32 * f32::from(cell_width));
+        let viewport_height = self
+            .grid_size
+            .map(|(_, height)| height as f32 * f32::from(line_height));
+        let cursor_left = position.col as f32 * f32::from(cell_width);
+        let cursor_top = position.row as f32 * f32::from(line_height);
+        let left = viewport_width
+            .map(|width| (cursor_left.min((width - f32::from(popup_width)).max(0.0))).max(0.0))
+            .unwrap_or(cursor_left);
+        let below_top = cursor_top + f32::from(line_height);
+        let top = viewport_height
+            .filter(|height| below_top + f32::from(popup_height) > *height)
+            .map(|_| (cursor_top - f32::from(popup_height)).max(0.0))
+            .unwrap_or(below_top);
+
+        let mut candidate_font = font(gui_font.family.clone());
+        if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
+            candidate_font.fallbacks =
+                Some(FontFallbacks::from_fonts(vec![nerd_font_family.clone()]));
+        }
+        let candidate_wide_font = if gui_wide_font.family == gui_font.family {
+            candidate_font.clone()
+        } else {
+            font(gui_wide_font.family.clone())
+        };
+
+        let mut popup = div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(popup_width)
+            .p_1()
+            .border_1()
+            .border_color(rgb(SURFACE_BRIGHT))
+            .bg(rgb(popup_background))
+            .text_color(rgb(popup_foreground))
+            .font(candidate_font.clone())
+            .text_size(px(gui_font.size))
+            .when(horizontal, |popup| popup.flex().items_center());
+
+        for (index, candidate) in context.candidates.iter().enumerate() {
+            let selected = index as i32 == context.highlighted_candidate_index;
+            let mut row = div()
+                .when(!horizontal, |row| row.w_full())
+                .flex_none()
+                .h(line_height)
+                .flex()
+                .items_center()
+                .px_1()
+                .bg(rgb(if selected { ACCENT } else { popup_background }))
+                .text_color(rgb(if selected {
+                    BACKGROUND
+                } else {
+                    popup_foreground
+                }))
+                .child(format!("{} ", candidate_marker(index)));
+            row = row.child(candidate_text(
+                &candidate.text,
+                self.display_options,
+                &candidate_font,
+                &candidate_wide_font,
+                px(gui_font.size),
+                px(gui_wide_font.size),
+            ));
+            if let Some(comment) = candidate.comment.as_deref() {
+                row = row.child(
+                    div()
+                        .ml_2()
+                        .text_color(rgb(if selected { BACKGROUND } else { MUTED_TEXT }))
+                        .child(candidate_text(
+                            comment,
+                            self.display_options,
+                            &candidate_font,
+                            &candidate_wide_font,
+                            px(gui_font.size),
+                            px(gui_wide_font.size),
+                        )),
+                );
+            }
+            popup = popup.child(row);
+        }
+
+        let previous_color = if context.page_no > 0 {
+            ACCENT
+        } else {
+            MUTED_TEXT
+        };
+        let next_color = if context.is_last_page {
+            MUTED_TEXT
+        } else {
+            ACCENT
+        };
+        let previous_icon = if self.nerd_font_family.is_some() {
+            // Nerd Font: angle-up (U+F0D9).
+            "\u{f0d9}"
+        } else {
+            "‹"
+        };
+        let next_icon = if self.nerd_font_family.is_some() {
+            // Nerd Font: angle-down (U+F0DA).
+            "\u{f0da}"
+        } else {
+            "›"
+        };
+        let page_indicator = div()
+            .h(line_height)
+            .flex()
+            .items_center()
+            .justify_end()
+            .px_1()
+            .text_sm()
+            .child(div().text_color(rgb(previous_color)).child(previous_icon))
+            .child(
+                div()
+                    .mx_1()
+                    .text_color(rgb(if context.page_no == 0 && context.is_last_page {
+                        MUTED_TEXT
+                    } else {
+                        popup_foreground
+                    }))
+                    .child(page_label),
+            )
+            .child(div().text_color(rgb(next_color)).child(next_icon));
+        if horizontal {
+            popup = popup.child(page_indicator.w(px(page_indicator_width)));
+        } else {
+            popup = popup.child(page_indicator.w_full());
+        }
+
+        Some(popup)
+    }
+}
+
+fn candidate_marker(index: usize) -> &'static str {
+    ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⓪"]
+        .get(index)
+        .copied()
+        .unwrap_or("⓪")
+}
+
+fn candidate_text(
+    text: &str,
+    display_options: grid::DisplayOptions,
+    normal_font: &gpui::Font,
+    wide_font: &gpui::Font,
+    normal_size: Pixels,
+    wide_size: Pixels,
+) -> gpui::Div {
+    text.graphemes(true).fold(
+        div().flex().items_center().flex_none(),
+        |container, grapheme| {
+            let is_wide = display_options.text_cell_width(grapheme) > 1;
+            container.child(
+                div()
+                    .flex_none()
+                    .font(if is_wide {
+                        wide_font.clone()
+                    } else {
+                        normal_font.clone()
+                    })
+                    .text_size(if is_wide { wide_size } else { normal_size })
+                    .child(grapheme.to_owned()),
+            )
+        },
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -388,7 +658,8 @@ impl Render for NvimGpui {
             .flex_col()
             .bg(rgb(theme_background))
             .text_color(rgb(theme_foreground))
-            .capture_key_down(cx.listener(Self::on_key_down));
+            .capture_key_down(cx.listener(Self::on_key_down))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed));
 
         if let Some(focus_handle) = self.focus_handle.as_ref() {
             root = root.track_focus(focus_handle);
@@ -400,6 +671,14 @@ impl Render for NvimGpui {
                 theme_background,
                 theme_foreground,
                 Some(entity.clone()),
+                (self.settings.ime_backend == settings::ImeBackend::Rime
+                    && self.rime_backend.is_some())
+                .then_some(RimeTitlebarState {
+                    enabled: self.input_router.config().rime_enabled,
+                    active: self.input_router.target() == InputTarget::Rime,
+                    menu_open: self.rime_menu_open,
+                    menu_message: self.rime_menu_message.clone(),
+                }),
             ));
         }
 
@@ -432,56 +711,57 @@ impl Render for NvimGpui {
         if invalidate_ime_coordinates && self.ime_input_grid.is_some() {
             self.ime_coordinates_dirty = false;
         }
-        let ime_composition = self.system_ime_composition();
+        let ime_composition = self.active_ime_composition();
 
-        let cursor_element =
-            grid_ready.then(|| {
-                let model = self.active_cursor_model()?;
-                let local_position = model.cursor_visual_position()?;
-                let position = self.current_cursor_screen_position()?;
-                let position = ime_composition
-                    .as_ref()
-                    .map(|composition| {
-                        self.system_ime_cursor_position(composition, position, local_position)
-                    })
-                    .unwrap_or(position);
-                let cursor_placement = self.grid_placement(self.cursor_grid);
-                let cursor_context = self.highlight_context_for_layer(cursor_placement.kind);
-                let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
-                    &model,
-                    local_position,
-                    cursor_mode,
-                    cursor_context,
-                );
-                let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
-                    self.grid_element(
-                        Rc::clone(&model),
-                        GridRenderOptions {
-                            placement: cursor_placement,
-                            width: model.width(),
-                            height: model.height(),
-                            cell_width,
-                            line_height,
-                            gui_font: &gui_font,
-                            gui_wide_font: &gui_wide_font,
-                            cursor_blink_started_at,
-                            viewport_offset: px(0.0),
-                        },
-                    )
-                });
-                Some(
-                    grid::CursorElement::new(position, cursor_background, cursor_mode)
-                        .with_local_position(local_position)
-                        .with_glyph_foreground(cursor_foreground)
-                        .with_glyph_source(glyph_source)
-                        .with_animation(self.cursor_animation.filter(|animation| {
-                            ime_composition.is_none() && animation.is_active(now)
-                        }))
-                        .with_metrics(cell_width, line_height)
-                        .with_grid_size(self.grid.width(), self.grid.height())
-                        .with_blink_started_at(cursor_blink_started_at),
+        let cursor_element = grid_ready.then(|| {
+            let model = self.active_cursor_model()?;
+            let local_position = model.cursor_visual_position()?;
+            let position = self.current_cursor_screen_position()?;
+            let position = ime_composition
+                .as_ref()
+                .map(|composition| {
+                    self.ime_cursor_position_for_composition(composition, position, local_position)
+                })
+                .unwrap_or(position);
+            let cursor_placement = self.grid_placement(self.cursor_grid);
+            let cursor_context = self.highlight_context_for_layer(cursor_placement.kind);
+            let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
+                &model,
+                local_position,
+                cursor_mode,
+                cursor_context,
+            );
+            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
+                self.grid_element(
+                    Rc::clone(&model),
+                    GridRenderOptions {
+                        placement: cursor_placement,
+                        width: model.width(),
+                        height: model.height(),
+                        cell_width,
+                        line_height,
+                        gui_font: &gui_font,
+                        gui_wide_font: &gui_wide_font,
+                        cursor_blink_started_at,
+                        viewport_offset: px(0.0),
+                    },
                 )
             });
+            Some(
+                grid::CursorElement::new(position, cursor_background, cursor_mode)
+                    .with_local_position(local_position)
+                    .with_glyph_foreground(cursor_foreground)
+                    .with_glyph_source(glyph_source)
+                    .with_animation(
+                        self.cursor_animation.filter(|animation| {
+                            ime_composition.is_none() && animation.is_active(now)
+                        }),
+                    )
+                    .with_metrics(cell_width, line_height)
+                    .with_grid_size(self.grid.width(), self.grid.height())
+                    .with_blink_started_at(cursor_blink_started_at),
+            )
+        });
         let cursor_element = cursor_element.flatten();
         let mut editor = div()
             .flex_1()
@@ -539,7 +819,7 @@ impl Render for NvimGpui {
                 ));
             }
 
-            let main_element = self.with_system_ime_input_handler(
+            let main_element = self.with_ime_input_handler(
                 self.grid_element(Rc::clone(&self.grid), main_options),
                 1,
                 entity.clone(),
@@ -598,7 +878,7 @@ impl Render for NvimGpui {
                     ));
                 }
                 layer = layer.child(Self::grid_surface(
-                    self.with_system_ime_input_handler(
+                    self.with_ime_input_handler(
                         self.grid_element(model, options),
                         grid_id,
                         entity.clone(),
@@ -621,6 +901,12 @@ impl Render for NvimGpui {
                         .h_full()
                         .child(cursor_element),
                 );
+            }
+
+            if let Some(rime_popup) =
+                self.rime_candidate_popup(&gui_font, &gui_wide_font, cell_width, line_height)
+            {
+                editor = editor.child(rime_popup);
             }
         }
 

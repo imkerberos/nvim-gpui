@@ -311,7 +311,7 @@ fn embedded_nvim_accepts_multiline_paste() {
         .expect("insert mode input should queue");
 
     let paste = process
-        .send_paste("one\ntwo")
+        .send_paste("one\n你好")
         .expect("nvim_paste request should queue")
         .recv_blocking()
         .expect("nvim_paste response should arrive")
@@ -334,7 +334,7 @@ fn embedded_nvim_accepts_multiline_paste() {
         .expect("buffer read should succeed");
     assert_eq!(
         lines,
-        Value::Array(vec![Value::from("one"), Value::from("two")])
+        Value::Array(vec![Value::from("one"), Value::from("你好")])
     );
 }
 

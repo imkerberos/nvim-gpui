@@ -84,6 +84,9 @@ impl NvimGpui {
         self.input_router = pending.input_router;
         self.state.mode = pending.editor_mode;
 
+        if self.input_router.target() != InputTarget::Rime {
+            self.reset_rime_composition();
+        }
         if self.input_router.target() != InputTarget::SystemIme {
             self.system_ime.clear();
         }
@@ -122,6 +125,7 @@ impl NvimGpui {
     }
 
     pub(crate) fn update_settings(&mut self, next: settings::Settings) {
+        let ime_backend_changed = self.settings.ime_backend != next.ime_backend;
         if self.settings.log_level != next.log_level {
             if let Some(logger) = self.logger.as_ref() {
                 crate::logging::set_level(logger, next.log_level);
@@ -129,7 +133,27 @@ impl NvimGpui {
         }
         self.settings = next;
         self.apply_runtime_settings();
+        if ime_backend_changed {
+            self.apply_ime_backend_setting();
+        }
         self.settings_save_error = self.settings.save().err();
+    }
+
+    pub(super) fn apply_ime_backend_setting(&mut self) {
+        let rime_enabled =
+            self.settings.ime_backend == settings::ImeBackend::Rime && self.rime_backend.is_some();
+        let mut config = self.input_router.config();
+        config.rime_enabled = rime_enabled;
+        self.input_router.set_config(config);
+        if let Some(pending) = self.pending_redraw.as_mut() {
+            pending.input_router.set_config(config);
+        }
+        if !rime_enabled {
+            self.reset_rime_composition();
+            self.rime_menu_open = false;
+            self.rime_menu_message = None;
+        }
+        self.system_ime.clear();
     }
 
     pub(super) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
@@ -310,19 +334,256 @@ impl NvimGpui {
         .detach();
     }
 
+    fn reset_rime_composition(&mut self) {
+        self.rime_context = None;
+        if let Some(backend) = self.rime_backend.as_ref() {
+            if let Err(error) = backend.clear_composition() {
+                log::debug!(target: "nvim_gpui::rime", "could not clear Rime composition: {error}");
+            }
+        }
+    }
+
+    fn disable_rime(&mut self, reason: &str) {
+        self.reset_rime_composition();
+        self.rime_backend = None;
+        self.rime_menu_open = false;
+        self.rime_menu_message = None;
+        let mut config = self.input_router.config();
+        config.rime_enabled = false;
+        self.input_router.set_config(config);
+        log::warn!(target: "nvim_gpui::rime", "Rime disabled: {reason}");
+    }
+
+    pub(super) fn toggle_rime(&mut self, cx: &mut Context<Self>) {
+        if self.rime_backend.is_none() {
+            log::debug!(target: "nvim_gpui::rime", "Rime toggle ignored because the backend is unavailable");
+            return;
+        }
+
+        self.rime_menu_open = false;
+        self.rime_menu_message = None;
+        let enabled = !self.input_router.config().rime_enabled;
+        let mut config = self.input_router.config();
+        config.rime_enabled = enabled;
+        self.input_router.set_config(config);
+        if let Some(pending) = self.pending_redraw.as_mut() {
+            pending.input_router.set_config(config);
+        }
+        self.reset_rime_composition();
+        self.system_ime.clear();
+        log::info!(target: "nvim_gpui::rime", "Rime {}", if enabled { "enabled" } else { "disabled" });
+        cx.notify();
+    }
+
+    pub(super) fn open_rime_menu(&mut self, cx: &mut Context<Self>) {
+        if self.rime_backend.is_none() {
+            return;
+        }
+        self.rime_menu_open = true;
+        self.rime_menu_message = None;
+        cx.notify();
+    }
+
+    pub(super) fn close_rime_menu(&mut self, cx: &mut Context<Self>) {
+        if !self.rime_menu_open && self.rime_menu_message.is_none() {
+            return;
+        }
+        self.rime_menu_open = false;
+        self.rime_menu_message = None;
+        cx.notify();
+    }
+
+    fn send_rime_commit(&mut self, text: String, cx: &mut Context<Self>) -> Result<(), String> {
+        let Some(nvim) = self.nvim.as_ref() else {
+            return Err("Neovim is unavailable".to_owned());
+        };
+        let bytes = text.len();
+        let response = nvim.send_paste(text)?;
+        log::debug!(
+            target: "nvim_gpui::rime",
+            "forwarding Rime commit through nvim_paste: bytes={bytes}"
+        );
+        cx.spawn(async move |_weak, _cx| match response.recv().await {
+            Ok(Ok(rmpv::Value::Boolean(false))) => log::warn!(
+                target: "nvim_gpui::rime",
+                "Neovim rejected Rime commit"
+            ),
+            Ok(Ok(value)) => log::debug!(
+                target: "nvim_gpui::rime",
+                "Neovim accepted Rime commit: {value:?}"
+            ),
+            Ok(Err(error)) => log::error!(
+                target: "nvim_gpui::rime",
+                "Rime commit failed in Neovim: {error}"
+            ),
+            Err(error) => log::error!(
+                target: "nvim_gpui::rime",
+                "Rime commit response was lost: {error}"
+            ),
+        })
+        .detach();
+        Ok(())
+    }
+
+    fn handle_rime_keycode(
+        &mut self,
+        keycode: i32,
+        modifiers: i32,
+        reset_on_unconsumed: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let Some(backend) = self.rime_backend.as_ref() else {
+            return Ok(false);
+        };
+        let consumed = backend.process_key(keycode, modifiers)?;
+        let context = backend.context()?;
+        let commit = backend.take_commit()?;
+        log::debug!(
+            target: "nvim_gpui::rime",
+            "processed key: keycode={keycode}, consumed={consumed}, has_commit={}",
+            commit.is_some()
+        );
+        if !consumed {
+            // A key can be left unconsumed while librime still has commit
+            // text buffered (for example, when punctuation commits the
+            // candidate). Forward that commit first, then return false so
+            // the original key continues through Neovim's normal path.
+            if let Some(text) = commit {
+                log::debug!(
+                    target: "nvim_gpui::rime",
+                    "Rime produced a commit before forwarding an unconsumed key: bytes={}",
+                    text.len()
+                );
+                self.send_rime_commit(text, cx)?;
+            }
+            if reset_on_unconsumed {
+                self.reset_rime_composition();
+            }
+            cx.notify();
+            return Ok(false);
+        }
+        self.rime_context =
+            (!context.preedit.is_empty() || !context.candidates.is_empty()).then_some(context);
+        if let Some(text) = commit {
+            log::debug!(
+                target: "nvim_gpui::rime",
+                "Rime produced a commit: bytes={}",
+                text.len()
+            );
+            self.rime_context = None;
+            self.send_rime_commit(text, cx)?;
+        }
+        cx.notify();
+        Ok(true)
+    }
+
+    fn handle_rime_key(
+        &mut self,
+        keystroke: &gpui::Keystroke,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let Some((keycode, modifiers)) = rime_key_event(keystroke) else {
+            log::debug!(
+                target: "nvim_gpui::rime",
+                "Rime key mapping rejected: key={:?}, key_char={:?}, modifiers={:?}",
+                keystroke.key,
+                keystroke.key_char,
+                keystroke.modifiers
+            );
+            self.reset_rime_composition();
+            return Ok(false);
+        };
+        self.handle_rime_keycode(keycode, modifiers, true, cx)
+    }
+
+    pub(super) fn on_modifiers_changed(
+        &mut self,
+        event: &gpui::ModifiersChangedEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.last_modifiers;
+        self.last_modifiers = event.modifiers;
+
+        if self.input_router.target() != InputTarget::Rime || self.rime_backend.is_none() {
+            return;
+        }
+
+        // GPUI represents modifier-only input as an aggregate state change.
+        // Reconstruct the individual press/release events so Rime can run
+        // bindings such as its press-and-release Shift ASCII switcher.
+        let transitions = [
+            ("shift", previous.shift, event.modifiers.shift),
+            ("control", previous.control, event.modifiers.control),
+            ("alt", previous.alt, event.modifiers.alt),
+            ("platform", previous.platform, event.modifiers.platform),
+        ];
+        for (key, was_pressed, is_pressed) in transitions {
+            if was_pressed == is_pressed {
+                continue;
+            }
+            let Some((keycode, modifiers)) =
+                rime_modifier_transition(key, previous, event.modifiers)
+            else {
+                continue;
+            };
+            match self.handle_rime_keycode(keycode, modifiers, false, cx) {
+                Ok(true) => window.prevent_default(),
+                Ok(false) => log::debug!(
+                    target: "nvim_gpui::rime",
+                    "Rime did not consume modifier transition: key={key}, pressed={is_pressed}"
+                ),
+                Err(error) => {
+                    self.disable_rime(&error);
+                    break;
+                }
+            }
+        }
+    }
+
     pub(super) fn on_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings.ime_backend == settings::ImeBackend::Rime
+            && self.settings.rime_toggle_shortcut.matches(&event.keystroke)
+            && self.rime_backend.is_some()
+        {
+            self.toggle_rime(cx);
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
+
         if self.settings.paste_shortcut.matches(&event.keystroke) {
             self.paste_from_system_clipboard(cx);
             window.prevent_default();
             return;
         }
 
-        let target = self.input_router.target();
+        let mut target = self.input_router.target();
+        log::debug!(
+            target: "nvim_gpui::input",
+            "key down: key={:?}, key_char={:?}, modifiers={:?}, target={target:?}",
+            event.keystroke.key,
+            event.keystroke.key_char,
+            event.keystroke.modifiers
+        );
+        if target == InputTarget::Rime {
+            match self.handle_rime_key(&event.keystroke, cx) {
+                Ok(true) => {
+                    window.prevent_default();
+                    return;
+                }
+                Ok(false) => target = InputTarget::Neovim,
+                Err(error) => {
+                    self.disable_rime(&error);
+                    target = InputTarget::Neovim;
+                }
+            }
+        }
         if !should_route_key_to_neovim(target, &event.keystroke) {
             return;
         }

@@ -1,11 +1,20 @@
 //! Input routing boundaries for the editor surface.
 //!
 //! The router keeps platform IME handling separate from Neovim key handling.
-//! Rime remains an optional future backend; the first active text backend is
-//! the system IME exposed by GPUI's `EntityInputHandler`.
+//! Rime is an optional native backend, while the system IME remains the
+//! fallback text backend exposed by GPUI's `EntityInputHandler`.
 
 use gpui::{Keystroke, Modifiers, MouseButton, Pixels, Point, ScrollDelta};
 use std::ops::Range;
+
+// These values mirror librime's public key_table.h ABI. Keep the input
+// module independent of the library crate because it is compiled by both the
+// reusable library target and the nvim-gpui binary target.
+const RIME_SHIFT_MASK: i32 = 1 << 0;
+const RIME_CONTROL_MASK: i32 = 1 << 2;
+const RIME_ALT_MASK: i32 = 1 << 3;
+const RIME_SUPER_MASK: i32 = 1 << 26;
+const RIME_RELEASE_MASK: i32 = 1 << 30;
 
 pub use gpui::{EntityInputHandler, UTF16Selection};
 
@@ -28,7 +37,6 @@ pub enum InputTarget {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputRouterConfig {
     pub rime_enabled: bool,
-    pub rime_in_command_line: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,16 +81,12 @@ impl InputRouter {
 
     pub fn target(&self) -> InputTarget {
         match self.context {
-            InputContext::Normal | InputContext::Terminal => InputTarget::Neovim,
-            InputContext::Insert => {
+            InputContext::Normal => InputTarget::Neovim,
+            InputContext::Insert
+            | InputContext::CommandLine
+            | InputContext::Prompt
+            | InputContext::Terminal => {
                 if self.config.rime_enabled {
-                    InputTarget::Rime
-                } else {
-                    InputTarget::SystemIme
-                }
-            }
-            InputContext::CommandLine | InputContext::Prompt => {
-                if self.config.rime_enabled && self.config.rime_in_command_line {
                     InputTarget::Rime
                 } else {
                     InputTarget::SystemIme
@@ -140,6 +144,161 @@ pub fn should_route_key_to_neovim(target: InputTarget, keystroke: &Keystroke) ->
         }
         InputTarget::Rime => false,
     }
+}
+
+/// Convert a GPUI key event into librime's platform-independent key event.
+///
+/// Rime must see the modifier mask for switcher hotkeys and schema bindings;
+/// returning `None` is reserved for GPUI's physical `fn` modifier, which has
+/// no librime equivalent. Whether a modified key is consumed remains a Rime
+/// decision. An unconsumed event is forwarded to Neovim by the caller exactly
+/// once.
+pub fn rime_key_event(keystroke: &Keystroke) -> Option<(i32, i32)> {
+    let modifiers = rime_modifier_mask(keystroke.modifiers)?;
+
+    let keycode = match keystroke.key.as_str() {
+        // librime consumes X11 keysyms for non-printable keys, even on
+        // platforms that do not use X11 for their native window system.
+        "backspace" => 0xff08,
+        "delete" => 0xffff,
+        "tab" => 0xff09,
+        "enter" | "return" => 0xff0d,
+        "escape" => 0xff1b,
+        // Depending on the platform event path, GPUI may expose Space as the
+        // named key or as the literal character.
+        "space" | " " => 0x20,
+        "left" => 0xff51,
+        "up" => 0xff52,
+        "right" => 0xff53,
+        "down" => 0xff54,
+        "pageup" => 0xff55,
+        "pagedown" => 0xff56,
+        "home" => 0xff50,
+        "end" => 0xff57,
+        "insert" => 0xff63,
+        "shift" => 0xffe1,
+        "control" => 0xffe3,
+        "alt" => 0xffe9,
+        "platform" => 0xffeb,
+        key if key.len() > 1 && key.starts_with('f') => {
+            let function_key = key[1..].parse::<i32>().ok()?;
+            if !(1..=35).contains(&function_key) {
+                return None;
+            }
+            0xffbe + function_key - 1
+        }
+        _ => {
+            // `key` is the unshifted physical key in GPUI's normalized
+            // keystroke. Prefer it over key_char so Shift+A becomes the
+            // librime event `a + Shift`, not a different keycode `A`.
+            let key = if keystroke.key.chars().count() == 1 {
+                keystroke.key.as_str()
+            } else {
+                keystroke.key_char.as_deref()?
+            };
+            let character = key.chars().next()?;
+            if !character.is_ascii() || !character.is_ascii_graphic() {
+                return None;
+            }
+            character as i32
+        }
+    };
+
+    Some((keycode, modifiers))
+}
+
+/// Convert GPUI's modifier state to librime's modifier mask.
+pub fn rime_modifier_mask(modifiers: Modifiers) -> Option<i32> {
+    if modifiers.function {
+        // GPUI's physical Fn key is not represented by librime's key mask.
+        return None;
+    }
+
+    let mut mask = 0;
+    if modifiers.shift {
+        mask |= RIME_SHIFT_MASK;
+    }
+    if modifiers.control {
+        mask |= RIME_CONTROL_MASK;
+    }
+    if modifiers.alt {
+        mask |= RIME_ALT_MASK;
+    }
+    if modifiers.platform {
+        mask |= RIME_SUPER_MASK;
+    }
+    Some(mask)
+}
+
+/// Build the press/release event for a modifier-only transition.
+///
+/// GPUI reports a standalone modifier through `ModifiersChangedEvent`, not a
+/// `KeyDownEvent`. The caller supplies the modifier state before a press or
+/// after a release, matching the X11-style event that librime expects.
+pub fn rime_modifier_event(key: &str, modifiers: Modifiers, release: bool) -> Option<(i32, i32)> {
+    let keycode = match key {
+        "shift" => 0xffe1,
+        "control" => 0xffe3,
+        "alt" => 0xffe9,
+        "platform" => 0xffeb,
+        _ => return None,
+    };
+    let mut mask = rime_modifier_mask(modifiers)?;
+    if release {
+        mask |= RIME_RELEASE_MASK;
+    }
+    Some((keycode, mask))
+}
+
+/// Convert one aggregate GPUI modifier transition into a librime event.
+///
+/// GPUI reports the new aggregate state, so remove the modifier represented by
+/// `key` from the mask. This gives librime the state before that modifier's
+/// press and the state after its release, including the release bit needed by
+/// Rime's press-and-release ASCII mode switch.
+pub fn rime_modifier_transition(
+    key: &str,
+    previous: Modifiers,
+    current: Modifiers,
+) -> Option<(i32, i32)> {
+    let was_pressed = match key {
+        "shift" => previous.shift,
+        "control" => previous.control,
+        "alt" => previous.alt,
+        "platform" => previous.platform,
+        _ => return None,
+    };
+    let is_pressed = match key {
+        "shift" => current.shift,
+        "control" => current.control,
+        "alt" => current.alt,
+        "platform" => current.platform,
+        _ => unreachable!(),
+    };
+    if was_pressed == is_pressed {
+        return None;
+    }
+
+    let modifiers = match key {
+        "shift" => Modifiers {
+            shift: false,
+            ..current
+        },
+        "control" => Modifiers {
+            control: false,
+            ..current
+        },
+        "alt" => Modifiers {
+            alt: false,
+            ..current
+        },
+        "platform" => Modifiers {
+            platform: false,
+            ..current
+        },
+        _ => unreachable!(),
+    };
+    rime_modifier_event(key, modifiers, !is_pressed)
 }
 
 pub fn key_to_nvim_input(keystroke: &Keystroke) -> String {
@@ -392,17 +551,16 @@ fn utf16_to_utf8_offset(text: &str, utf16_offset: usize) -> usize {
 mod tests {
     use super::{
         context_for_nvim_mode, key_to_nvim_input, nvim_mouse_button, nvim_mouse_modifiers,
-        scroll_delta_to_lines, should_route_key_to_neovim, InputContext, InputRouter,
-        InputRouterConfig, InputTarget, SystemImeState,
+        rime_key_event, rime_modifier_transition, scroll_delta_to_lines,
+        should_route_key_to_neovim, InputContext, InputRouter, InputRouterConfig, InputTarget,
+        SystemImeState, RIME_ALT_MASK, RIME_CONTROL_MASK, RIME_RELEASE_MASK, RIME_SHIFT_MASK,
+        RIME_SUPER_MASK,
     };
     use gpui::{point, px, Keystroke, Modifiers, MouseButton, ScrollDelta};
 
     #[test]
     fn normal_mode_always_routes_keys_to_neovim() {
-        let router = InputRouter::new(InputRouterConfig {
-            rime_enabled: true,
-            rime_in_command_line: true,
-        });
+        let router = InputRouter::new(InputRouterConfig { rime_enabled: true });
 
         assert_eq!(router.target(), InputTarget::Neovim);
     }
@@ -417,29 +575,22 @@ mod tests {
 
     #[test]
     fn insert_mode_uses_rime_when_enabled() {
-        let mut router = InputRouter::new(InputRouterConfig {
-            rime_enabled: true,
-            rime_in_command_line: false,
-        });
+        let mut router = InputRouter::new(InputRouterConfig { rime_enabled: true });
         router.set_context(InputContext::Insert);
 
         assert_eq!(router.target(), InputTarget::Rime);
     }
 
     #[test]
-    fn command_line_rime_is_independently_configurable() {
-        let mut router = InputRouter::new(InputRouterConfig {
-            rime_enabled: true,
-            rime_in_command_line: false,
-        });
+    fn text_input_contexts_use_rime_when_enabled() {
+        let mut router = InputRouter::new(InputRouterConfig { rime_enabled: true });
         router.set_context(InputContext::CommandLine);
-        assert_eq!(router.target(), InputTarget::SystemIme);
-
-        router.set_config(InputRouterConfig {
-            rime_enabled: true,
-            rime_in_command_line: true,
-        });
         assert_eq!(router.target(), InputTarget::Rime);
+
+        for context in [InputContext::Prompt, InputContext::Terminal] {
+            router.set_context(context);
+            assert_eq!(router.target(), InputTarget::Rime);
+        }
     }
 
     #[test]
@@ -478,6 +629,85 @@ mod tests {
 
         let control = Keystroke::parse("ctrl-w").expect("control key should parse");
         assert_eq!(key_to_nvim_input(&control), "<C-w>");
+    }
+
+    #[test]
+    fn rime_key_event_accepts_text_and_plain_editing_keys() {
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("a").expect("text key should parse")),
+            Some((b'a' as i32, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("shift-a").expect("shifted key should parse")),
+            Some((b'a' as i32, RIME_SHIFT_MASK))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("space").expect("space should parse")),
+            Some((b' ' as i32, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke {
+                key: " ".to_owned(),
+                key_char: Some(" ".to_owned()),
+                modifiers: Modifiers::none(),
+            }),
+            Some((b' ' as i32, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("backspace").expect("backspace should parse")),
+            Some((0xff08, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("down").expect("down should parse")),
+            Some((0xff54, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("pageup").expect("pageup should parse")),
+            Some((0xff55, 0))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("ctrl-a").expect("control key should parse")),
+            Some((b'a' as i32, RIME_CONTROL_MASK))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("ctrl-shift-`").expect("switcher key should parse")),
+            Some((b'`' as i32, RIME_CONTROL_MASK | RIME_SHIFT_MASK))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("alt-f12").expect("function key should parse")),
+            Some((0xffc9, RIME_ALT_MASK))
+        );
+        assert_eq!(
+            rime_key_event(&Keystroke::parse("cmd-\\").expect("platform key should parse")),
+            Some((b'\\' as i32, RIME_SUPER_MASK))
+        );
+    }
+
+    #[test]
+    fn standalone_modifier_transitions_are_expressed_for_rime() {
+        let none = Modifiers::none();
+        let shift = Modifiers::shift();
+        assert_eq!(
+            rime_modifier_transition("shift", none, shift),
+            Some((0xffe1, 0))
+        );
+        assert_eq!(
+            rime_modifier_transition("shift", shift, none),
+            Some((0xffe1, RIME_RELEASE_MASK))
+        );
+
+        let control = Modifiers::control();
+        assert_eq!(
+            rime_modifier_transition(
+                "shift",
+                control,
+                Modifiers {
+                    shift: true,
+                    ..control
+                }
+            ),
+            Some((0xffe1, RIME_CONTROL_MASK))
+        );
     }
 
     #[test]

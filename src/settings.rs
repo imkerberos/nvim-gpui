@@ -147,6 +147,168 @@ impl PasteShortcut {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ImeBackend {
+    #[default]
+    System,
+    Rime,
+}
+
+impl ImeBackend {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Rime => "rime",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System IME",
+            Self::Rime => "Rime",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "rime" => Some(Self::Rime),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RimeCandidateLayout {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+impl RimeCandidateLayout {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Vertical => "vertical",
+            Self::Horizontal => "horizontal",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vertical => "Vertical",
+            Self::Horizontal => "Horizontal",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "vertical" => Some(Self::Vertical),
+            "horizontal" => Some(Self::Horizontal),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RimeToggleShortcut {
+    #[default]
+    PlatformDefault,
+    CmdBackslash,
+    CtrlBackslash,
+    CtrlSpace,
+    Custom(String),
+    Disabled,
+}
+
+impl RimeToggleShortcut {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::PlatformDefault => {
+                #[cfg(target_os = "macos")]
+                {
+                    "cmd-\\"
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    "ctrl-\\"
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                {
+                    "ctrl-space"
+                }
+            }
+            Self::CmdBackslash => "cmd-\\",
+            Self::CtrlBackslash => "ctrl-\\",
+            Self::CtrlSpace => "ctrl-space",
+            Self::Custom(key) => key,
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::PlatformDefault => gpui::Keystroke::parse(self.key())
+                .map(|keystroke| keystroke.to_string())
+                .unwrap_or_else(|_| self.key().to_owned()),
+            Self::CmdBackslash => "Cmd-\\".to_owned(),
+            Self::CtrlBackslash => "Ctrl-\\".to_owned(),
+            Self::CtrlSpace => "Ctrl-Space".to_owned(),
+            Self::Custom(key) => gpui::Keystroke::parse(key)
+                .map(|keystroke| keystroke.to_string())
+                .unwrap_or_else(|_| key.clone()),
+            Self::Disabled => "Disabled".to_owned(),
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cmd-\\" => Some(Self::CmdBackslash),
+            "ctrl-\\" => Some(Self::CtrlBackslash),
+            "ctrl-space" => Some(Self::CtrlSpace),
+            "disabled" => Some(Self::Disabled),
+            _ => {
+                let keystroke = gpui::Keystroke::parse(value).ok()?;
+                keystroke
+                    .modifiers
+                    .modified()
+                    .then(|| Self::Custom(value.to_owned()))
+            }
+        }
+    }
+
+    pub fn from_keystroke(keystroke: &gpui::Keystroke) -> Option<Self> {
+        if !keystroke.modifiers.modified() || keystroke.key.is_empty() {
+            return None;
+        }
+
+        let key = keystroke.unparse();
+        Some(match key.as_str() {
+            "cmd-\\" => Self::CmdBackslash,
+            "ctrl-\\" => Self::CtrlBackslash,
+            "ctrl-space" => Self::CtrlSpace,
+            _ => Self::Custom(key),
+        })
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    fn parsed_keystroke(&self) -> Option<gpui::Keystroke> {
+        match self {
+            Self::Disabled => None,
+            _ => gpui::Keystroke::parse(self.key()).ok(),
+        }
+    }
+
+    pub fn matches(&self, keystroke: &gpui::Keystroke) -> bool {
+        let Some(expected) = self.parsed_keystroke() else {
+            return false;
+        };
+        keystroke.should_match(&gpui::KeybindingKeystroke::from_keystroke(expected))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NerdFontChoice {
     #[default]
     Symbols,
@@ -229,6 +391,13 @@ pub struct Settings {
     pub log_level: LogLevel,
     pub image_cache_size_mb: u32,
     pub paste_shortcut: PasteShortcut,
+    pub ime_backend: ImeBackend,
+    pub rime_candidate_layout: RimeCandidateLayout,
+    pub rime_toggle_shortcut: RimeToggleShortcut,
+    pub rime_library_dir: String,
+    pub rime_library_auto_detect: bool,
+    pub rime_data_dir: String,
+    pub rime_user_data_dir: String,
 }
 
 impl Default for Settings {
@@ -242,6 +411,13 @@ impl Default for Settings {
             log_level: LogLevel::default(),
             image_cache_size_mb: DEFAULT_IMAGE_CACHE_SIZE_MB,
             paste_shortcut: PasteShortcut::default(),
+            ime_backend: ImeBackend::default(),
+            rime_candidate_layout: RimeCandidateLayout::default(),
+            rime_toggle_shortcut: RimeToggleShortcut::default(),
+            rime_library_dir: String::new(),
+            rime_library_auto_detect: false,
+            rime_data_dir: String::new(),
+            rime_user_data_dir: String::new(),
         }
     }
 }
@@ -271,7 +447,7 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\n",
+            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\nrime_user_data_dir={}\n",
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
@@ -279,7 +455,14 @@ impl Settings {
             self.allow_multiple_instances,
             self.log_level.key(),
             self.image_cache_size_mb,
-            self.paste_shortcut.key()
+            self.paste_shortcut.key(),
+            self.ime_backend.key(),
+            self.rime_candidate_layout.key(),
+            self.rime_toggle_shortcut.key(),
+            self.rime_library_dir,
+            self.rime_library_auto_detect,
+            self.rime_data_dir,
+            self.rime_user_data_dir
         )
     }
 }
@@ -333,6 +516,29 @@ fn parse_settings(contents: &str) -> Settings {
                     settings.paste_shortcut = value;
                 }
             }
+            "ime_backend" => {
+                if let Some(value) = ImeBackend::parse(value.trim()) {
+                    settings.ime_backend = value;
+                }
+            }
+            "rime_candidate_layout" => {
+                if let Some(value) = RimeCandidateLayout::parse(value.trim()) {
+                    settings.rime_candidate_layout = value;
+                }
+            }
+            "rime_toggle_shortcut" => {
+                if let Some(value) = RimeToggleShortcut::parse(value.trim()) {
+                    settings.rime_toggle_shortcut = value;
+                }
+            }
+            "rime_library_dir" => settings.rime_library_dir = value.trim().to_owned(),
+            "rime_library_auto_detect" => {
+                if let Ok(value) = value.trim().parse() {
+                    settings.rime_library_auto_detect = value;
+                }
+            }
+            "rime_data_dir" => settings.rime_data_dir = value.trim().to_owned(),
+            "rime_user_data_dir" => settings.rime_user_data_dir = value.trim().to_owned(),
             _ => {}
         }
     }
@@ -373,7 +579,10 @@ pub(crate) fn application_support_directory() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_settings, FallbackMode, LogLevel, NerdFontChoice, PasteShortcut, Settings};
+    use super::{
+        parse_settings, FallbackMode, ImeBackend, LogLevel, NerdFontChoice, PasteShortcut,
+        RimeCandidateLayout, RimeToggleShortcut, Settings,
+    };
 
     #[test]
     fn defaults_are_conservative_and_use_a_128_mb_image_cache() {
@@ -385,6 +594,22 @@ mod tests {
         assert!(Settings::default().allow_multiple_instances);
         assert_eq!(Settings::default().log_level, LogLevel::Off);
         assert_eq!(Settings::default().paste_shortcut, PasteShortcut::CmdV);
+        assert_eq!(Settings::default().ime_backend, ImeBackend::System);
+        assert!(!Settings::default().rime_library_auto_detect);
+        assert_eq!(
+            Settings::default().rime_candidate_layout,
+            RimeCandidateLayout::Vertical
+        );
+        assert_eq!(
+            Settings::default().rime_toggle_shortcut,
+            RimeToggleShortcut::PlatformDefault
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(Settings::default().rime_toggle_shortcut.key(), "cmd-\\");
+        #[cfg(target_os = "windows")]
+        assert_eq!(Settings::default().rime_toggle_shortcut.key(), "ctrl-\\");
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert_eq!(Settings::default().rime_toggle_shortcut.key(), "ctrl-space");
         assert_eq!(NerdFontChoice::Symbols.family(), "Symbols Nerd Font");
         assert_eq!(
             NerdFontChoice::SymbolsMono.family(),
@@ -395,7 +620,7 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nunknown=x\nimage_cache_size_mb=1\n",
+            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\nrime_user_data_dir=/tmp/rime-user\nrime_prebuilt_data_dir=/tmp/rime-prebuilt\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
@@ -406,6 +631,16 @@ mod tests {
         assert_eq!(settings.log_level, LogLevel::Debug);
         assert_eq!(settings.image_cache_size_mb, 512);
         assert_eq!(settings.paste_shortcut, PasteShortcut::CtrlV);
+        assert_eq!(settings.ime_backend, ImeBackend::System);
+        assert!(settings.rime_library_auto_detect);
+        assert_eq!(
+            settings.rime_candidate_layout,
+            RimeCandidateLayout::Horizontal
+        );
+        assert_eq!(
+            settings.rime_toggle_shortcut,
+            RimeToggleShortcut::Custom("ctrl-shift-space".to_owned())
+        );
     }
 
     #[test]
@@ -435,6 +670,15 @@ mod tests {
         assert!(contents.contains("quit_on_window_close=false\n"));
         assert!(contents.contains("allow_multiple_instances=false\n"));
         assert!(contents.contains("log_level=trace\n"));
+        assert!(contents.contains(&format!(
+            "rime_toggle_shortcut={}\n",
+            RimeToggleShortcut::default().key()
+        )));
+        assert!(contents.contains("ime_backend=system\n"));
+        assert!(contents.contains("rime_candidate_layout=vertical\n"));
+        assert!(contents.contains("rime_library_auto_detect=false\n"));
+        assert!(!contents.contains("rime_prebuilt_data_dir="));
+        assert!(!contents.contains("rime_staging_data_dir="));
     }
 
     #[test]
@@ -466,6 +710,52 @@ mod tests {
         assert_eq!(
             parse_settings("paste_shortcut=v\n").paste_shortcut,
             PasteShortcut::CmdV
+        );
+    }
+
+    #[test]
+    fn rime_toggle_shortcut_matches_and_rejects_unmodified_keys() {
+        let platform_default = RimeToggleShortcut::default();
+        let platform_default_key =
+            gpui::Keystroke::parse(platform_default.key()).expect("default shortcut should parse");
+        let ctrl_space = gpui::Keystroke::parse("ctrl-space").expect("ctrl-space should parse");
+        let ctrl_shift_space =
+            gpui::Keystroke::parse("ctrl-shift-space").expect("shortcut should parse");
+        let space = gpui::Keystroke::parse("space").expect("space should parse");
+
+        assert!(platform_default.matches(&platform_default_key));
+        assert!(RimeToggleShortcut::CtrlSpace.matches(&ctrl_space));
+        assert!(!RimeToggleShortcut::CtrlSpace.matches(&ctrl_shift_space));
+        assert!(!RimeToggleShortcut::CtrlSpace.matches(&space));
+        assert_eq!(
+            RimeToggleShortcut::from_keystroke(&ctrl_shift_space),
+            Some(RimeToggleShortcut::Custom("ctrl-shift-space".to_owned()))
+        );
+        assert!(RimeToggleShortcut::from_keystroke(&space).is_none());
+        assert!(!RimeToggleShortcut::Disabled.matches(&ctrl_space));
+    }
+
+    #[test]
+    fn rime_toggle_shortcut_parses_backslash_variants() {
+        assert_eq!(
+            RimeToggleShortcut::parse("cmd-\\"),
+            Some(RimeToggleShortcut::CmdBackslash)
+        );
+        assert_eq!(
+            RimeToggleShortcut::parse("ctrl-\\"),
+            Some(RimeToggleShortcut::CtrlBackslash)
+        );
+        assert_eq!(
+            RimeToggleShortcut::from_keystroke(
+                &gpui::Keystroke::parse("cmd-\\").expect("cmd-backslash should parse")
+            ),
+            Some(RimeToggleShortcut::CmdBackslash)
+        );
+        assert_eq!(
+            RimeToggleShortcut::from_keystroke(
+                &gpui::Keystroke::parse("ctrl-\\").expect("ctrl-backslash should parse")
+            ),
+            Some(RimeToggleShortcut::CtrlBackslash)
         );
     }
 }

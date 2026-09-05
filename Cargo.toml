@@ -11,8 +11,10 @@ publish = false
 base64 = "0.22.1"
 async-channel = "2.5.0"
 flexi_logger = { version = "0.31.10", default-features = false, features = ["async"] }
+futures-lite = "2.6.1"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+libloading = "0.8.9"
 log = "0.4.34"
 rmpv = "1.3.0"
 unicode-segmentation = "1.13.3"

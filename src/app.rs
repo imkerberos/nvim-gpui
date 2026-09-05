@@ -6,8 +6,8 @@ use crate::{
     image_store::{GridId, ImageId, KittyEvent},
     input,
     input::{
-        key_to_nvim_input, should_route_key_to_neovim, EntityInputHandler, InputRouter,
-        InputTarget, SystemImeState,
+        key_to_nvim_input, rime_key_event, rime_modifier_transition, should_route_key_to_neovim,
+        EntityInputHandler, InputRouter, InputRouterConfig, InputTarget, SystemImeState,
     },
     nvim::{self, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
     platform, settings,
@@ -21,6 +21,7 @@ use gpui::{
     SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea,
     WindowHandle, WindowKind, WindowOptions,
 };
+use nvim_gpui::rime::{RimeBackend, RimeContextSnapshot};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -275,6 +276,11 @@ pub(crate) struct NvimGpui {
     pending_grid: Option<Rc<grid::GridModel>>,
     nvim: Option<NvimProcess>,
     input_router: InputRouter,
+    last_modifiers: gpui::Modifiers,
+    rime_backend: Option<RimeBackend>,
+    rime_context: Option<RimeContextSnapshot>,
+    rime_menu_open: bool,
+    rime_menu_message: Option<String>,
     system_ime: SystemImeState,
     rpc_status: String,
     api_level: Option<u64>,
@@ -389,6 +395,11 @@ impl Default for NvimGpui {
             pending_grid: None,
             nvim: None,
             input_router: InputRouter::default(),
+            last_modifiers: gpui::Modifiers::none(),
+            rime_backend: None,
+            rime_context: None,
+            rime_menu_open: false,
+            rime_menu_message: None,
             system_ime: SystemImeState::default(),
             rpc_status: "rpc: starting".to_owned(),
             api_level: None,
@@ -462,7 +473,9 @@ use windows::{
     initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
     parse_guifont_spec, parse_non_negative_float, DebugWindow,
 };
-pub(crate) use windows::{themed_titlebar, themed_titlebar_enabled, themed_titlebar_options};
+pub(crate) use windows::{
+    themed_titlebar, themed_titlebar_enabled, themed_titlebar_options, RimeTitlebarState,
+};
 
 #[cfg(test)]
 mod tests;

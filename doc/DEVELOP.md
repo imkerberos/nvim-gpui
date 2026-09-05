@@ -79,6 +79,41 @@ The development Neovim profile is at
 or downloading them. Its current test profile enables `snacks.image`, the
 Markdown parser, and the Kitty capability fallback used by the GUI.
 
+The reusable native backend is in `src/rime.rs`; it does not depend on GPUI,
+Neovim, or the input router. It loads `rime_get_api` dynamically and keeps
+Rime's shared data and user data separate from `~/Library/Rime`; its internal
+prebuilt data and staging data are derived as `prebuilt/` and `build/` below
+the user data directory.
+
+The backend integration test is ignored by default because it requires a
+native librime and data installation. Run it explicitly inside the development
+shell:
+
+~~~sh
+NVIM_GPUI_RIME_LIBRARY=/path/to/librime.dylib \
+NVIM_GPUI_RIME_SHARED_DIR=/path/to/rime-data \
+cargo test --lib -- --ignored --nocapture
+~~~
+
+The smoke test includes both an intentionally unbound key (F35) and an
+unbound modified key (Control+F35); both must return `false` from
+`process_key`, which is the signal used to forward the original event to
+Neovim once. It also sends the default `Shift_L` press/release pair and checks
+`RimeStatus.is_ascii_mode`, because Rime's ASCII mode switch can change state
+while still returning `false` from `process_key`. GPUI reports a modifier-only
+press through `ModifiersChangedEvent`, so the input router reconstructs these
+Rime press/release events instead of waiting for a `KeyDownEvent` that GPUI
+does not emit for a standalone Shift.
+
+When `NVIM_GPUI_RIME_SHARED_DIR` is set, the application initializes the
+backend, but Rime remains disabled until it is selected or activated
+explicitly. The library is taken from `NVIM_GPUI_RIME_LIBRARY` or the platform
+bundle search path. The application stores its Rime user data below the
+nvim-gpui application-support directory, unless `NVIM_GPUI_RIME_USER_DIR` is
+set; it never uses `~/Library/Rime`.
+Deployment is automatic when the internal `build/` directory is empty and can
+be forced with `NVIM_GPUI_RIME_DEPLOY=1`.
+
 ## Architecture
 
 - `src/main.rs` parses process-level startup arguments and starts GPUI.
@@ -93,7 +128,7 @@ Markdown parser, and the Kitty capability fallback used by the GUI.
   ordinary neighboring text into shaped lines, and paints Unicode/wide cells
   without creating one GPUI element per cell.
 - `src/input.rs` is the `InputRouter` boundary for Neovim, system IME, and the
-  future Rime backend.
+  native Rime backend in `src/rime.rs`.
 - `src/image_store.rs` owns Kitty Graphics Protocol transfers, placements,
   placeholders, and bounded image-cache eviction.
 - `src/platform.rs` contains macOS font registration, Dock icon setup, and
@@ -148,9 +183,10 @@ It can also be changed from the Settings window.
 ## System IME
 
 System text input is exposed through GPUI's `EntityInputHandler`. The
-`InputRouter` selects the system IME in Insert mode when Rime is disabled, and
-in command-line or prompt contexts unless both Rime and its command-line mode
-are enabled. Normal mode and terminal mode remain owned by Neovim.
+`InputRouter` selects Rime for Insert, command-line, prompt, and terminal
+contexts when Rime is enabled. When Rime is disabled, those text-input
+contexts use the system IME instead. Normal mode remains owned by Neovim.
+When Rime is active, committed text is sent back through `nvim_paste`.
 
 Do not send every key event to both the system IME and Neovim. When the target
 is `InputTarget::SystemIme`, printable keys, space, and keys reported as being
@@ -158,8 +194,12 @@ in IME composition are left to the platform input handler. Otherwise the
 character can be committed once by `KeyDownEvent` and a second time by the
 IME callback. Control, navigation, editing, and mode-switch keys such as
 Escape, Enter, Backspace, arrows, and modified keys are still forwarded to
-Neovim. `InputTarget::Rime` is currently an input-routing boundary rather than
-an implemented text backend.
+Neovim when the active backend does not consume them. `InputTarget::Rime` is
+backed by the native backend. Its preedit is converted to the same
+`grid::ImeComposition` used by the system IME, while its candidates are drawn
+as an app-owned overlay above the Neovim compositor. Navigation keys are sent
+to librime while it consumes the composition; unconsumed keys continue to
+Neovim.
 
 The platform may present an IME using no-inline composition or inline
 composition. Both cases enter through the GPUI input-handler callbacks, but
@@ -177,6 +217,12 @@ the client-side state is handled as follows:
   actual grid contents, so preedit text must never be inserted into the
   Neovim buffer manually.
 - `unmark_text` cancels the transient composition without sending text.
+
+The Rime path does not use `EntityInputHandler` for key input: `KeyDownEvent`
+and modifier-only `ModifiersChangedEvent` events are translated to librime
+keysyms, and the returned context drives the shared inline composition
+renderer. The candidate popup is intentionally separate
+from Neovim's `compindex`/`zindex` layers because it is owned by the GUI.
 
 GPUI exposes UTF-16 ranges to the platform. `SystemImeState` stores UTF-8
 byte ranges internally and performs the conversion at the input boundary.

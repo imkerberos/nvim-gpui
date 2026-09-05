@@ -77,7 +77,7 @@ pub(crate) fn run(
                     nerd_font_registered,
                     app_settings.clone(),
                     initial_theme,
-                    logger.clone(),
+                    logger,
                 )
             });
             *reopen_view.borrow_mut() = Some(nvim_view.clone());
