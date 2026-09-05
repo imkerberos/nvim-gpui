@@ -18,6 +18,7 @@ pub(crate) const TEXT: u32 = 0xcdd6f4;
 pub(crate) const MUTED_TEXT: u32 = 0x7f849c;
 pub(crate) const ACCENT: u32 = 0x89b4fa;
 pub(crate) const IME_ACTIVE: u32 = 0xa6e3a1;
+pub(crate) const WARNING: u32 = 0xf9e2af;
 
 const MAX_VISIBLE_TEXT_INPUT_CHARS: usize = 48;
 

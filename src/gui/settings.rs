@@ -5,12 +5,12 @@ use crate::{
         setting_checkbox, setting_combo_box, setting_combo_option, setting_option_button,
         setting_row, setting_section, setting_text_input, SettingTextInputConfig,
         SettingTextInputMouseEvent, SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE,
-        SURFACE_BRIGHT, TEXT,
+        SURFACE_BRIGHT, TEXT, WARNING,
     },
 };
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontFallbacks, KeyDownEvent, Render,
-    SharedString, Subscription, Window,
+    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontFallbacks, FontWeight,
+    KeyDownEvent, Render, SharedString, Subscription, Window,
 };
 use nvim_gpui::rime::RimeRuntimeResolver;
 use std::env;
@@ -1054,12 +1054,9 @@ impl Render for SettingsWindow {
                         .mx_3()
                         .mb_3()
                         .text_sm()
-                        .text_color(rgb(MUTED_TEXT))
-                        .child(if bundled_rime_runtime {
-                            "librime and Rime data are fixed by the application bundle; user data is kept in the displayed directory."
-                        } else {
-                            "librime and Rime data directory changes take effect after restart."
-                        }),
+                        .font_weight(FontWeight(600.0))
+                        .text_color(rgb(WARNING))
+                        .child("Warning: Changes to librime and Rime data directories take effect after restarting nvim-gpui."),
                 )
                 .child(setting_row(
                     "Test Rime configuration",
