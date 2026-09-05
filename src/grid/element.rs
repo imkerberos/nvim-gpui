@@ -28,6 +28,12 @@ struct ImePaintedText {
     in_viewport: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridCellRange {
+    rows: (usize, usize),
+    columns: (usize, usize),
+}
+
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
@@ -321,6 +327,55 @@ impl GridElement {
             )
         })
     }
+
+    /// Convert the active GPUI content mask into logical grid coordinates.
+    /// Keep one cell of overscan on each side so glyph overhang and a wide
+    /// character whose lead starts just outside the clip are still prepared.
+    fn render_range(
+        &self,
+        bounds: Bounds<Pixels>,
+        content_bounds: Bounds<Pixels>,
+    ) -> GridCellRange {
+        let clipped = bounds.intersect(&content_bounds);
+        GridCellRange {
+            rows: clipped_cell_range(
+                bounds.origin.y,
+                clipped.origin.y,
+                clipped.size.height,
+                self.line_height,
+                self.model.height(),
+            ),
+            columns: clipped_cell_range(
+                bounds.origin.x,
+                clipped.origin.x,
+                clipped.size.width,
+                self.cell_width,
+                self.model.width(),
+            ),
+        }
+    }
+}
+
+fn clipped_cell_range(
+    grid_origin: Pixels,
+    clipped_origin: Pixels,
+    clipped_size: Pixels,
+    cell_size: Pixels,
+    cell_count: usize,
+) -> (usize, usize) {
+    if cell_count == 0 || f32::from(cell_size) <= 0.0 || f32::from(clipped_size) <= 0.0 {
+        return (0, 0);
+    }
+
+    let start = f32::from(clipped_origin - grid_origin);
+    let end = start + f32::from(clipped_size);
+    let cell_size = f32::from(cell_size);
+    let first = (start / cell_size).floor() as isize - 1;
+    let last = (end / cell_size).ceil() as isize + 1;
+    let max = cell_count as isize;
+    let first = first.clamp(0, max) as usize;
+    let last = last.clamp(first as isize, max) as usize;
+    (first, last)
 }
 
 impl IntoElement for GridElement {
@@ -372,6 +427,8 @@ impl Element for GridElement {
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let model = Rc::clone(&self.model);
         let now = Instant::now();
+        let render_range = self.render_range(bounds, window.content_mask().bounds);
+        let mut resolved_highlights = HashMap::new();
         let mut has_blinking_text = false;
         let mut backgrounds = Vec::new();
         let mut overlines = Vec::new();
@@ -456,13 +513,16 @@ impl Element for GridElement {
             .as_ref()
             .map(|ime| (ime.row, ime.col, ime.cell_end));
 
-        builder.for_each_cell(model.as_ref(), |cell| {
+        let mut paint_cell = |cell: VisualCell| {
             let ime_overlaps = ime_span.is_some_and(|(row, start, end)| {
                 cell.row == row && cell.grid_start < end && start < cell.grid_start + cell.grid_len
             });
             let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
-            let resolved =
-                resolve_highlight(model.as_ref(), cell.highlight, self.highlight_context);
+            let resolved = resolved_highlights
+                .entry(cell.highlight)
+                .or_insert_with(|| {
+                    resolve_highlight(model.as_ref(), cell.highlight, self.highlight_context)
+                });
             let attrs = &resolved.attrs;
             let foreground = resolved.foreground;
             let background = resolved.background;
@@ -588,7 +648,13 @@ impl Element for GridElement {
                     overlines.push((overline.0, overline.1, in_viewport));
                 }
             }
-        });
+        };
+        builder.for_each_cell_in_range(
+            model.as_ref(),
+            render_range.rows.0..render_range.rows.1,
+            render_range.columns.0..render_range.columns.1,
+            &mut paint_cell,
+        );
 
         if let Some(pending) = pending_text {
             text_groups.push(pending);
@@ -712,5 +778,33 @@ mod tests {
         assert!(!element.cell_is_in_viewport(1, 1));
         assert_eq!(element.offset_for_cell(1, 2), point(px(0.0), px(10.0)));
         assert_eq!(element.offset_for_cell(0, 2), point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn clipped_cell_range_keeps_partial_cells_with_one_cell_overscan() {
+        assert_eq!(
+            clipped_cell_range(px(0.0), px(25.0), px(50.0), px(10.0), 10),
+            (1, 9)
+        );
+        assert_eq!(
+            clipped_cell_range(px(0.0), px(0.0), px(0.0), px(10.0), 10),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn render_range_intersects_grid_and_content_bounds() {
+        let element = GridElement::with_shared_model(Rc::new(GridModel::new(10, 8)))
+            .with_metrics(px(10.0), px(20.0));
+        let bounds = Bounds::new(point(px(100.0), px(50.0)), size(px(100.0), px(160.0)));
+        let content_bounds = Bounds::new(point(px(120.0), px(90.0)), size(px(50.0), px(60.0)));
+
+        assert_eq!(
+            element.render_range(bounds, content_bounds),
+            GridCellRange {
+                rows: (1, 6),
+                columns: (1, 8),
+            }
+        );
     }
 }

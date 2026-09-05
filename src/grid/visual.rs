@@ -42,26 +42,69 @@ impl VisualCellBuilder {
         Self { nerd_font_mode }
     }
 
-    pub fn for_each_cell(&self, model: &GridModel, mut f: impl FnMut(VisualCell)) {
-        for (row, grid_row) in model.rows().iter().enumerate() {
-            self.for_each_row(row, grid_row, &mut f);
+    pub fn for_each_cell(&self, model: &GridModel, f: impl FnMut(VisualCell)) {
+        self.for_each_cell_in_range(model, 0..model.height(), 0..model.width(), f);
+    }
+
+    /// Visit only visual cells that intersect the requested logical grid
+    /// rectangle. The one-cell overlap handling is important for wide leads:
+    /// a two-cell glyph that starts just before the range still belongs in the
+    /// rendered output.
+    pub fn for_each_cell_in_range(
+        &self,
+        model: &GridModel,
+        rows: std::ops::Range<usize>,
+        columns: std::ops::Range<usize>,
+        mut f: impl FnMut(VisualCell),
+    ) {
+        for row in rows {
+            let Some(grid_row) = model.rows().get(row) else {
+                continue;
+            };
+            self.for_each_row(row, grid_row, columns.clone(), &mut f);
         }
     }
 
     pub fn build_row(&self, row: usize, grid_row: &GridRow) -> Vec<VisualCell> {
         let mut visual_cells = Vec::new();
-        self.for_each_row(row, grid_row, &mut |cell| visual_cells.push(cell));
+        self.for_each_row(row, grid_row, 0..grid_row.cells().len(), &mut |cell| {
+            visual_cells.push(cell)
+        });
         visual_cells
     }
 
-    fn for_each_row(&self, row: usize, grid_row: &GridRow, f: &mut impl FnMut(VisualCell)) {
+    fn for_each_row(
+        &self,
+        row: usize,
+        grid_row: &GridRow,
+        columns: std::ops::Range<usize>,
+        f: &mut impl FnMut(VisualCell),
+    ) {
         let cells = grid_row.cells();
-        let mut col = 0;
+        let start = columns.start.min(cells.len());
+        let end = columns.end.min(cells.len());
+        if start >= end {
+            return;
+        }
+
+        // A clipped range may begin on the continuation half of a wide
+        // character. Start at the lead so the visual unit is never split.
+        let mut col = if start > 0
+            && cells[start].kind == CellKind::WideContinuation
+            && cells[start - 1].kind == CellKind::WideLead
+        {
+            start - 1
+        } else {
+            start
+        };
 
         while col < cells.len() {
             let cell = &cells[col];
 
             if cell.kind == CellKind::WideContinuation {
+                if col >= end {
+                    break;
+                }
                 f(VisualCell {
                     row,
                     grid_start: col,
@@ -80,11 +123,15 @@ impl VisualCellBuilder {
                     .is_some_and(|next| next.kind == CellKind::WideContinuation);
                 let is_nerd_symbol =
                     self.nerd_font_mode && is_nerd_symbol(&cell.text) && has_continuation;
+                let grid_len = usize::from(has_continuation) + 1;
+                if col >= end {
+                    break;
+                }
 
                 f(VisualCell {
                     row,
                     grid_start: col,
-                    grid_len: if has_continuation { 2 } else { 1 },
+                    grid_len,
                     text: cell.text.clone(),
                     highlight: cell.highlight,
                     kind: if is_nerd_symbol {
@@ -95,10 +142,13 @@ impl VisualCellBuilder {
                         VisualCellKind::Text
                     },
                 });
-                col += usize::from(has_continuation) + 1;
+                col += grid_len;
                 continue;
             }
 
+            if col >= end {
+                break;
+            }
             f(VisualCell {
                 row,
                 grid_start: col,

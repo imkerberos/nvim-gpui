@@ -26,6 +26,24 @@ fn wide_character_occupies_two_grid_cells() {
 }
 
 #[test]
+fn ranged_visual_cells_include_wide_lead_overlapping_the_range_start() {
+    let model = GridModel::from_rows(vec![GridRow::new(vec![
+        GridCell::wide_lead("界", DEFAULT_HIGHLIGHT),
+        GridCell::wide_continuation(DEFAULT_HIGHLIGHT),
+        GridCell::text("x", DEFAULT_HIGHLIGHT),
+    ])]);
+    let builder = VisualCellBuilder::new(false);
+    let mut cells = Vec::new();
+
+    builder.for_each_cell_in_range(&model, 0..1, 1..3, |cell| cells.push(cell));
+
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[0].grid_start, 0);
+    assert_eq!(cells[0].grid_len, 2);
+    assert_eq!(cells[1].grid_start, 2);
+}
+
+#[test]
 fn display_options_parse_known_values_without_corrupting_state() {
     let mut options = DisplayOptions::default();
 
