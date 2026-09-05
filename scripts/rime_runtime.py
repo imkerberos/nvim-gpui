@@ -145,7 +145,11 @@ def stage(args: argparse.Namespace) -> None:
         else:
             fail(f"runtime output exists and is not a directory: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, output)
+    # Preserve versioned-library symlinks (for example, librime.dylib and
+    # librime.1.dylib) instead of expanding each link into another full copy.
+    # The runtime artifact is copied as a layout, not as a dereferenced data
+    # snapshot.
+    shutil.copytree(source, output, symlinks=True)
     validate(output, platform, require_data=True)
     print(f"staged Rime runtime: {output}")
 

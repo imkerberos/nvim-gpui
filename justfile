@@ -59,7 +59,7 @@ bundle:
     install -m 644 packaging/macos/Info.plist "$PWD/.cache/macos/nvim-gpui.app/Contents/Info.plist"
     install -m 644 assets/icons/neovim-gpui.png "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui.png"
     install -m 644 assets/icons/neovim-gpui_1024x1024_1024x1024.icns "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui_1024x1024_1024x1024.icns"
-    cp -R "$runtime" "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/rime"
+    cp -RP "$runtime" "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/rime"
     bash packaging/macos/verify-no-nix-deps.sh "$PWD/.cache/macos/nvim-gpui.app"
     echo "created $PWD/.cache/macos/nvim-gpui.app"
 
