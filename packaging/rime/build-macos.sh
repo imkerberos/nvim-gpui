@@ -217,17 +217,12 @@ if [[ -d "$dist_lib/rime-plugins" ]]; then
   cp -R "$dist_lib/rime-plugins/." "$artifact_dir/modules/"
 fi
 
-# Keep starter data independent from the librime source tree. Accept both an
-# actual data directory and a package root such as Nix's share/rime-data
-# layout, but always flatten the latter into the runtime contract. User
-# dictionaries never belong in this artifact.
-starter_data="$data_source"
-if [[ -d "$data_source/share/rime-data" ]]; then
-  starter_data="$data_source/share/rime-data"
-elif [[ -d "$data_source/rime-data" ]]; then
-  starter_data="$data_source/rime-data"
-fi
-cp -R "$starter_data/." "$artifact_dir/data/"
+# Keep starter data independent from the librime source tree. The selector
+# copies one general-purpose schema and its dependency closure instead of
+# embedding the complete collection of Rime schemas and dictionaries.
+python3 "$repo_root/scripts/rime_starter_data.py" \
+  --source "$data_source" \
+  --output "$artifact_dir/data"
 
 while IFS= read -r -d '' binary; do
   dependencies="$(otool -L "$binary")"

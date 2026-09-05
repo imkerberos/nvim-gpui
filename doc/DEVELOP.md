@@ -348,8 +348,10 @@ then, development and the ignored backend smoke test continue to use
 
 The Nix development shell exposes nixpkgs' `rime-data` only as the default
 starter-data build input through `NVIM_GPUI_RIME_STARTER_DATA`. The builders
-copy the selected data into the staged artifact; the application never uses
-the Nix store path at runtime.
+run `scripts/rime_starter_data.py`, which selects the luna-pinyin schema and
+its required dictionaries/configuration from that package instead of copying
+all available schemas. The selected data is copied into the staged artifact;
+the application never uses the Nix store path at runtime.
 
 A staged runtime has this contract:
 
@@ -357,7 +359,7 @@ A staged runtime has this contract:
 rime-runtime/
 ├── lib/       # librime and its runtime libraries
 ├── modules/   # optional dynamically loaded librime modules
-└── data/      # read-only starter Rime data
+└── data/      # read-only curated starter Rime data
 ```
 
 Use `just rime-runtime SOURCE` to copy an already-built artifact into

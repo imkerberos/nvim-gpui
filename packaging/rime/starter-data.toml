@@ -1,0 +1,18 @@
+# Files copied from a Rime data package into the application-private starter
+# runtime. The list intentionally contains one general-purpose schema rather
+# than the complete collection of schemas and dictionaries.
+
+[starter]
+schema = "luna_pinyin"
+files = [
+  "default.yaml",
+  "key_bindings.yaml",
+  "luna_pinyin.schema.yaml",
+  "luna_pinyin.dict.yaml",
+  "stroke.schema.yaml",
+  "stroke.dict.yaml",
+  "pinyin.yaml",
+  "punctuation.yaml",
+  "symbols.yaml",
+  "essay.txt",
+]

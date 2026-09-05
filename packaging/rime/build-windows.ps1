@@ -202,19 +202,14 @@ if (Test-Path -LiteralPath $pluginDir -PathType Container) {
     }
 }
 
-# Accept either a data directory or a package root containing rime-data, then
-# flatten it into the runtime contract. User dictionaries never belong here.
-$starterData = $DataSource
-$nestedShareData = Join-Path $DataSource 'share\rime-data'
-$nestedData = Join-Path $DataSource 'rime-data'
-if (Test-Path -LiteralPath $nestedShareData -PathType Container) {
-    $starterData = $nestedShareData
-} elseif (Test-Path -LiteralPath $nestedData -PathType Container) {
-    $starterData = $nestedData
-}
-Get-ChildItem -LiteralPath $starterData -Force | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination $artifactData -Recurse -Force
-}
+# Keep starter data independent from the librime source tree. The selector
+# copies one general-purpose schema and its dependency closure instead of
+# embedding the complete collection of Rime schemas and dictionaries.
+Invoke-Native 'python.exe' @(
+    (Join-Path $repoRoot 'scripts\rime_starter_data.py'),
+    '--source', $DataSource,
+    '--output', $artifactData
+)
 
 Invoke-Native 'python.exe' @(
     $runtimeTool, 'stage', '--source', $artifactDir, '--output', $Output,
