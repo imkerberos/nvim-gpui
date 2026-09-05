@@ -35,6 +35,8 @@ struct RimeTraits {
     modules: *const *const c_char,
     min_log_level: c_int,
     log_dir: *const c_char,
+    // Keep this ABI slot in place, but pass null so librime uses its
+    // default `${shared_data_dir}/build` fallback directory.
     prebuilt_data_dir: *const c_char,
     staging_dir: *const c_char,
 }
@@ -167,7 +169,6 @@ pub struct RimeConfig {
     pub library: Option<PathBuf>,
     pub shared_data: PathBuf,
     pub user_data: PathBuf,
-    pub prebuilt_data: Option<PathBuf>,
     pub staging_data: Option<PathBuf>,
     pub deploy: bool,
 }
@@ -421,7 +422,6 @@ struct RimeTraitsStorage {
     user_data: CString,
     app_name: CString,
     log_dir: CString,
-    prebuilt_data: Option<CString>,
     staging_data: Option<CString>,
     traits: RimeTraits,
 }
@@ -432,11 +432,6 @@ impl RimeTraitsStorage {
         let user_data = c_string_path(&config.user_data, "user data")?;
         let app_name = CString::new("rime.nvimgpui").map_err(|error| error.to_string())?;
         let log_dir = CString::new("").map_err(|error| error.to_string())?;
-        let prebuilt_data = config
-            .prebuilt_data
-            .as_deref()
-            .map(|path| c_string_path(path, "prebuilt data"))
-            .transpose()?;
         let staging_data = config
             .staging_data
             .as_deref()
@@ -450,7 +445,6 @@ impl RimeTraitsStorage {
             user_data,
             app_name,
             log_dir,
-            prebuilt_data,
             staging_data,
             traits: RimeTraits {
                 data_size: 0,
@@ -478,10 +472,10 @@ impl RimeTraitsStorage {
             modules: std::ptr::null(),
             min_log_level: 2,
             log_dir: storage.log_dir.as_ptr(),
-            prebuilt_data_dir: storage
-                .prebuilt_data
-                .as_ref()
-                .map_or(std::ptr::null(), |path| path.as_ptr()),
+            // Let librime resolve its optional prebuilt-data fallback to
+            // `${shared_data_dir}/build`; the application does not create or
+            // own a separate prebuilt directory.
+            prebuilt_data_dir: std::ptr::null(),
             staging_dir: storage
                 .staging_data
                 .as_ref()
@@ -579,17 +573,8 @@ impl RimeBackend {
     pub fn new(config: RimeConfig) -> Result<Self, String> {
         let shared_data = resolve_shared_data(&config.shared_data)?;
         ensure_directory(&config.user_data, "user data")?;
-        if let Some(path) = &config.prebuilt_data {
-            ensure_directory(path, "prebuilt data")?;
-        }
         if let Some(path) = &config.staging_data {
             ensure_directory(path, "staging data")?;
-        }
-        if config.deploy && (config.prebuilt_data.is_none() || config.staging_data.is_none()) {
-            return Err(
-                "deploy requires explicit writable prebuilt_data and staging_data directories"
-                    .to_owned(),
-            );
         }
 
         let traits = RimeTraitsStorage::new(&config, &shared_data)?;
@@ -1037,7 +1022,6 @@ mod tests {
             .join("nvim-gpui-rime-backend-test")
             .join(format!("{}-{nonce}", std::process::id()));
         let user_data = root.join("user");
-        let prebuilt_data = root.join("prebuilt");
         let staging_data = root.join("staging");
 
         let result = (|| {
@@ -1045,7 +1029,6 @@ mod tests {
                 library,
                 shared_data,
                 user_data,
-                prebuilt_data: Some(prebuilt_data),
                 staging_data: Some(staging_data),
                 deploy: true,
             })?;

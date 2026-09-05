@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\nrime_user_data_dir=/tmp/rime-user\nrime_prebuilt_data_dir=/tmp/rime-prebuilt\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
+            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
@@ -678,7 +678,6 @@ mod tests {
         assert!(contents.contains("rime_candidate_layout=vertical\n"));
         assert!(contents.contains("rime_library_auto_detect=false\n"));
         assert!(!contents.contains("rime_user_data_dir="));
-        assert!(!contents.contains("rime_prebuilt_data_dir="));
         assert!(!contents.contains("rime_staging_data_dir="));
     }
 

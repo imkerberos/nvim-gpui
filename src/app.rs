@@ -11,7 +11,7 @@ use crate::{
     },
     nvim::{self, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
     platform, settings,
-    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
+    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT, WARNING},
     CliOptions, NvimConnection,
 };
 use gpui::{
@@ -80,6 +80,19 @@ struct EditorState {
     file: &'static str,
     line: usize,
     column: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum QuitDialogState {
+    #[default]
+    Hidden,
+    Checking,
+    Confirm {
+        modified_buffers: Vec<String>,
+        error: Option<String>,
+    },
+    Saving,
+    Quitting,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -296,6 +309,7 @@ pub(crate) struct NvimGpui {
     mouse_enabled: bool,
     mouse_capture: Option<u64>,
     nvim_mode: String,
+    quit_dialog: QuitDialogState,
     scroll_remainder: gpui::Point<f32>,
     linespace: f32,
     cursor_style_enabled: bool,
@@ -358,10 +372,6 @@ impl NvimGpui {
         self.settings.clone()
     }
 
-    pub(crate) fn should_quit_on_window_close(&self) -> bool {
-        self.settings.quit_on_window_close
-    }
-
     pub(crate) fn set_cli_install_error(&mut self, error: Option<String>) {
         self.cli_install_error = error;
     }
@@ -415,6 +425,7 @@ impl Default for NvimGpui {
             mouse_enabled: true,
             mouse_capture: None,
             nvim_mode: "n".to_owned(),
+            quit_dialog: QuitDialogState::default(),
             scroll_remainder: point(0.0, 0.0),
             linespace: 0.0,
             cursor_style_enabled: false,

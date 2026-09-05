@@ -148,14 +148,14 @@ fn open_main_window(
 
     main_window.update(cx, move |view, window, cx| {
         window.on_window_should_close(cx, move |_, cx| {
-            let should_quit = close_guard_view
+            let should_close = close_guard_view
                 .upgrade()
-                .map(|view| view.read(cx).should_quit_on_window_close())
+                .map(|view| view.update(cx, |view, cx| view.request_window_close(cx)))
                 .unwrap_or(true);
-            if should_quit {
+            if should_close {
                 cx.quit();
             }
-            true
+            should_close
         });
         view.window_bounds_subscription =
             Some(cx.observe_window_bounds(window, |view, window, _cx| view.sync_nvim_size(window)));

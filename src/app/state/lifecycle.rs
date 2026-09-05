@@ -6,6 +6,19 @@ use std::{
 
 use nvim_gpui::rime::{RimeBackend, RimeConfig, RimeRuntimeResolver};
 
+const MODIFIED_BUFFERS_LUA: &str = r#"
+local modified = {}
+for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+  if vim.api.nvim_buf_is_valid(buffer)
+      and vim.api.nvim_buf_get_option(buffer, "modified") then
+    local name = vim.api.nvim_buf_get_name(buffer)
+    table.insert(modified, name == "" and "[No Name]" or name)
+  end
+end
+return modified
+"#;
+const UNNAMED_BUFFER_LABEL: &str = "[No Name]";
+
 impl NvimGpui {
     pub(crate) fn test_rime_configuration_with_settings(
         app_settings: settings::Settings,
@@ -402,6 +415,210 @@ impl NvimGpui {
         }
         cx.notify();
     }
+
+    /// Intercept the native window close request long enough to let Neovim
+    /// report modified buffers. The confirmation UI is rendered by GPUI, so
+    /// it does not require Neovim's external-window protocol.
+    pub(crate) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.settings.quit_on_window_close {
+            return true;
+        }
+        if matches!(self.quit_dialog, QuitDialogState::Quitting) {
+            return true;
+        }
+        if !matches!(self.quit_dialog, QuitDialogState::Hidden) {
+            return false;
+        }
+        let Some(nvim) = self.nvim.as_ref() else {
+            return true;
+        };
+        let response = match nvim.request(
+            "nvim_exec_lua",
+            rmpv::Value::Array(vec![
+                rmpv::Value::from(MODIFIED_BUFFERS_LUA),
+                rmpv::Value::Array(Vec::new()),
+            ]),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                self.quit_dialog = QuitDialogState::Confirm {
+                    modified_buffers: Vec::new(),
+                    error: Some(format!("Could not check for unsaved changes: {error}")),
+                };
+                cx.notify();
+                return false;
+            }
+        };
+
+        self.quit_dialog = QuitDialogState::Checking;
+        cx.spawn(async move |weak, cx| {
+            let result = response.recv().await;
+            let _ = weak.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(value)) => match parse_modified_buffers(value) {
+                        Ok(modified_buffers) if modified_buffers.is_empty() => {
+                            if this.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+                                this.quit_dialog = QuitDialogState::Quitting;
+                                cx.quit();
+                            } else {
+                                this.begin_quit_command("qa", Vec::new(), cx);
+                            }
+                        }
+                        Ok(modified_buffers) => {
+                            this.quit_dialog = QuitDialogState::Confirm {
+                                modified_buffers,
+                                error: None,
+                            };
+                        }
+                        Err(error) => {
+                            this.quit_dialog = QuitDialogState::Confirm {
+                                modified_buffers: Vec::new(),
+                                error: Some(format!(
+                                    "Could not check for unsaved changes: {error}"
+                                )),
+                            };
+                        }
+                    },
+                    Ok(Err(error)) => {
+                        this.quit_dialog = QuitDialogState::Confirm {
+                            modified_buffers: Vec::new(),
+                            error: Some(format!("Could not check for unsaved changes: {error}")),
+                        };
+                    }
+                    Err(error) => {
+                        this.quit_dialog = QuitDialogState::Confirm {
+                            modified_buffers: Vec::new(),
+                            error: Some(format!("Could not check for unsaved changes: {error}")),
+                        };
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+        false
+    }
+
+    pub(crate) fn cancel_quit_dialog(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.quit_dialog, QuitDialogState::Confirm { .. }) {
+            self.quit_dialog = QuitDialogState::Hidden;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn save_and_quit(&mut self, cx: &mut Context<Self>) {
+        let modified_buffers = match &self.quit_dialog {
+            QuitDialogState::Confirm {
+                modified_buffers, ..
+            } => modified_buffers.clone(),
+            _ => return,
+        };
+        if modified_buffers
+            .iter()
+            .any(|buffer| buffer == UNNAMED_BUFFER_LABEL)
+        {
+            self.quit_dialog = QuitDialogState::Confirm {
+                modified_buffers,
+                error: Some(format!(
+                    "Cannot save {UNNAMED_BUFFER_LABEL}: it has no file name. Save it with :write first, or choose Discard & Quit."
+                )),
+            };
+            cx.notify();
+            return;
+        }
+        self.quit_dialog = QuitDialogState::Saving;
+        let command = if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            "wall"
+        } else {
+            "wall | qa"
+        };
+        self.begin_quit_command(command, modified_buffers, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn discard_and_quit(&mut self, cx: &mut Context<Self>) {
+        let modified_buffers = match &self.quit_dialog {
+            QuitDialogState::Confirm {
+                modified_buffers, ..
+            } => modified_buffers.clone(),
+            _ => return,
+        };
+        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            self.quit_dialog = QuitDialogState::Quitting;
+            cx.quit();
+        } else {
+            self.begin_quit_command("qa!", modified_buffers, cx);
+        }
+    }
+
+    fn begin_quit_command(
+        &mut self,
+        command: &'static str,
+        modified_buffers: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.quit_dialog = QuitDialogState::Quitting;
+        let Some(nvim) = self.nvim.as_ref() else {
+            cx.quit();
+            return;
+        };
+        let response = match nvim.request(
+            "nvim_command",
+            rmpv::Value::Array(vec![rmpv::Value::from(command)]),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                self.quit_dialog = QuitDialogState::Confirm {
+                    modified_buffers,
+                    error: Some(format!("Could not quit Neovim: {error}")),
+                };
+                cx.notify();
+                return;
+            }
+        };
+        let remote = nvim.is_remote();
+        cx.spawn(async move |weak, cx| {
+            let result = response.recv().await;
+            let _ = weak.update(cx, |this, cx| match result {
+                Ok(Ok(_)) if remote => {
+                    this.quit_dialog = QuitDialogState::Quitting;
+                    cx.quit();
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    this.quit_dialog = QuitDialogState::Confirm {
+                        modified_buffers,
+                        error: Some(format!("Could not quit Neovim: {error}")),
+                    };
+                    cx.notify();
+                }
+                Err(error) => {
+                    this.quit_dialog = QuitDialogState::Confirm {
+                        modified_buffers,
+                        error: Some(format!("Could not quit Neovim: {error}")),
+                    };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+fn parse_modified_buffers(value: rmpv::Value) -> Result<Vec<String>, String> {
+    let buffers = value
+        .as_array()
+        .ok_or_else(|| "Neovim returned an invalid modified-buffer list".to_owned())?;
+    buffers
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                format!("Neovim returned an invalid modified-buffer name at index {index}")
+            })
+        })
+        .collect()
 }
 
 fn initialize_rime_backend(app_settings: &settings::Settings) -> Option<RimeBackend> {
@@ -434,9 +651,8 @@ fn rime_config_from_settings(
     };
     let user_data = settings::rime_user_data_directory()
         .ok_or_else(|| "Rime user data directory is not available".to_owned())?;
-    // These are librime's internal working directories. Keep them under the
-    // user data directory instead of exposing them as user-configurable paths.
-    let prebuilt_data = user_data.join("prebuilt");
+    // Keep librime's writable staging output under its default user-data
+    // location without exposing the internal directory as a setting.
     let staging_data = user_data.join("build");
     let deploy = deploy_override.unwrap_or_else(|| {
         env::var("NVIM_GPUI_RIME_DEPLOY")
@@ -456,7 +672,6 @@ fn rime_config_from_settings(
         },
         shared_data,
         user_data,
-        prebuilt_data: Some(prebuilt_data),
         staging_data: Some(staging_data),
         deploy,
     })
@@ -554,5 +769,34 @@ mod tests {
         assert_eq!(app.theme.normal_background, Some(0x202020));
         assert_eq!(app.state.mode, "NORMAL");
         assert!(app.system_ime.is_empty());
+    }
+
+    #[test]
+    fn modified_buffer_list_accepts_named_and_unnamed_buffers() {
+        let value = rmpv::Value::Array(vec![
+            rmpv::Value::from("src/main.rs"),
+            rmpv::Value::from("[No Name]"),
+        ]);
+
+        assert_eq!(
+            parse_modified_buffers(value).unwrap(),
+            vec!["src/main.rs".to_owned(), "[No Name]".to_owned()]
+        );
+    }
+
+    #[test]
+    fn modified_buffer_list_rejects_non_string_entries() {
+        let value = rmpv::Value::Array(vec![rmpv::Value::Integer(1.into())]);
+
+        let error = parse_modified_buffers(value).unwrap_err();
+
+        assert!(error.contains("invalid modified-buffer name"));
+    }
+
+    #[test]
+    fn modified_buffer_list_rejects_non_array_values() {
+        let error = parse_modified_buffers(rmpv::Value::Boolean(false)).unwrap_err();
+
+        assert!(error.contains("invalid modified-buffer list"));
     }
 }

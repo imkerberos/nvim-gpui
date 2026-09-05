@@ -114,8 +114,10 @@ details live in the adjacent directories after the refactor.
 The reusable native backend is in `src/rime.rs`; it does not depend on GPUI,
 Neovim, or the input router. It loads `rime_get_api` dynamically and keeps
 Rime's shared data and user data separate from `~/Library/Rime`; its internal
-prebuilt data and staging data are derived as `prebuilt/` and `build/` below
-the user data directory.
+staging data is kept in `build/` below the user data directory. librime's
+optional prebuilt-data fallback is left unset so librime can use its default
+`${shared_data_dir}/build` location; nvim-gpui does not create or expose a
+separate prebuilt directory.
 
 The backend integration test is ignored by default because it requires a
 native librime and data installation. Run it explicitly inside the development
@@ -196,6 +198,26 @@ following redraw areas into the application model:
 The client is intentionally still an early implementation. Mouse input,
 complete command-line/message rendering, richer Kitty composition, reconnect
 behavior, and broader redraw coverage remain future slices.
+
+## Graceful window close
+
+The main window registers `Window::on_window_should_close` and returns `false`
+while it asynchronously asks Neovim for modified buffers through
+`nvim_exec_lua`. The confirmation prompt is a GPUI overlay rendered above the
+editor; it is not an `ext_window` surface and does not participate in Neovim's
+grid layout.
+
+The prompt offers three paths:
+
+- `Cancel` hides the prompt and keeps the session alive;
+- `Save All & Quit` runs `:wall`, then closes the frontend (and the embedded
+  Neovim process); and
+- `Discard & Quit` runs `:qa!` for embedded Neovim, while a remote session
+  closes only the frontend and leaves the external Neovim process running.
+
+When the modified-buffer query fails, the prompt remains open and displays the
+error instead of silently discarding data. The `quit_on_window_close` setting
+continues to bypass this flow when disabled.
 
 ## Clipboard
 
@@ -365,8 +387,9 @@ The packaging policy is:
 - the starter `rime-data` set is read-only and intentionally small; user
   dictionaries and user schemas remain in nvim-gpui's application data
   directory; and
-- `prebuilt/` and `build/` remain librime's internal directories below the
-  application-owned Rime user-data directory and are not user settings.
+- `build/` remains librime's internal staging directory below the
+  application-owned Rime user-data directory and is not a user setting;
+  nvim-gpui does not create a separate `prebuilt/` directory.
 
 When no explicit path is supplied, the runtime resolver checks the
 development environment override, the application bundle, and supported
@@ -480,7 +503,8 @@ silently fall back to a system librime. It creates:
 
 The checked-in rounded ICNS file is declared by `Info.plist`; no generated
 icon step is required. The bundle step strips unused Nix dylib load commands
-on macOS and fails if an executable still references `/nix/store`. `just dmg`
+on macOS and fails if a Mach-O image or bundled file still references
+`/nix/store`. `just dmg`
 places the AppBundle and an
 `/Applications` shortcut into a compressed UDZO image at
 `.cache/macos/nvim-gpui-aarch64.dmg` on Apple Silicon or

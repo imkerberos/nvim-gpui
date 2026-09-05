@@ -547,6 +547,24 @@ impl NvimGpui {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !matches!(
+            &self.quit_dialog,
+            QuitDialogState::Hidden | QuitDialogState::Quitting
+        ) {
+            match (&self.quit_dialog, event.keystroke.key.as_str()) {
+                (QuitDialogState::Confirm { .. }, "escape") => {
+                    self.cancel_quit_dialog(cx);
+                }
+                (QuitDialogState::Confirm { .. }, "enter" | "return") => {
+                    self.save_and_quit(cx);
+                }
+                _ => {}
+            }
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
+
         if self.settings.ime_backend == settings::ImeBackend::Rime
             && self.settings.rime_toggle_shortcut.matches(&event.keystroke)
             && self.rime_backend.is_some()
