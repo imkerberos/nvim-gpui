@@ -449,9 +449,10 @@ AppBundle for pushes and pull requests. Linux is not tested or supported yet.
 `.github/workflows/release.yml` runs on `v*` tags, builds both macOS targets on
 Apple Silicon runners (the Intel target uses the `x86_64-darwin` Nix shell
 under Rosetta), verifies that each bundle has no Nix store runtime dependency,
-uploads arch-specific workflow artifacts, and attaches both DMGs and AppBundle
-archives to a GitHub Release. Release signing and notarization are intentionally
-not configured because they require project-specific Apple credentials.
+uploads arch-specific workflow artifacts, builds the Windows directory bundle
+on `windows-latest`, and attaches both macOS packages and the Windows ZIP to a
+GitHub Release. Release signing and notarization are intentionally not
+configured because they require project-specific platform credentials.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also
