@@ -26,6 +26,7 @@ pub(crate) struct SettingsWindow {
     _rime_path_blur_subscriptions: Vec<Subscription>,
     rime_path_editing: Option<RimePathEdit>,
     rime_test_status: Option<RimeTestStatus>,
+    rime_user_data_error: Option<String>,
     log_directory_error: Option<String>,
     open_combo: Option<SettingsCombo>,
 }
@@ -102,6 +103,7 @@ impl SettingsWindow {
             _rime_path_blur_subscriptions: Vec::new(),
             rime_path_editing: None,
             rime_test_status: None,
+            rime_user_data_error: None,
             log_directory_error: None,
             open_combo: None,
         }
@@ -157,11 +159,35 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn uses_bundled_rime_runtime() -> bool {
+        cfg!(any(target_os = "macos", target_os = "windows"))
+    }
+
+    fn bundled_rime_path(field: RimePathField) -> Option<String> {
+        let resolver = RimeRuntimeResolver::default();
+        let path = match field {
+            RimePathField::Library => resolver.resolve_library_directory(None).ok()?,
+            RimePathField::Data => resolver.resolve_shared_data(None).ok()?,
+            RimePathField::UserData => return None,
+        };
+        Some(path.display().to_string())
+    }
+
     fn rime_path_value(settings: &settings::Settings, field: RimePathField) -> String {
+        if field == RimePathField::UserData {
+            return settings::rime_user_data_directory()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+        }
+
+        if Self::uses_bundled_rime_runtime() {
+            return Self::bundled_rime_path(field).unwrap_or_default();
+        }
+
         let configured = match field {
             RimePathField::Library => settings.rime_library_dir.clone(),
             RimePathField::Data => settings.rime_data_dir.clone(),
-            RimePathField::UserData => settings.rime_user_data_dir.clone(),
+            RimePathField::UserData => unreachable!("user data path handled above"),
         };
         if !configured.is_empty() {
             return configured;
@@ -170,7 +196,7 @@ impl SettingsWindow {
         let environment = match field {
             RimePathField::Library => "NVIM_GPUI_RIME_LIBRARY",
             RimePathField::Data => "NVIM_GPUI_RIME_SHARED_DIR",
-            RimePathField::UserData => "NVIM_GPUI_RIME_USER_DIR",
+            RimePathField::UserData => unreachable!("user data path handled above"),
         };
         env::var_os(environment)
             .filter(|value| !value.is_empty())
@@ -185,7 +211,7 @@ impl SettingsWindow {
                 settings.rime_library_auto_detect = false;
             }
             RimePathField::Data => settings.rime_data_dir = value,
-            RimePathField::UserData => settings.rime_user_data_dir = value,
+            RimePathField::UserData => {}
         }
     }
 
@@ -289,6 +315,16 @@ impl SettingsWindow {
     }
 
     fn rime_test_block_reason(settings: &settings::Settings) -> Option<String> {
+        if Self::uses_bundled_rime_runtime() {
+            let resolver = RimeRuntimeResolver::default();
+            if resolver.resolve_library(None).is_err() {
+                return Some("Bundled librime is unavailable.".to_owned());
+            }
+            if resolver.resolve_shared_data(None).is_err() {
+                return Some("Bundled Rime data is unavailable.".to_owned());
+            }
+        }
+
         let data_configured = !Self::rime_path_value(settings, RimePathField::Data)
             .trim()
             .is_empty();
@@ -296,14 +332,15 @@ impl SettingsWindow {
             && RimeRuntimeResolver::default()
                 .resolve_shared_data(None)
                 .is_ok();
-        if !data_configured && !data_auto_detected {
+        if !Self::uses_bundled_rime_runtime() && !data_configured && !data_auto_detected {
             return Some(
                 "Rime data directory is required; set it here or provide NVIM_GPUI_RIME_SHARED_DIR."
                     .to_owned(),
             );
         }
 
-        if !settings.rime_library_auto_detect
+        if !Self::uses_bundled_rime_runtime()
+            && !settings.rime_library_auto_detect
             && Self::rime_path_value(settings, RimePathField::Library)
                 .trim()
                 .is_empty()
@@ -313,11 +350,7 @@ impl SettingsWindow {
             );
         }
 
-        if Self::rime_path_value(settings, RimePathField::UserData)
-            .trim()
-            .is_empty()
-            && settings::application_support_directory().is_none()
-        {
+        if settings::rime_user_data_directory().is_none() {
             return Some("User data directory is not available.".to_owned());
         }
 
@@ -326,6 +359,14 @@ impl SettingsWindow {
 
     fn open_log_directory(&mut self, cx: &mut Context<Self>) {
         self.log_directory_error = crate::logging::open_log_directory().err();
+        cx.notify();
+    }
+
+    fn open_rime_user_data_directory(&mut self, cx: &mut Context<Self>) {
+        let result = settings::rime_user_data_directory()
+            .ok_or_else(|| "could not determine the Rime user data directory".to_owned())
+            .and_then(|path| crate::logging::open_directory(&path));
+        self.rime_user_data_error = result.err();
         cx.notify();
     }
 
@@ -441,40 +482,48 @@ impl SettingsWindow {
         field: RimePathField,
         value: String,
         placeholder: &'static str,
+        read_only: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let editing_state = self
-            .rime_path_editing
-            .as_ref()
-            .filter(|edit| edit.field == field)
-            .map(|edit| edit.input.clone());
+        let editing_state = (!read_only).then(|| {
+            self.rime_path_editing
+                .as_ref()
+                .filter(|edit| edit.field == field)
+                .map(|edit| edit.input.clone())
+        });
+        let editing_state = editing_state.flatten();
         let editing = editing_state.is_some();
         let input_state = editing_state
             .clone()
             .unwrap_or_else(|| SettingTextInputState::new(value));
         let focus_handle = self.rime_path_focus_handles[field.index()].clone();
+        let config = SettingTextInputConfig::new(
+            ("settings-rime-path", field as u32),
+            input_state,
+            placeholder,
+            editing,
+            focus_handle,
+        );
+        if read_only {
+            return setting_text_input(config.read_only());
+        }
+
         setting_text_input(
-            SettingTextInputConfig::new(
-                ("settings-rime-path", field as u32),
-                input_state,
-                placeholder,
-                editing,
-                focus_handle,
-            )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if !matches!(
-                    this.rime_path_editing.as_ref(),
-                    Some(edit) if edit.field == field
-                ) {
-                    this.begin_rime_path_edit(field, window, cx);
-                }
-            }))
-            .on_key_down(cx.listener(move |this, event, window, cx| {
-                this.handle_rime_path_key(field, event, window, cx);
-            }))
-            .on_mouse(cx.processor(move |this, event, window, cx| {
-                this.handle_rime_path_mouse(field, event, window, cx);
-            })),
+            config
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !matches!(
+                        this.rime_path_editing.as_ref(),
+                        Some(edit) if edit.field == field
+                    ) {
+                        this.begin_rime_path_edit(field, window, cx);
+                    }
+                }))
+                .on_key_down(cx.listener(move |this, event, window, cx| {
+                    this.handle_rime_path_key(field, event, window, cx);
+                }))
+                .on_mouse(cx.processor(move |this, event, window, cx| {
+                    this.handle_rime_path_mouse(field, event, window, cx);
+                })),
         )
     }
 
@@ -813,22 +862,34 @@ impl Render for SettingsWindow {
                     .child(""),
             );
 
+        let bundled_rime_runtime = Self::uses_bundled_rime_runtime();
         let rime_library_input = self.rime_path_input(
             RimePathField::Library,
             Self::rime_path_value(&current, RimePathField::Library),
-            "Auto-detect librime",
+            if bundled_rime_runtime {
+                "Bundled librime"
+            } else {
+                "Auto-detect librime"
+            },
+            bundled_rime_runtime,
             cx,
         );
         let rime_data_input = self.rime_path_input(
             RimePathField::Data,
             Self::rime_path_value(&current, RimePathField::Data),
-            "Use NVIM_GPUI_RIME_SHARED_DIR",
+            if bundled_rime_runtime {
+                "Bundled Rime data"
+            } else {
+                "Use NVIM_GPUI_RIME_SHARED_DIR"
+            },
+            bundled_rime_runtime,
             cx,
         );
         let rime_user_data_input = self.rime_path_input(
             RimePathField::UserData,
             Self::rime_path_value(&current, RimePathField::UserData),
             "Application support/rime",
+            true,
             cx,
         );
         let rime_source = self.source.clone();
@@ -846,6 +907,49 @@ impl Render for SettingsWindow {
                 });
             },
         );
+        let mut rime_library_control = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_1()
+            .items_center()
+            .gap_2()
+            .child(rime_library_input);
+        if !bundled_rime_runtime {
+            rime_library_control = rime_library_control.child(rime_library_detect);
+        }
+        let rime_user_data_open = div()
+            .id("settings-open-rime-user-data")
+            .px_3()
+            .py_2()
+            .rounded_sm()
+            .text_sm()
+            .flex_shrink_0()
+            .bg(rgb(SURFACE_BRIGHT))
+            .text_color(rgb(TEXT))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(0x45475a)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_rime_user_data_directory(cx);
+            }))
+            .child("Open");
+        let mut rime_user_data_control = div().w_full().flex().flex_col().gap_1().child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(rime_user_data_input)
+                .child(rime_user_data_open),
+        );
+        if let Some(error) = self.rime_user_data_error.as_ref() {
+            rime_user_data_control = rime_user_data_control.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xf38ba8))
+                    .child(format!("Could not open Rime data: {error}")),
+            );
+        }
         let rime_test_block_reason = Self::rime_test_block_reason(&current);
         let rime_test_ready = rime_test_block_reason.is_none();
         let rime_test_running = matches!(self.rime_test_status, Some(RimeTestStatus::Testing));
@@ -924,26 +1028,26 @@ impl Render for SettingsWindow {
             rime_content = rime_content
                 .child(setting_row(
                     "librime directory",
-                    "Library path or directory. Automatic detection checks NVIM_GPUI_RIME_LIBRARY, then bundled and system paths.",
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .flex_1()
-                        .items_center()
-                        .gap_2()
-                        .child(rime_library_input)
-                        .child(rime_library_detect),
+                    if bundled_rime_runtime {
+                        "Read-only path to the librime library shipped in the application bundle."
+                    } else {
+                        "Library path or directory. Automatic detection checks NVIM_GPUI_RIME_LIBRARY, then bundled and system paths."
+                    },
+                    rime_library_control,
                 ))
                 .child(setting_row(
                     "Rime data directory",
-                    "Shared schema and dictionary data. Leave empty to use NVIM_GPUI_RIME_SHARED_DIR.",
+                    if bundled_rime_runtime {
+                        "Read-only schema and dictionary data shipped in the application bundle."
+                    } else {
+                        "Shared schema and dictionary data. Leave empty to use NVIM_GPUI_RIME_SHARED_DIR."
+                    },
                     rime_data_input,
                 ))
                 .child(setting_row(
                     "User data directory",
-                    "Writable user data. Leave empty for the nvim-gpui application-support directory.",
-                    rime_user_data_input,
+                    "Writable Rime user data in the nvim-gpui application-support directory.",
+                    rime_user_data_control,
                 ))
                 .child(
                     div()
@@ -951,11 +1055,15 @@ impl Render for SettingsWindow {
                         .mb_3()
                         .text_sm()
                         .text_color(rgb(MUTED_TEXT))
-                        .child("librime and data directory changes take effect after restart."),
+                        .child(if bundled_rime_runtime {
+                            "librime and Rime data are fixed by the application bundle; user data is kept in the displayed directory."
+                        } else {
+                            "librime and Rime data directory changes take effect after restart."
+                        }),
                 )
                 .child(setting_row(
                     "Test Rime configuration",
-                    "Load librime and create a session after the required paths are configured.",
+                    "Load the configured librime and create a session.",
                     rime_test_button,
                 ));
             if let Some((color, status)) = rime_test_status {

@@ -230,6 +230,32 @@ impl RimeRuntimeResolver {
         ))
     }
 
+    /// Resolve an existing librime shared library using the same precedence
+    /// as the backend loader.
+    pub fn resolve_library(&self, explicit: Option<&Path>) -> Result<PathBuf, String> {
+        let candidates = self.library_candidates(explicit);
+        for candidate in &candidates {
+            if candidate.path.is_file() {
+                return Ok(candidate.path.clone());
+            }
+        }
+
+        let attempted = candidates
+            .iter()
+            .map(|candidate| format!("  {} ({:?})", candidate.path.display(), candidate.source))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!("could not find librime; tried:\n{attempted}"))
+    }
+
+    /// Resolve the directory containing the librime shared library.
+    pub fn resolve_library_directory(&self, explicit: Option<&Path>) -> Result<PathBuf, String> {
+        let library = self.resolve_library(explicit)?;
+        Ok(library
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf))
+    }
+
     fn library_candidates(&self, explicit: Option<&Path>) -> Vec<RimeRuntimeCandidate> {
         if let Some(path) = explicit {
             return library_path_candidates(path, RimeRuntimeSource::Explicit);
@@ -970,6 +996,30 @@ mod tests {
             .all(|candidate| candidate.path.parent() == Some(root.as_path())));
 
         fs::remove_dir_all(root).expect("remove library resolver test directory");
+    }
+
+    #[test]
+    fn resolver_finds_a_library_and_returns_its_directory() {
+        let root = env::temp_dir().join(format!(
+            "nvim-gpui-rime-library-path-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create library directory");
+        let library = root.join(super::platform_library_names()[0]);
+        fs::write(&library, b"test library").expect("create library placeholder");
+
+        let resolver = RimeRuntimeResolver::default();
+        assert_eq!(resolver.resolve_library(Some(&root)).unwrap(), library);
+        assert_eq!(
+            resolver.resolve_library_directory(Some(&root)).unwrap(),
+            root
+        );
+
+        fs::remove_dir_all(root).expect("remove library path test directory");
     }
 
     #[test]

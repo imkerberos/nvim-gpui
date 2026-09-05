@@ -397,7 +397,6 @@ pub struct Settings {
     pub rime_library_dir: String,
     pub rime_library_auto_detect: bool,
     pub rime_data_dir: String,
-    pub rime_user_data_dir: String,
 }
 
 impl Default for Settings {
@@ -417,7 +416,6 @@ impl Default for Settings {
             rime_library_dir: String::new(),
             rime_library_auto_detect: false,
             rime_data_dir: String::new(),
-            rime_user_data_dir: String::new(),
         }
     }
 }
@@ -447,7 +445,7 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\nrime_user_data_dir={}\n",
+            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\n",
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
@@ -461,8 +459,7 @@ impl Settings {
             self.rime_toggle_shortcut.key(),
             self.rime_library_dir,
             self.rime_library_auto_detect,
-            self.rime_data_dir,
-            self.rime_user_data_dir
+            self.rime_data_dir
         )
     }
 }
@@ -538,7 +535,6 @@ fn parse_settings(contents: &str) -> Settings {
                 }
             }
             "rime_data_dir" => settings.rime_data_dir = value.trim().to_owned(),
-            "rime_user_data_dir" => settings.rime_user_data_dir = value.trim().to_owned(),
             _ => {}
         }
     }
@@ -575,6 +571,10 @@ pub(crate) fn application_support_directory() -> Option<PathBuf> {
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
             .map(|config| config.join("nvim-gpui"))
     }
+}
+
+pub(crate) fn rime_user_data_directory() -> Option<PathBuf> {
+    application_support_directory().map(|directory| directory.join("rime"))
 }
 
 #[cfg(test)]
@@ -677,6 +677,7 @@ mod tests {
         assert!(contents.contains("ime_backend=system\n"));
         assert!(contents.contains("rime_candidate_layout=vertical\n"));
         assert!(contents.contains("rime_library_auto_detect=false\n"));
+        assert!(!contents.contains("rime_user_data_dir="));
         assert!(!contents.contains("rime_prebuilt_data_dir="));
         assert!(!contents.contains("rime_staging_data_dir="));
     }

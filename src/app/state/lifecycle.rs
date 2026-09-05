@@ -381,8 +381,9 @@ impl NvimGpui {
     }
 
     pub(crate) fn open_rime_user_data_directory(&mut self, cx: &mut Context<Self>) {
-        let result = rime_config_from_settings(&self.settings, Some(false))
-            .and_then(|config| crate::logging::open_directory(&config.user_data));
+        let result = settings::rime_user_data_directory()
+            .ok_or_else(|| "could not determine the Rime user data directory".to_owned())
+            .and_then(|path| crate::logging::open_directory(&path));
 
         match result {
             Ok(()) => {
@@ -418,17 +419,20 @@ fn rime_config_from_settings(
     app_settings: &settings::Settings,
     deploy_override: Option<bool>,
 ) -> Result<RimeConfig, String> {
-    let shared_data = if !app_settings.rime_data_dir.trim().is_empty() {
+    let bundled_runtime = cfg!(any(target_os = "macos", target_os = "windows"));
+    let resolver = RimeRuntimeResolver::default();
+    let shared_data = if bundled_runtime {
+        resolver.resolve_shared_data(None)?
+    } else if !app_settings.rime_data_dir.trim().is_empty() {
         PathBuf::from(app_settings.rime_data_dir.trim())
     } else if app_settings.rime_library_auto_detect {
-        RimeRuntimeResolver::default().resolve_shared_data(None)?
+        resolver.resolve_shared_data(None)?
     } else {
         env::var_os("NVIM_GPUI_RIME_SHARED_DIR")
             .map(PathBuf::from)
             .ok_or_else(|| "Rime shared data directory is not configured".to_owned())?
     };
-    let user_data = configured_path(&app_settings.rime_user_data_dir, "NVIM_GPUI_RIME_USER_DIR")
-        .or_else(|| settings::application_support_directory().map(|path| path.join("rime")))
+    let user_data = settings::rime_user_data_directory()
         .ok_or_else(|| "Rime user data directory is not available".to_owned())?;
     // These are librime's internal working directories. Keep them under the
     // user data directory instead of exposing them as user-configurable paths.
@@ -441,7 +445,9 @@ fn rime_config_from_settings(
     });
 
     Ok(RimeConfig {
-        library: if app_settings.rime_library_auto_detect {
+        library: if bundled_runtime {
+            Some(resolver.resolve_library_directory(None)?)
+        } else if app_settings.rime_library_auto_detect {
             env::var_os("NVIM_GPUI_RIME_LIBRARY")
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from)

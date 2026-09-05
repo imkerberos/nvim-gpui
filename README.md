@@ -64,12 +64,14 @@ Rime data is not `~/Library/Rime`.
 To enable it, open Settings → IME:
 
 1. Select `Rime` as the input method.
-2. Click `Detect` for the librime directory and leave the path empty.
-3. Leave the Rime data directory empty so the AppBundle data is discovered.
-4. Leave the user data directory empty to use
-   `~/Library/Application Support/nvim-gpui/rime`, or choose another writable
-   directory.
-5. Click `Test`, then restart nvim-gpui after changing runtime paths.
+2. On macOS and Windows, review the read-only librime and Rime data paths
+   supplied by the application bundle.
+3. Review the read-only user data directory and use `Open` when needed.
+4. Click `Test`.
+
+On Linux, the librime and Rime data fields remain configurable because the
+system installation supplies those paths. The user data directory always
+uses nvim-gpui's application-support directory.
 
 Rime starts disabled even when it is selected as the backend. Press the
 default macOS activation shortcut `Cmd-\` to toggle it, then enter Insert

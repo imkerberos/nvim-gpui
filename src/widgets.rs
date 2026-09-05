@@ -172,6 +172,7 @@ pub(crate) struct SettingTextInputConfig {
     state: SettingTextInputState,
     placeholder: SharedString,
     editing: bool,
+    read_only: bool,
     focus_handle: FocusHandle,
     on_click: SettingTextInputClickHandler,
     on_key_down: SettingTextInputKeyHandler,
@@ -191,6 +192,7 @@ impl SettingTextInputConfig {
             state,
             placeholder: placeholder.into(),
             editing,
+            read_only: false,
             focus_handle,
             on_click: Box::new(|_, _, _| {}),
             on_key_down: Box::new(|_, _, _| {}),
@@ -219,6 +221,12 @@ impl SettingTextInputConfig {
         handler: impl Fn(SettingTextInputMouseEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_mouse = Box::new(handler);
+        self
+    }
+
+    pub(crate) fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self.editing = false;
         self
     }
 }
@@ -621,6 +629,7 @@ pub(crate) fn setting_text_input(config: SettingTextInputConfig) -> Stateful<gpu
         state,
         placeholder,
         editing,
+        read_only,
         focus_handle,
         on_click,
         on_key_down,
@@ -655,7 +664,7 @@ pub(crate) fn setting_text_input(config: SettingTextInputConfig) -> Stateful<gpu
         editing,
         selection,
         focus_handle: focus_handle.clone(),
-        on_mouse: Some(on_mouse),
+        on_mouse: (!read_only).then_some(on_mouse),
     };
     div()
         .id(id)
@@ -682,7 +691,7 @@ pub(crate) fn setting_text_input(config: SettingTextInputConfig) -> Stateful<gpu
         .track_focus(&focus_handle)
         .focus(|style| style.border_color(rgb(ACCENT)))
         .hover(|style| style.border_color(rgb(ACCENT)))
-        .cursor(CursorStyle::IBeam)
+        .when(!read_only, |element| element.cursor(CursorStyle::IBeam))
         .on_click(on_click)
         .capture_key_down(on_key_down)
         .child(

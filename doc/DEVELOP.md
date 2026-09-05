@@ -141,8 +141,8 @@ When `NVIM_GPUI_RIME_SHARED_DIR` is set, the application initializes the
 backend, but Rime remains disabled until it is selected or activated
 explicitly. The library is taken from `NVIM_GPUI_RIME_LIBRARY` or the platform
 bundle search path. The application stores its Rime user data below the
-nvim-gpui application-support directory, unless `NVIM_GPUI_RIME_USER_DIR` is
-set; it never uses `~/Library/Rime`.
+nvim-gpui application-support directory; it never uses `~/Library/Rime` or
+the `NVIM_GPUI_RIME_USER_DIR` override.
 Deployment is automatic when the internal `build/` directory is empty and can
 be forced with `NVIM_GPUI_RIME_DEPLOY=1`.
 
@@ -368,15 +368,25 @@ The packaging policy is:
 - `prebuilt/` and `build/` remain librime's internal directories below the
   application-owned Rime user-data directory and are not user settings.
 
-The runtime resolver gives an explicit Settings path precedence, then checks
-the development environment override, the application bundle, and supported
-system locations. The bundled runtime layout is described by
+When no explicit path is supplied, the runtime resolver checks the
+development environment override, the application bundle, and supported
+system locations; an explicit path is used on its own. On macOS and Windows,
+application startup asks it for the bundled runtime; on Linux, the Settings
+paths and automatic system discovery
+remain available. The bundled runtime layout is described by
 `packaging/rime/runtime.toml`, and `scripts/rime_runtime.py` stages and
 validates platform artifacts. The macOS source builder, runtime staging, and
 AppBundle integration are complete. The Windows source builder is a
 PowerShell wrapper around librime's official `install-boost.bat` and
 `build.bat` flow; it remains a local validation path because this checkout
 does not currently have a Windows host.
+
+Settings follow the packaging boundary: macOS and Windows display the bundled
+librime and shared-data paths as read-only values, while Linux keeps those two
+paths configurable for system installations. On every platform, Rime user
+data is fixed at the nvim-gpui application-support directory's `rime/`
+subdirectory and can be opened from Settings. The old user-data setting and
+`NVIM_GPUI_RIME_USER_DIR` environment override are ignored.
 
 The Nix development shell exposes nixpkgs' `rime-data` only as the default
 starter-data build input through `NVIM_GPUI_RIME_STARTER_DATA`. The builders
