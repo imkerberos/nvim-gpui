@@ -47,6 +47,11 @@ bundle:
     if [ ! -d "$runtime" ]; then echo "missing $runtime; run NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data just rime-runtime-macos first" >&2; exit 1; fi
     python3 scripts/rime_runtime.py check --root "$runtime" --platform macos --require-data
     cargo build --release --bins
+    if [ -e "$PWD/.cache/macos/nvim-gpui.app" ]; then
+        while IFS= read -r -d '' path; do
+            [ -L "$path" ] || chmod u+w "$path"
+        done < <(find "$PWD/.cache/macos/nvim-gpui.app" -depth -print0)
+    fi
     rm -rf "$PWD/.cache/macos/nvim-gpui.app"
     mkdir -p "$PWD/.cache/macos/nvim-gpui.app/Contents/MacOS" "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources"
     install -m 755 "${CARGO_TARGET_DIR:-target}/release/nvim-gpui" "$PWD/.cache/macos/nvim-gpui.app/Contents/MacOS/nvim-gpui"
@@ -68,6 +73,16 @@ rime-runtime source output=".cache/rime-runtime":
 # be supplied separately with NVIM_GPUI_RIME_STARTER_DATA or --data-source.
 rime-runtime-macos:
     bash packaging/rime/build-macos.sh
+
+# Build and validate the pinned Windows librime runtime. This task must run
+# on Windows with the Visual Studio/LLVM toolchain expected by librime.
+rime-runtime-windows:
+    powershell -NoProfile -ExecutionPolicy Bypass -File packaging/rime/build-windows.ps1
+
+# Build a Windows directory bundle containing nvim-gpui, gpvim, and Rime.
+# Installer/archive generation is intentionally a later Windows-only step.
+bundle-windows:
+    powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/bundle.ps1
 
 # Validate an already staged Rime runtime without changing it.
 rime-runtime-check root=".cache/rime-runtime":

@@ -337,10 +337,12 @@ The runtime resolver now uses an explicit Settings path first, then the
 macOS/Windows, and finally platform system paths where supported. The bundled
 runtime layout is described by `packaging/rime/runtime.toml`, and
 `scripts/rime_runtime.py` can stage and validate a platform artifact. The
-macOS source builder is now implemented; AppBundle integration and the Windows
-builder are still to be implemented. Until then, development and the ignored
-backend smoke test continue to use `NVIM_GPUI_RIME_LIBRARY` and
-`NVIM_GPUI_RIME_SHARED_DIR`.
+macOS source builder and AppBundle integration are now implemented. The
+Windows source builder is implemented as a PowerShell wrapper around
+librime's official `install-boost.bat` and `build.bat` flow, but it still needs
+real compilation and clean-environment verification on a Windows host. Until
+then, development and the ignored backend smoke test continue to use
+`NVIM_GPUI_RIME_LIBRARY` and `NVIM_GPUI_RIME_SHARED_DIR`.
 
 A staged runtime has this contract:
 
@@ -360,7 +362,36 @@ uses merged plugins and static third-party dependencies, defaults to a
 universal arm64/x86_64 dylib, and rejects Nix/Homebrew runtime paths. The
 starter data is a build input, not the user's Rime directory; user dictionaries
 remain in the application-private user-data directory. These tasks validate
-the runtime layout; they do not copy it into the AppBundle yet.
+the runtime layout; the macOS `bundle` task copies the validated runtime into
+the AppBundle, and the Windows `bundle-windows` task copies it into a
+directory bundle.
+
+On Windows, run `just rime-runtime-windows` from a PowerShell-capable
+development environment with CMake, Git, Python 3.11+, and the Visual
+Studio/LLVM toolchain required by librime. The builder pins the same librime
+revision as macOS, invokes librime's official dependency and library build
+targets, uses static third-party dependencies, and stages `rime.dll` with the
+starter data. Set `NVIM_GPUI_RIME_WINDOWS_ARCH` when the default `x64` target
+is not appropriate. If Boost is not already cached, librime's official Boost
+installer may also require `aria2c` and `7z`.
+
+After staging the runtime, `just bundle-windows` creates a Windows directory
+bundle at `.cache/windows/nvim-gpui`:
+
+```text
+.cache/windows/nvim-gpui/
+├── nvim-gpui.exe
+├── gpvim.exe
+└── rime/
+    ├── lib/rime.dll
+    ├── modules/       # optional dynamic modules
+    └── data/          # read-only starter Rime data
+```
+
+The `rime/` location is intentional: the runtime resolver searches beside the
+Windows executable, so this layout is also the first clean-environment bundle
+contract. It is a directory bundle rather than an installer and still needs
+Windows-host validation, archive/installer integration, and code signing.
 
 On macOS, run `just rime-runtime-macos` first. `just bundle` validates the
 staged runtime and copies it into the AppBundle; it does not copy user data or
