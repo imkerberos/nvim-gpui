@@ -102,6 +102,7 @@ def prepare(source: Path, output: Path) -> None:
             )
         else:
             shutil.copy2(source_file, destination)
+        destination.chmod(destination.stat().st_mode & ~0o222)
 
     print(f"prepared Rime starter data: {output}")
     print(f"  schema: {schema}")
