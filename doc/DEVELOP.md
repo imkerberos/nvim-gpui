@@ -9,7 +9,7 @@ the root [README](../README.md).
 The repository uses a Nix flake and `direnv`. The flake follows the
 `nixos-26.05` nixpkgs channel and provides Rust, GPUI's native build
 dependencies, Neovim, `lazy.nvim`, `snacks.nvim`, the Markdown Tree-sitter
-parser, ImageMagick, `just`, and `gnumake`.
+parser, ImageMagick, CMake, `just`, and `gnumake`.
 
 ```sh
 direnv allow
@@ -59,6 +59,7 @@ just ci           # fmt-check, clippy, and test
 just run          # launch the development GUI
 just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
 just dmg          # build the arch-named compressed macOS DMG on macOS
+just rime-runtime-macos # build and validate the pinned macOS librime runtime
 just rime-runtime-check # validate a staged application-private Rime runtime
 just release-prepare 0.2.0  # synchronize release version metadata
 just release-check v0.2.0    # validate metadata and changelog before tagging
@@ -336,9 +337,9 @@ The runtime resolver now uses an explicit Settings path first, then the
 macOS/Windows, and finally platform system paths where supported. The bundled
 runtime layout is described by `packaging/rime/runtime.toml`, and
 `scripts/rime_runtime.py` can stage and validate a platform artifact. The
-platform-specific librime builders and AppBundle/Windows integration are
-still to be implemented. Until then, development and the ignored backend
-smoke test continue to use `NVIM_GPUI_RIME_LIBRARY` and
+macOS source builder is now implemented; AppBundle integration and the Windows
+builder are still to be implemented. Until then, development and the ignored
+backend smoke test continue to use `NVIM_GPUI_RIME_LIBRARY` and
 `NVIM_GPUI_RIME_SHARED_DIR`.
 
 A staged runtime has this contract:
@@ -352,8 +353,14 @@ rime-runtime/
 
 Use `just rime-runtime SOURCE` to copy an already-built artifact into
 `.cache/rime-runtime`, or `just rime-runtime-check` to validate an existing
-staging directory. These tasks validate the layout and reject files that
-contain Nix store paths; they do not build librime yet.
+staging directory. On macOS, `just rime-runtime-macos` builds the pinned
+librime source and stages it, provided
+`NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data` is set. The macOS builder
+uses merged plugins and static third-party dependencies, defaults to a
+universal arm64/x86_64 dylib, and rejects Nix/Homebrew runtime paths. The
+starter data is a build input, not the user's Rime directory; user dictionaries
+remain in the application-private user-data directory. These tasks validate
+the runtime layout; they do not copy it into the AppBundle yet.
 
 On macOS, `just bundle` creates:
 

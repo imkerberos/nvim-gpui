@@ -42,6 +42,7 @@
             packages = with pkgs; [
               cargo
               clippy
+              cmake
               gnumake
               just
               neovim

@@ -58,6 +58,11 @@ bundle:
 rime-runtime source output=".cache/rime-runtime":
     python3 scripts/rime_runtime.py stage --source "{{source}}" --output "{{output}}"
 
+# Build and validate the pinned macOS librime runtime. The starter data must
+# be supplied separately with NVIM_GPUI_RIME_STARTER_DATA or --data-source.
+rime-runtime-macos:
+    bash packaging/rime/build-macos.sh
+
 # Validate an already staged Rime runtime without changing it.
 rime-runtime-check root=".cache/rime-runtime":
     python3 scripts/rime_runtime.py check --root "{{root}}" --require-data

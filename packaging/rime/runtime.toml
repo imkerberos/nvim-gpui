@@ -1,8 +1,12 @@
 # Contract for a staged, application-private Rime runtime.
 #
-# This file describes the artifact layout only. It does not pin an upstream
-# librime version or contain platform binaries; those will be supplied by the
-# platform-specific builders.
+# This file describes the artifact layout and the source revision used by the
+# platform builders. It does not contain platform binaries or user data.
+
+[source]
+repository = "https://github.com/rime/librime.git"
+version = "1.16.1"
+revision = "5d7467d037938a17abb394f560f016adc9f76e14"
 
 [layout]
 version = 1
