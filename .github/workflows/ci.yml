@@ -35,5 +35,8 @@ jobs:
       - name: Run repository checks
         run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just ci
 
+      - name: Build and verify macOS Rime runtime
+        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just rime-runtime-macos
+
       - name: Build and verify macOS AppBundle
         run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just bundle

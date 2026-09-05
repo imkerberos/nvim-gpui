@@ -49,7 +49,7 @@ jobs:
         run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
 
       - name: Build AppBundle and DMG
-        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just dmg
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c bash -lc 'just rime-runtime-macos && just dmg'
 
       - name: Archive AppBundle
         env:

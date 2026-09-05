@@ -60,6 +60,8 @@ just run          # launch the development GUI
 just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
 just dmg          # build the arch-named compressed macOS DMG on macOS
 just rime-runtime-macos # build and validate the pinned macOS librime runtime
+just rime-runtime-windows # build and validate the pinned Windows runtime
+just bundle-windows # build the Windows directory bundle
 just rime-runtime-check # validate a staged application-private Rime runtime
 just release-prepare 0.2.0  # synchronize release version metadata
 just release-check v0.2.0    # validate metadata and changelog before tagging
@@ -343,6 +345,11 @@ librime's official `install-boost.bat` and `build.bat` flow, but it still needs
 real compilation and clean-environment verification on a Windows host. Until
 then, development and the ignored backend smoke test continue to use
 `NVIM_GPUI_RIME_LIBRARY` and `NVIM_GPUI_RIME_SHARED_DIR`.
+
+The Nix development shell exposes nixpkgs' `rime-data` only as the default
+starter-data build input through `NVIM_GPUI_RIME_STARTER_DATA`. The builders
+copy the selected data into the staged artifact; the application never uses
+the Nix store path at runtime.
 
 A staged runtime has this contract:
 
