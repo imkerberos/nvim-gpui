@@ -52,6 +52,16 @@ bundle:
     bash packaging/macos/verify-no-nix-deps.sh "$PWD/.cache/macos/nvim-gpui.app"
     echo "created $PWD/.cache/macos/nvim-gpui.app"
 
+# Copy and validate a platform-specific Rime runtime into a staging directory.
+# The source must already be a self-contained artifact from the platform
+# builder; this task never reads librime from the Nix store implicitly.
+rime-runtime source output=".cache/rime-runtime":
+    python3 scripts/rime_runtime.py stage --source "{{source}}" --output "{{output}}"
+
+# Validate an already staged Rime runtime without changing it.
+rime-runtime-check root=".cache/rime-runtime":
+    python3 scripts/rime_runtime.py check --root "{{root}}" --require-data
+
 # Build a compressed macOS installer disk image containing the AppBundle.
 # The output is .cache/macos/nvim-gpui-aarch64.dmg or
 # .cache/macos/nvim-gpui-x86_64.dmg, depending on the host architecture.
