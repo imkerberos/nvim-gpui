@@ -362,12 +362,16 @@ starter data is a build input, not the user's Rime directory; user dictionaries
 remain in the application-private user-data directory. These tasks validate
 the runtime layout; they do not copy it into the AppBundle yet.
 
-On macOS, `just bundle` creates:
+On macOS, run `just rime-runtime-macos` first. `just bundle` validates the
+staged runtime and copies it into the AppBundle; it does not copy user data or
+silently fall back to a system librime. It creates:
 
 ```text
 .cache/macos/nvim-gpui.app/
 ├── Contents/MacOS/nvim-gpui
 ├── Contents/Resources/gpvim
+├── Contents/Resources/rime/lib/librime.dylib
+├── Contents/Resources/rime/data/...
 ├── Contents/Resources/neovim-gpui_1024x1024_1024x1024.icns
 └── Contents/Info.plist
 ```

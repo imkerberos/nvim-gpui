@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -52,6 +53,31 @@ def runtime_files(root: Path):
     for path in root.rglob("*"):
         if path.is_file():
             yield path
+
+
+def remove_runtime_output(path: Path) -> None:
+    """Remove a previous staged output, including read-only data trees."""
+    if not path.exists():
+        return
+
+    # Shared data is often installed read-only (for example, from a package
+    # store). The output is an exact staging target owned by this command, so
+    # make only that tree user-writable before replacing it.
+    for current, directories, files in os.walk(path, topdown=False):
+        for name in files + directories:
+            child = Path(current) / name
+            if child.is_symlink():
+                continue
+            try:
+                child.chmod(child.stat().st_mode | stat.S_IWUSR)
+            except OSError as error:
+                fail(f"cannot make old runtime output writable {child}: {error}")
+        current_path = Path(current)
+        try:
+            current_path.chmod(current_path.stat().st_mode | stat.S_IWUSR)
+        except OSError as error:
+            fail(f"cannot make old runtime directory writable {current_path}: {error}")
+    shutil.rmtree(path)
 
 
 def validate(root: Path, platform: str, require_data: bool) -> list[Path]:
@@ -115,7 +141,7 @@ def stage(args: argparse.Namespace) -> None:
 
     if output.exists():
         if output.is_dir():
-            shutil.rmtree(output)
+            remove_runtime_output(output)
         else:
             fail(f"runtime output exists and is not a directory: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)

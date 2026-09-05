@@ -40,7 +40,12 @@ release-notes tag:
 
 # Build a macOS AppBundle at .cache/macos/nvim-gpui.app.
 bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
     if [ "$(uname -s)" != "Darwin" ]; then echo "bundle is only supported on macOS" >&2; exit 1; fi
+    runtime="$PWD/.cache/rime-runtime"
+    if [ ! -d "$runtime" ]; then echo "missing $runtime; run NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data just rime-runtime-macos first" >&2; exit 1; fi
+    python3 scripts/rime_runtime.py check --root "$runtime" --platform macos --require-data
     cargo build --release --bins
     rm -rf "$PWD/.cache/macos/nvim-gpui.app"
     mkdir -p "$PWD/.cache/macos/nvim-gpui.app/Contents/MacOS" "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources"
@@ -49,6 +54,7 @@ bundle:
     install -m 644 packaging/macos/Info.plist "$PWD/.cache/macos/nvim-gpui.app/Contents/Info.plist"
     install -m 644 assets/icons/neovim-gpui.png "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui.png"
     install -m 644 assets/icons/neovim-gpui_1024x1024_1024x1024.icns "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/neovim-gpui_1024x1024_1024x1024.icns"
+    cp -R "$runtime" "$PWD/.cache/macos/nvim-gpui.app/Contents/Resources/rime"
     bash packaging/macos/verify-no-nix-deps.sh "$PWD/.cache/macos/nvim-gpui.app"
     echo "created $PWD/.cache/macos/nvim-gpui.app"
 

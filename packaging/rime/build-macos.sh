@@ -108,9 +108,16 @@ data_source="$(cd "$data_source" && pwd -P)"
 output="$(resolve_repo_path "$output")"
 work_dir="$(resolve_repo_path "$work_dir")"
 source_dir="$work_dir/librime"
-build_dir="$work_dir/cmake-build"
-dist_dir="$work_dir/dist"
-artifact_dir="$work_dir/artifact"
+
+build_universal="${NVIM_GPUI_RIME_BUILD_UNIVERSAL:-1}"
+if [[ "$build_universal" != "0" ]]; then
+  build_mode=universal
+else
+  build_mode=host
+fi
+build_dir="$work_dir/cmake-build-$build_mode"
+dist_dir="$work_dir/dist-$build_mode"
+artifact_dir="$work_dir/artifact-$build_mode"
 
 [[ "$output" != "$source_dir" && "$output" != "$source_dir"/* ]] || \
   fail "output must not be inside the librime source checkout"
@@ -140,7 +147,6 @@ boost_root="$source_dir/deps/boost-$boost_version"
 
 sdk_root="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 deployment_target="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
-build_universal="${NVIM_GPUI_RIME_BUILD_UNIVERSAL:-1}"
 cmake_architectures=()
 if [[ "$build_universal" != "0" ]]; then
   cmake_architectures=(-DCMAKE_OSX_ARCHITECTURES=arm64\;x86_64)
@@ -163,7 +169,17 @@ jobs="$(sysctl -n hw.ncpu 2>/dev/null || printf '1')"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || jobs=1
 MAKEFLAGS="-j$jobs" NOPARALLEL=1 make -C "$source_dir" deps build="$dependency_build_dir"
 
-rm -rf "$build_dir" "$dist_dir" "$artifact_dir"
+make_tree_writable() {
+  local root="$1"
+  [[ -e "$root" ]] || return 0
+  while IFS= read -r -d '' path; do
+    [[ -L "$path" ]] || chmod u+w "$path"
+  done < <(find "$root" -depth -print0)
+}
+
+make_tree_writable "$dist_dir"
+make_tree_writable "$artifact_dir"
+rm -rf "$dist_dir" "$artifact_dir"
 mkdir -p "$dist_dir" "$artifact_dir/lib" "$artifact_dir/data" "$artifact_dir/modules"
 
 cmake -S "$source_dir" -B "$build_dir" \
@@ -201,10 +217,17 @@ if [[ -d "$dist_lib/rime-plugins" ]]; then
   cp -R "$dist_lib/rime-plugins/." "$artifact_dir/modules/"
 fi
 
-# Keep starter data independent from the librime source tree. This is where a
-# small, curated data set will be supplied; user dictionaries never belong in
-# this artifact.
-cp -R "$data_source/." "$artifact_dir/data/"
+# Keep starter data independent from the librime source tree. Accept both an
+# actual data directory and a package root such as Nix's share/rime-data
+# layout, but always flatten the latter into the runtime contract. User
+# dictionaries never belong in this artifact.
+starter_data="$data_source"
+if [[ -d "$data_source/share/rime-data" ]]; then
+  starter_data="$data_source/share/rime-data"
+elif [[ -d "$data_source/rime-data" ]]; then
+  starter_data="$data_source/rime-data"
+fi
+cp -R "$starter_data/." "$artifact_dir/data/"
 
 while IFS= read -r -d '' binary; do
   dependencies="$(otool -L "$binary")"
