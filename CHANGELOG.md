@@ -23,10 +23,7 @@ All notable changes to nvim-gpui are documented here.
   build directories as settings.
 - macOS bundles now carry a private librime runtime and curated read-only
   starter data, while Linux keeps system librime paths available.
-- Settings path editors support caret movement, mouse selection, paste, and
-  clearer runtime test and restart feedback.
-- Runtime validation checks bundled files, symlinks, Mach-O dependencies, and
-  accidental Nix store references.
+- Fixed various bugs.
 
 ### Packaging
 
