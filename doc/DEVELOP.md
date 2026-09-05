@@ -310,6 +310,33 @@ inherit the interactive shell's complete `PATH` and Neovim-related variables.
 
 ## Packaging
 
+### Built-in Rime runtime — in progress
+
+The native Rime backend is integrated, but packaging librime with the
+application is not complete yet. This work must not be described as a shipped
+feature until the runtime artifacts and clean-environment smoke tests pass on
+the target platforms.
+
+The target packaging policy is:
+
+- macOS and Windows ship a private librime runtime with nvim-gpui;
+- Linux initially uses a system librime, with a bundled runtime reserved for a
+  future self-contained package;
+- the runtime includes librime's dependent libraries and dynamically loaded
+  modules, not only the main library file;
+- a small read-only starter `rime-data` set is shipped with the application;
+  user dictionaries and user schemas remain in nvim-gpui's application data
+  directory;
+- `prebuilt/` and `build/` remain librime's internal directories below the
+  application-owned Rime user-data directory and are not user settings.
+
+The runtime resolver will use an explicit Settings path first, then the
+`NVIM_GPUI_RIME_LIBRARY` development override, then the application bundle on
+macOS/Windows, and finally platform system paths where supported. The bundled
+runtime layout and artifact manifest are still to be implemented. Until then,
+development and the ignored backend smoke test continue to use
+`NVIM_GPUI_RIME_LIBRARY` and `NVIM_GPUI_RIME_SHARED_DIR`.
+
 On macOS, `just bundle` creates:
 
 ```text
