@@ -51,14 +51,6 @@ jobs:
       - name: Build macOS Rime runtime
         run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just rime-runtime-macos
 
-      - name: Share curated Rime starter data with Windows build
-        if: matrix.arch == 'aarch64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: rime-starter-data
-          path: .cache/rime-runtime/data/.
-          if-no-files-found: error
-
       - name: Build AppBundle and DMG
         run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just dmg
 
@@ -77,62 +69,9 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
 
-  windows:
-    name: Windows package
-    needs: build
-    runs-on: windows-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install Boost download tools
-        shell: pwsh
-        run: choco install aria2 7zip --no-progress -y
-
-      - name: Download curated Rime starter data
-        uses: actions/download-artifact@v4
-        with:
-          name: rime-starter-data
-          path: .cache/rime-starter-data
-
-      - name: Build Windows Rime runtime
-        shell: pwsh
-        run: |
-          $defaultSchema = Get-ChildItem -Path .cache/rime-starter-data -Recurse -Filter default.yaml -File | Select-Object -First 1
-          if (-not $defaultSchema) {
-            throw "curated Rime starter data was not downloaded"
-          }
-          & .\packaging\rime\build-windows.ps1 -DataSource $defaultSchema.Directory.FullName
-
-      - name: Build Windows directory bundle
-        shell: pwsh
-        run: |
-          & .\packaging\windows\bundle.ps1
-
-      - name: Archive Windows bundle
-        shell: pwsh
-        run: Compress-Archive -Path .cache\windows\nvim-gpui -DestinationPath .cache\nvim-gpui-windows.zip -Force
-
-      - name: Upload Windows package
-        uses: actions/upload-artifact@v4
-        with:
-          name: nvim-gpui-${{ github.ref_name }}-windows
-          path: .cache/nvim-gpui-windows.zip
-          if-no-files-found: error
-
   publish:
     name: Publish release packages
-    needs: [build, windows]
+    needs: build
     runs-on: macos-15
     timeout-minutes: 15
 
@@ -156,7 +95,6 @@ jobs:
             nvim-gpui-x86_64.dmg \
             nvim-gpui-aarch64.app.zip \
             nvim-gpui-x86_64.app.zip \
-            nvim-gpui-windows.zip \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md
