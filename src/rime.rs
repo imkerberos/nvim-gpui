@@ -193,8 +193,8 @@ struct RimeRuntimeCandidate {
 
 /// Resolves librime and shared-data locations without knowing how the GUI
 /// stores settings. The resolver deliberately describes candidates rather
-/// than downloading or copying a runtime; packaging will provide the bundled
-/// candidates in a later step.
+/// than downloading or copying a runtime; the platform packaging tasks
+/// provide the bundled candidates.
 #[derive(Debug, Clone)]
 pub struct RimeRuntimeResolver {
     executable: Option<PathBuf>,
