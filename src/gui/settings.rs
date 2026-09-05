@@ -23,6 +23,7 @@ pub(crate) struct SettingsWindow {
     rime_toggle_shortcut_focus_handle: FocusHandle,
     recording_rime_toggle_shortcut: bool,
     rime_path_focus_handles: [FocusHandle; 3],
+    _rime_path_blur_subscriptions: Vec<Subscription>,
     rime_path_editing: Option<RimePathEdit>,
     rime_test_status: Option<RimeTestStatus>,
     log_directory_error: Option<String>,
@@ -98,6 +99,7 @@ impl SettingsWindow {
                 cx.focus_handle().tab_stop(true),
                 cx.focus_handle().tab_stop(true),
             ],
+            _rime_path_blur_subscriptions: Vec::new(),
             rime_path_editing: None,
             rime_test_status: None,
             log_directory_error: None,
@@ -111,6 +113,32 @@ impl SettingsWindow {
         self.recording_rime_toggle_shortcut = false;
         self.commit_rime_path_edit(cx);
         cx.notify();
+    }
+
+    fn ensure_rime_path_blur_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self._rime_path_blur_subscriptions.is_empty() {
+            return;
+        }
+
+        for field in [
+            RimePathField::Library,
+            RimePathField::Data,
+            RimePathField::UserData,
+        ] {
+            let focus_handle = self.rime_path_focus_handles[field.index()].clone();
+            self._rime_path_blur_subscriptions.push(cx.on_blur(
+                &focus_handle,
+                window,
+                move |this, _, cx| {
+                    if matches!(
+                        this.rime_path_editing.as_ref(),
+                        Some(edit) if edit.field == field
+                    ) {
+                        this.commit_rime_path_edit(cx);
+                    }
+                },
+            ));
+        }
     }
 
     fn apply_setting(
@@ -479,6 +507,7 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_rime_path_blur_subscriptions(window, cx);
         let (current, save_error, cli_install_error) = self.source.read(cx).settings_snapshot();
         let cli_available = helper::is_available_in_path();
         let mut paste_shortcut_icon_font = window.text_style().font();
