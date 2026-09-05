@@ -1,7 +1,7 @@
 cask "nvim-gpui" do
   arch arm: "aarch64", intel: "x86_64"
 
-  version "0.4.0"
+  version "0.5.0"
   # Replace :no_check with per-architecture SHA-256 values once the release
   # assets have been published and their checksums are recorded.
   sha256 :no_check

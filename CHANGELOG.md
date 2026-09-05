@@ -2,6 +2,40 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.5.0] - 2026-09-05
+
+### Added
+
+- Built-in native Rime input support with preedit text, candidate popup,
+  candidate navigation, modifier-key handling, and commit routing across
+  Insert, command-line, prompt, and terminal contexts.
+- Rime status indicator and context menu in the custom titlebar, including
+  redeploy and opening the application-private user data directory.
+- Rime settings for backend selection, candidate layout, activation shortcut,
+  runtime detection, configuration testing, and platform-specific runtime
+  paths.
+- GPUI-owned unsaved-changes confirmation when the main window is closed.
+
+### Improved
+
+- Rime user data is isolated under nvim-gpui's application-support directory;
+  the application does not use `~/Library/Rime` or expose librime's internal
+  build directories as settings.
+- macOS bundles now carry a private librime runtime and curated read-only
+  starter data, while Linux keeps system librime paths available.
+- Settings path editors support caret movement, mouse selection, paste, and
+  clearer runtime test and restart feedback.
+- Runtime validation checks bundled files, symlinks, Mach-O dependencies, and
+  accidental Nix store references.
+
+### Packaging
+
+- Added reproducible librime runtime staging and macOS AppBundle/DMG flows,
+  with a Windows runtime and directory-bundle builder available for local
+  validation.
+- Windows packaging remains excluded from CI/CD until it can be validated on a
+  Windows host.
+
 ## [0.4.0] - 2026-09-04
 
 ### Improved
