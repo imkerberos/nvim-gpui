@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nvim_gpui::rime::{RimeBackend, RimeConfig};
+use nvim_gpui::rime::{RimeBackend, RimeConfig, RimeRuntimeResolver};
 
 impl NvimGpui {
     pub(crate) fn test_rime_configuration_with_settings(
@@ -418,8 +418,15 @@ fn rime_config_from_settings(
     app_settings: &settings::Settings,
     deploy_override: Option<bool>,
 ) -> Result<RimeConfig, String> {
-    let shared_data = configured_path(&app_settings.rime_data_dir, "NVIM_GPUI_RIME_SHARED_DIR")
-        .ok_or_else(|| "Rime shared data directory is not configured".to_owned())?;
+    let shared_data = if !app_settings.rime_data_dir.trim().is_empty() {
+        PathBuf::from(app_settings.rime_data_dir.trim())
+    } else if app_settings.rime_library_auto_detect {
+        RimeRuntimeResolver::default().resolve_shared_data(None)?
+    } else {
+        env::var_os("NVIM_GPUI_RIME_SHARED_DIR")
+            .map(PathBuf::from)
+            .ok_or_else(|| "Rime shared data directory is not configured".to_owned())?
+    };
     let user_data = configured_path(&app_settings.rime_user_data_dir, "NVIM_GPUI_RIME_USER_DIR")
         .or_else(|| settings::application_support_directory().map(|path| path.join("rime")))
         .ok_or_else(|| "Rime user data directory is not available".to_owned())?;

@@ -330,7 +330,7 @@ The target packaging policy is:
 - `prebuilt/` and `build/` remain librime's internal directories below the
   application-owned Rime user-data directory and are not user settings.
 
-The runtime resolver will use an explicit Settings path first, then the
+The runtime resolver now uses an explicit Settings path first, then the
 `NVIM_GPUI_RIME_LIBRARY` development override, then the application bundle on
 macOS/Windows, and finally platform system paths where supported. The bundled
 runtime layout and artifact manifest are still to be implemented. Until then,

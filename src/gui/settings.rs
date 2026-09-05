@@ -12,6 +12,7 @@ use gpui::{
     div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontFallbacks, KeyDownEvent, Render,
     SharedString, Subscription, Window,
 };
+use nvim_gpui::rime::RimeRuntimeResolver;
 use std::env;
 
 pub(crate) struct SettingsWindow {
@@ -260,10 +261,14 @@ impl SettingsWindow {
     }
 
     fn rime_test_block_reason(settings: &settings::Settings) -> Option<String> {
-        if Self::rime_path_value(settings, RimePathField::Data)
+        let data_configured = !Self::rime_path_value(settings, RimePathField::Data)
             .trim()
-            .is_empty()
-        {
+            .is_empty();
+        let data_auto_detected = settings.rime_library_auto_detect
+            && RimeRuntimeResolver::default()
+                .resolve_shared_data(None)
+                .is_ok();
+        if !data_configured && !data_auto_detected {
             return Some(
                 "Rime data directory is required; set it here or provide NVIM_GPUI_RIME_SHARED_DIR."
                     .to_owned(),

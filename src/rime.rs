@@ -172,6 +172,204 @@ pub struct RimeConfig {
     pub deploy: bool,
 }
 
+const RIME_LIBRARY_ENV: &str = "NVIM_GPUI_RIME_LIBRARY";
+const RIME_SHARED_DATA_ENV: &str = "NVIM_GPUI_RIME_SHARED_DIR";
+
+/// The origin of a runtime candidate, used in diagnostics and discovery
+/// tests. Explicit paths are never silently replaced by another source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RimeRuntimeSource {
+    Explicit,
+    Environment,
+    Bundled,
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RimeRuntimeCandidate {
+    path: PathBuf,
+    source: RimeRuntimeSource,
+}
+
+/// Resolves librime and shared-data locations without knowing how the GUI
+/// stores settings. The resolver deliberately describes candidates rather
+/// than downloading or copying a runtime; packaging will provide the bundled
+/// candidates in a later step.
+#[derive(Debug, Clone)]
+pub struct RimeRuntimeResolver {
+    executable: Option<PathBuf>,
+}
+
+impl Default for RimeRuntimeResolver {
+    fn default() -> Self {
+        Self {
+            executable: env::current_exe().ok(),
+        }
+    }
+}
+
+impl RimeRuntimeResolver {
+    /// Resolve an existing shared-data directory. An explicit path is the
+    /// only candidate when supplied; automatic discovery may fall back from
+    /// an invalid environment override to the bundled or system locations.
+    pub fn resolve_shared_data(&self, explicit: Option<&Path>) -> Result<PathBuf, String> {
+        let candidates = self.shared_data_candidates(explicit);
+        for candidate in &candidates {
+            if let Some(path) = normalized_shared_data_path(&candidate.path) {
+                return Ok(path);
+            }
+        }
+
+        let attempted = candidates
+            .iter()
+            .map(|candidate| format!("  {} ({:?})", candidate.path.display(), candidate.source))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!(
+            "could not find Rime shared data; tried:\n{attempted}"
+        ))
+    }
+
+    fn library_candidates(&self, explicit: Option<&Path>) -> Vec<RimeRuntimeCandidate> {
+        if let Some(path) = explicit {
+            return library_path_candidates(path, RimeRuntimeSource::Explicit);
+        }
+
+        let mut candidates = Vec::new();
+        if let Some(path) = non_empty_env_path(RIME_LIBRARY_ENV) {
+            candidates.extend(library_path_candidates(
+                &path,
+                RimeRuntimeSource::Environment,
+            ));
+        }
+
+        for directory in self.bundled_library_directories() {
+            candidates.extend(platform_library_names().into_iter().map(|name| {
+                RimeRuntimeCandidate {
+                    path: directory.join(name),
+                    source: RimeRuntimeSource::Bundled,
+                }
+            }));
+        }
+
+        candidates.extend(
+            platform_library_names()
+                .into_iter()
+                .map(|name| RimeRuntimeCandidate {
+                    path: PathBuf::from(name),
+                    source: RimeRuntimeSource::System,
+                }),
+        );
+        deduplicate_candidates(candidates)
+    }
+
+    fn shared_data_candidates(&self, explicit: Option<&Path>) -> Vec<RimeRuntimeCandidate> {
+        if let Some(path) = explicit {
+            return vec![RimeRuntimeCandidate {
+                path: path.to_owned(),
+                source: RimeRuntimeSource::Explicit,
+            }];
+        }
+
+        let mut candidates = Vec::new();
+        if let Some(path) = non_empty_env_path(RIME_SHARED_DATA_ENV) {
+            candidates.push(RimeRuntimeCandidate {
+                path,
+                source: RimeRuntimeSource::Environment,
+            });
+        }
+
+        for directory in self.bundled_runtime_directories() {
+            candidates.push(RimeRuntimeCandidate {
+                path: directory.join("data"),
+                source: RimeRuntimeSource::Bundled,
+            });
+            candidates.push(RimeRuntimeCandidate {
+                path: directory.join("share/rime-data"),
+                source: RimeRuntimeSource::Bundled,
+            });
+            candidates.push(RimeRuntimeCandidate {
+                path: directory.join("rime-data"),
+                source: RimeRuntimeSource::Bundled,
+            });
+        }
+
+        if let Some(executable) = self.executable.as_deref() {
+            if let Some(bin_dir) = executable.parent() {
+                candidates.push(RimeRuntimeCandidate {
+                    path: bin_dir.join("rime-data"),
+                    source: RimeRuntimeSource::Bundled,
+                });
+                if cfg!(target_os = "macos") {
+                    if let Some(contents_dir) = bin_dir.parent() {
+                        candidates.push(RimeRuntimeCandidate {
+                            path: contents_dir.join("Resources/rime-data"),
+                            source: RimeRuntimeSource::Bundled,
+                        });
+                    }
+                }
+            }
+        }
+
+        candidates.extend(system_shared_data_directories().into_iter().map(|path| {
+            RimeRuntimeCandidate {
+                path,
+                source: RimeRuntimeSource::System,
+            }
+        }));
+        deduplicate_candidates(candidates)
+    }
+
+    fn bundled_runtime_directories(&self) -> Vec<PathBuf> {
+        let Some(executable) = self.executable.as_deref() else {
+            return Vec::new();
+        };
+        let Some(bin_dir) = executable.parent() else {
+            return Vec::new();
+        };
+
+        let mut directories = Vec::new();
+        if cfg!(target_os = "macos") {
+            if let Some(contents_dir) = bin_dir.parent() {
+                directories.push(contents_dir.join("Resources/rime"));
+            }
+        }
+        directories.push(bin_dir.join("rime"));
+        directories.push(bin_dir.join("rime-runtime"));
+        deduplicate_paths(directories)
+    }
+
+    fn bundled_library_directories(&self) -> Vec<PathBuf> {
+        let Some(executable) = self.executable.as_deref() else {
+            return Vec::new();
+        };
+        let Some(bin_dir) = executable.parent() else {
+            return Vec::new();
+        };
+
+        let mut directories = Vec::new();
+        if cfg!(target_os = "macos") {
+            if let Some(contents_dir) = bin_dir.parent() {
+                directories.push(contents_dir.join("Frameworks"));
+                directories.push(contents_dir.join("Resources/rime/lib"));
+                directories.push(contents_dir.join("Resources/rime"));
+            }
+        }
+        directories.push(bin_dir.join("rime/lib"));
+        directories.push(bin_dir.join("rime"));
+        directories.push(bin_dir.join("rime-runtime/lib"));
+        directories.push(bin_dir.join("rime-runtime"));
+        deduplicate_paths(directories)
+    }
+
+    #[cfg(test)]
+    fn from_executable(executable: PathBuf) -> Self {
+        Self {
+            executable: Some(executable),
+        }
+    }
+}
+
 /// One candidate exposed by librime's current context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RimeCandidate {
@@ -274,16 +472,20 @@ struct LoadedRime {
 
 impl LoadedRime {
     fn load(explicit: Option<&Path>) -> Result<Self, String> {
-        let candidates = library_candidates(explicit);
+        let candidates = RimeRuntimeResolver::default().library_candidates(explicit);
         let mut errors = Vec::new();
 
         for candidate in &candidates {
             // SAFETY: loading a user-specified or platform-discovered shared
             // library is the purpose of this backend. The handle is retained.
-            let library = match unsafe { Library::new(candidate) } {
+            let library = match unsafe { Library::new(&candidate.path) } {
                 Ok(library) => library,
                 Err(error) => {
-                    errors.push(format!("{}: {error}", candidate.display()));
+                    errors.push(format!(
+                        "{} ({:?}): {error}",
+                        candidate.path.display(),
+                        candidate.source
+                    ));
                     continue;
                 }
             };
@@ -296,8 +498,9 @@ impl LoadedRime {
                 Ok(symbol) => *symbol,
                 Err(error) => {
                     errors.push(format!(
-                        "{}: missing rime_get_api: {error}",
-                        candidate.display()
+                        "{} ({:?}): missing rime_get_api: {error}",
+                        candidate.path.display(),
+                        candidate.source
                     ));
                     continue;
                 }
@@ -567,51 +770,86 @@ fn ensure_directory(path: &Path, label: &str) -> Result<(), String> {
 }
 
 pub fn resolve_shared_data(path: &Path) -> Result<PathBuf, String> {
-    if !path.is_dir() {
-        return Err(format!(
+    normalized_shared_data_path(path).ok_or_else(|| {
+        format!(
             "shared data directory does not exist or is not a directory: {}",
             path.display()
-        ));
+        )
+    })
+}
+
+fn normalized_shared_data_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
     }
 
     let nix_data = path.join("share/rime-data");
     if nix_data.is_dir() {
-        return Ok(nix_data);
+        return Some(nix_data);
     }
 
-    Ok(path.to_owned())
+    Some(path.to_owned())
 }
 
-fn library_candidates(explicit: Option<&Path>) -> Vec<PathBuf> {
-    if let Some(path) = explicit {
-        if path.is_dir() {
-            return platform_library_names()
-                .into_iter()
-                .map(|name| path.join(name))
-                .collect();
-        }
-        return vec![path.to_owned()];
+fn library_path_candidates(path: &Path, source: RimeRuntimeSource) -> Vec<RimeRuntimeCandidate> {
+    if path.is_dir() {
+        return platform_library_names()
+            .into_iter()
+            .map(|name| RimeRuntimeCandidate {
+                path: path.join(name),
+                source,
+            })
+            .collect();
     }
+    vec![RimeRuntimeCandidate {
+        path: path.to_owned(),
+        source,
+    }]
+}
 
-    let mut candidates = Vec::new();
-    if let Ok(executable) = env::current_exe() {
-        if let Some(bin_dir) = executable.parent() {
-            if cfg!(target_os = "macos") {
-                if let Some(contents_dir) = bin_dir.parent() {
-                    candidates.push(contents_dir.join("Frameworks/librime.dylib"));
-                    candidates.push(contents_dir.join("Frameworks/librime.1.dylib"));
-                }
-            } else if cfg!(windows) {
-                candidates.push(bin_dir.join("rime.dll"));
-            } else {
-                candidates.push(bin_dir.join("librime.so"));
-                candidates.push(bin_dir.join("lib/librime.so"));
-            }
+fn non_empty_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn system_shared_data_directories() -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if cfg!(target_os = "linux") {
+        directories.extend([
+            PathBuf::from("/usr/share/rime-data"),
+            PathBuf::from("/usr/local/share/rime-data"),
+            PathBuf::from("/usr/share/rime"),
+            PathBuf::from("/usr/local/share/rime"),
+        ]);
+    } else if cfg!(target_os = "macos") {
+        directories.extend([
+            PathBuf::from("/opt/homebrew/share/rime-data"),
+            PathBuf::from("/usr/local/share/rime-data"),
+        ]);
+    }
+    directories
+}
+
+fn deduplicate_candidates(candidates: Vec<RimeRuntimeCandidate>) -> Vec<RimeRuntimeCandidate> {
+    let mut unique: Vec<RimeRuntimeCandidate> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if unique.iter().any(|seen| seen.path == candidate.path) {
+            continue;
+        }
+        unique.push(candidate);
+    }
+    unique
+}
+
+fn deduplicate_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !unique.contains(&path) {
+            unique.push(path);
         }
     }
-
-    candidates.extend(platform_library_names().into_iter().map(PathBuf::from));
-    candidates
+    unique
 }
 
 fn platform_library_names() -> Vec<&'static str> {
@@ -670,7 +908,8 @@ fn utf8_boundary_at_or_before(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_shared_data, RimeBackend, RimeConfig, RIME_CONTROL_MASK, RIME_RELEASE_MASK,
+        resolve_shared_data, RimeBackend, RimeConfig, RimeRuntimeResolver, RimeRuntimeSource,
+        RIME_CONTROL_MASK, RIME_RELEASE_MASK,
     };
     use std::env;
     use std::fs;
@@ -681,6 +920,56 @@ mod tests {
     fn direct_data_directory_is_preserved() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
         assert_eq!(resolve_shared_data(&path).unwrap(), path);
+    }
+
+    #[test]
+    fn resolver_discovers_bundled_shared_data_next_to_executable() {
+        let root = env::temp_dir().join(format!(
+            "nvim-gpui-rime-resolver-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before the Unix epoch")
+                .as_nanos()
+        ));
+        let executable = root.join("bin/nvim-gpui");
+        let shared_data = root.join("bin/rime/data");
+        fs::create_dir_all(&shared_data).expect("create bundled data directory");
+
+        let resolver = RimeRuntimeResolver::from_executable(executable);
+        assert!(resolver
+            .shared_data_candidates(None)
+            .iter()
+            .any(|candidate| {
+                candidate.path == shared_data && candidate.source == RimeRuntimeSource::Bundled
+            }));
+
+        fs::remove_dir_all(root).expect("remove resolver test directory");
+    }
+
+    #[test]
+    fn explicit_library_directory_keeps_explicit_precedence() {
+        let root = env::temp_dir().join(format!(
+            "nvim-gpui-rime-library-resolver-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create explicit library directory");
+
+        let candidates = RimeRuntimeResolver::from_executable(root.join("bin/nvim-gpui"))
+            .library_candidates(Some(&root));
+        assert!(!candidates.is_empty());
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.source == RimeRuntimeSource::Explicit));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.path.parent() == Some(root.as_path())));
+
+        fs::remove_dir_all(root).expect("remove library resolver test directory");
     }
 
     #[test]
