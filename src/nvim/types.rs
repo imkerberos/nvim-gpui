@@ -5,6 +5,33 @@ use rmpv::Value;
 
 use super::{NvimCapabilities, NvimVersion};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvimFloatAnchor {
+    NorthWest,
+    NorthEast,
+    SouthWest,
+    SouthEast,
+}
+
+/// Normalized position information for a floating grid.
+///
+/// Neovim 0.10 and 0.11 send an anchor position, while newer versions also
+/// send the final screen position and compositor index. The protocol adapter
+/// converts both wire formats into this small internal representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvimFloatPosition {
+    Screen {
+        row: i64,
+        col: i64,
+    },
+    Anchored {
+        anchor: NvimFloatAnchor,
+        anchor_grid: u64,
+        row: i64,
+        col: i64,
+    },
+}
+
 pub(super) enum NvimCommand {
     Input(String),
     Mouse {
@@ -93,15 +120,10 @@ pub enum NvimEvent {
     WinFloatPos {
         grid: u64,
         win: Vec<u8>,
-        anchor: String,
-        anchor_grid: u64,
-        anchor_row: i64,
-        anchor_col: i64,
+        position: NvimFloatPosition,
         mouse_enabled: bool,
         zindex: i64,
         compindex: i64,
-        screen_row: i64,
-        screen_col: i64,
     },
     WinViewport {
         grid: u64,

@@ -101,6 +101,89 @@ impl NvimGpui {
             .unwrap_or_default()
     }
 
+    pub(crate) fn resolve_float_position(
+        &self,
+        grid: u64,
+        position: NvimFloatPosition,
+    ) -> (i64, i64) {
+        match position {
+            NvimFloatPosition::Screen { row, col } => (row, col),
+            NvimFloatPosition::Anchored {
+                anchor,
+                anchor_grid,
+                row,
+                col,
+            } => {
+                let anchor_placement = self.grid_placement(anchor_grid);
+                let (width, height) = self.grid_dimensions(grid);
+                let mut screen_row = anchor_placement.row.saturating_add(row);
+                let mut screen_col = anchor_placement.col.saturating_add(col);
+
+                if matches!(
+                    anchor,
+                    NvimFloatAnchor::SouthWest | NvimFloatAnchor::SouthEast
+                ) {
+                    screen_row = screen_row.saturating_sub(height.saturating_sub(1));
+                }
+                if matches!(
+                    anchor,
+                    NvimFloatAnchor::NorthEast | NvimFloatAnchor::SouthEast
+                ) {
+                    screen_col = screen_col.saturating_sub(width.saturating_sub(1));
+                }
+
+                (screen_row, screen_col)
+            }
+        }
+    }
+
+    pub(crate) fn refresh_float_position(&mut self, grid: u64) {
+        let placement = self.grid_placement(grid);
+        let Some(position) = placement.float_position else {
+            return;
+        };
+        let (row, col) = self.resolve_float_position(grid, position);
+        let mut placement = self.grid_placement(grid);
+        placement.row = row;
+        placement.col = col;
+        self.set_grid_placement(grid, placement);
+    }
+
+    pub(crate) fn refresh_anchored_float_positions(&mut self, anchor_grid: u64) {
+        let grids = self
+            .grid_placements
+            .keys()
+            .chain(self.pending_grid_placements.keys())
+            .copied()
+            .collect::<HashSet<_>>();
+
+        for grid in grids {
+            let is_anchored_to_grid = matches!(
+                self.grid_placement(grid).float_position,
+                Some(NvimFloatPosition::Anchored {
+                    anchor_grid: grid_id,
+                    ..
+                }) if grid_id == anchor_grid
+            );
+            if is_anchored_to_grid {
+                self.refresh_float_position(grid);
+            }
+        }
+    }
+
+    fn grid_dimensions(&self, grid: u64) -> (i64, i64) {
+        if grid == 1 {
+            let model = self.pending_grid.as_ref().unwrap_or(&self.grid);
+            return (model.width() as i64, model.height() as i64);
+        }
+
+        self.pending_other_grids
+            .get(&grid)
+            .or_else(|| self.other_grids.get(&grid))
+            .map(|model| (model.width() as i64, model.height() as i64))
+            .unwrap_or((0, 0))
+    }
+
     pub(crate) fn commit_pending_grid(&mut self) {
         if self.pending_cursor_grid.is_some() {
             self.update_cursor_animation();

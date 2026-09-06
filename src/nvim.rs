@@ -18,6 +18,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+mod compat;
 mod environment;
 mod protocol;
 mod session;
@@ -37,7 +38,7 @@ use protocol::{
 use session::run_session;
 use transport::{connect_remote, write_shared_message, RemoteConnection, SharedWriter};
 use types::NvimCommand;
-pub use types::{DisconnectReason, NvimEvent, NvimTheme};
+pub use types::{DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimTheme};
 use version::parse_protocol_info;
 pub use version::{NvimCapabilities, NvimProtocolInfo, NvimVersion};
 
@@ -510,6 +511,13 @@ fn disconnect_reason(
     if let Err(error) = result {
         if error != NVIM_EXITED {
             return DisconnectReason::ProtocolError(error.clone());
+        }
+        if is_remote {
+            // A remote Neovim server closes the RPC channel with an orderly
+            // EOF when it exits (for example after `:q!`). Treat that EOF as
+            // the server's clean exit so the frontend closes instead of
+            // endlessly reconnecting to a server that no longer exists.
+            return DisconnectReason::CleanExit;
         }
     }
     if is_remote {

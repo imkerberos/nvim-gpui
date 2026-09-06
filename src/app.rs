@@ -9,7 +9,10 @@ use crate::{
         key_to_nvim_input, rime_key_event, rime_modifier_transition, should_route_key_to_neovim,
         EntityInputHandler, InputRouter, InputRouterConfig, InputTarget, SystemImeState,
     },
-    nvim::{self, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, NvimVersion},
+    nvim::{
+        self, DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimProcess,
+        NvimTheme, NvimVersion,
+    },
     platform, settings,
     widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT, WARNING},
     CliOptions, NvimConnection,
@@ -201,6 +204,7 @@ pub(crate) struct GridPlacement {
     /// `z_index` is retained for the protocol's same-order/group semantics.
     z_index: i64,
     compindex: i64,
+    float_position: Option<NvimFloatPosition>,
     /// Whether Neovim allows this floating grid to receive mouse input.
     /// Neovim uses this when the client sends `nvim_input_mouse` with grid 0.
     mouse_enabled: bool,
@@ -271,6 +275,7 @@ impl Default for GridPlacement {
             height: 0,
             z_index: 0,
             compindex: -1,
+            float_position: None,
             mouse_enabled: true,
             kind: compositor::GridLayerKind::Window,
             visible: false,
@@ -357,6 +362,8 @@ pub(crate) struct NvimGpui {
     nvim_grid_ready: bool,
     startup_resize_target: Option<(u32, u32)>,
     startup_flush_seen: bool,
+    startup_grid_content_seen: bool,
+    startup_redraw_pending: bool,
 }
 
 impl NvimGpui {
@@ -469,6 +476,8 @@ impl Default for NvimGpui {
             nvim_grid_ready: true,
             startup_resize_target: None,
             startup_flush_seen: false,
+            startup_grid_content_seen: false,
+            startup_redraw_pending: false,
         }
     }
 }

@@ -66,6 +66,7 @@ impl NvimGpui {
 
         this.bundled_nerd_font_registered = nerd_font_registered;
         this.nvim_grid_ready = !nvim_available;
+        this.startup_redraw_pending = nvim_available;
         this.apply_runtime_settings();
         this.rime_backend = initialize_rime_backend(&this.settings);
         if this.rime_backend.is_some() {
@@ -314,8 +315,9 @@ impl NvimGpui {
         self.nvim_version = protocol.map(|protocol| protocol.version);
         self.rpc_status = "rpc: reconnected".to_owned();
         log::info!(target: "nvim_gpui::state", "installed reconnected Neovim session");
-        self.start_remote_clipboard_bridge(cx);
         self.start_event_task(events, cx);
+        self.start_remote_clipboard_bridge(cx);
+        self.startup_redraw_pending = true;
     }
 
     fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {
@@ -330,6 +332,8 @@ impl NvimGpui {
         self.nvim_grid_ready = false;
         self.startup_resize_target = None;
         self.startup_flush_seen = false;
+        self.startup_grid_content_seen = false;
+        self.startup_redraw_pending = false;
         self.theme = initial_theme;
         self.pending_theme = None;
         self.pending_redraw = None;
@@ -416,11 +420,14 @@ impl NvimGpui {
         cx.notify();
     }
 
-    /// Intercept the native window close request long enough to let Neovim
-    /// report modified buffers. The confirmation UI is rendered by GPUI, so
-    /// it does not require Neovim's external-window protocol.
+    /// Intercept the native window close request for embedded Neovim long
+    /// enough to report modified buffers. A remote session is only a client
+    /// connection, so closing it must not inspect or modify server buffers.
     pub(crate) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.settings.quit_on_window_close {
+            return true;
+        }
+        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
             return true;
         }
         if matches!(self.quit_dialog, QuitDialogState::Quitting) {
@@ -508,6 +515,11 @@ impl NvimGpui {
     }
 
     pub(crate) fn save_and_quit(&mut self, cx: &mut Context<Self>) {
+        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            self.quit_dialog = QuitDialogState::Quitting;
+            cx.quit();
+            return;
+        }
         let modified_buffers = match &self.quit_dialog {
             QuitDialogState::Confirm {
                 modified_buffers, ..
@@ -528,28 +540,23 @@ impl NvimGpui {
             return;
         }
         self.quit_dialog = QuitDialogState::Saving;
-        let command = if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
-            "wall"
-        } else {
-            "wall | qa"
-        };
-        self.begin_quit_command(command, modified_buffers, cx);
+        self.begin_quit_command("wall | qa", modified_buffers, cx);
         cx.notify();
     }
 
     pub(crate) fn discard_and_quit(&mut self, cx: &mut Context<Self>) {
+        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            self.quit_dialog = QuitDialogState::Quitting;
+            cx.quit();
+            return;
+        }
         let modified_buffers = match &self.quit_dialog {
             QuitDialogState::Confirm {
                 modified_buffers, ..
             } => modified_buffers.clone(),
             _ => return,
         };
-        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
-            self.quit_dialog = QuitDialogState::Quitting;
-            cx.quit();
-        } else {
-            self.begin_quit_command("qa!", modified_buffers, cx);
-        }
+        self.begin_quit_command("qa!", modified_buffers, cx);
     }
 
     fn begin_quit_command(
@@ -766,6 +773,8 @@ mod tests {
             app.grid_size,
             Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT))
         );
+        assert!(!app.startup_grid_content_seen);
+        assert!(!app.startup_redraw_pending);
         assert_eq!(app.theme.normal_background, Some(0x202020));
         assert_eq!(app.state.mode, "NORMAL");
         assert!(app.system_ime.is_empty());

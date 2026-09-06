@@ -3,6 +3,7 @@ use rmpv::Value;
 use std::io::{BufReader, Read};
 use std::sync::mpsc::SyncSender;
 
+use super::compat::NvimProtocolAdapter;
 use super::protocol::*;
 use super::transport::{read_message, write_shared_message, RpcReader, SharedWriter};
 use super::{
@@ -25,6 +26,7 @@ pub(super) fn run_session(
 ) -> Result<(), String> {
     let mut reader = BufReader::new(reader);
     let mut request_id = 1;
+    let unknown_protocol = NvimProtocolAdapter::unknown();
 
     let api_info = request(
         &writer,
@@ -34,10 +36,12 @@ pub(super) fn run_session(
         Value::Array(Vec::new()),
         events,
         request_handlers,
+        &unknown_protocol,
     )?;
     request_id += 1;
 
     let protocol = parse_protocol_info(&api_info)?;
+    let protocol_adapter = NvimProtocolAdapter::from_protocol(&protocol);
     send_event(
         events,
         NvimEvent::ApiReady {
@@ -71,6 +75,7 @@ pub(super) fn run_session(
         client_info_params(request_methods),
         events,
         request_handlers,
+        &protocol_adapter,
     )?;
     request_id += 1;
 
@@ -85,6 +90,7 @@ pub(super) fn run_session(
         Value::Array(vec![Value::from("mouse")]),
         events,
         request_handlers,
+        &protocol_adapter,
     )?;
     request_id += 1;
     if let Some(value) = string_value(&mouse) {
@@ -105,6 +111,7 @@ pub(super) fn run_session(
         ui_attach_params_for(width, height, &protocol.capabilities),
         events,
         request_handlers,
+        &protocol_adapter,
     )?;
     let _ = rpc_ready.send_blocking(());
     send_event(events, NvimEvent::UiAttached { width, height })?;
@@ -114,15 +121,33 @@ pub(super) fn run_session(
 
     loop {
         let message = read_message(&mut reader)?;
-        if !startup_theme_sent && observe_startup_theme(&message, &mut startup_theme) {
+        if !startup_theme_sent
+            && observe_startup_theme_with_protocol(&message, &mut startup_theme, &protocol_adapter)
+        {
             let _ = startup_theme_sender.send(startup_theme);
             startup_theme_sent = true;
         }
-        dispatch_message(&writer, message, events, pending_requests, request_handlers)?;
+        dispatch_message(
+            &writer,
+            message,
+            events,
+            pending_requests,
+            request_handlers,
+            &protocol_adapter,
+        )?;
     }
 }
 
+#[cfg(test)]
 pub(crate) fn observe_startup_theme(message: &Value, theme: &mut NvimTheme) -> bool {
+    observe_startup_theme_with_protocol(message, theme, &NvimProtocolAdapter::unknown())
+}
+
+fn observe_startup_theme_with_protocol(
+    message: &Value,
+    theme: &mut NvimTheme,
+    protocol: &NvimProtocolAdapter,
+) -> bool {
     let Some(values) = message.as_array() else {
         return false;
     };
@@ -135,7 +160,7 @@ pub(crate) fn observe_startup_theme(message: &Value, theme: &mut NvimTheme) -> b
     let Some(params) = values.get(2) else {
         return false;
     };
-    let Ok(redraw_events) = parse_redraw_events(params) else {
+    let Ok(redraw_events) = parse_redraw_events(params, protocol) else {
         return false;
     };
     let mut flushed = false;
@@ -168,6 +193,7 @@ pub(crate) fn observe_startup_theme(message: &Value, theme: &mut NvimTheme) -> b
     flushed
 }
 
+#[allow(clippy::too_many_arguments)]
 fn request(
     writer: &SharedWriter,
     reader: &mut RpcReader,
@@ -176,6 +202,7 @@ fn request(
     params: Value,
     events: &Sender<NvimEvent>,
     request_handlers: &RpcRequestHandlers,
+    protocol: &NvimProtocolAdapter,
 ) -> Result<Value, String> {
     write_shared_message(
         writer,
@@ -213,7 +240,7 @@ fn request(
                     .and_then(string_value)
                     .ok_or_else(|| "RPC notification has no method".to_owned())?;
                 let params = &values[2];
-                handle_notification(&method, params, events)?;
+                handle_notification_with_protocol(&method, params, events, protocol)?;
             }
             Some(0) => {
                 expect_rpc_message_len(values, 4, "RPC request")?;
@@ -246,6 +273,7 @@ fn dispatch_message(
     events: &Sender<NvimEvent>,
     pending_requests: &PendingRequests,
     request_handlers: &RpcRequestHandlers,
+    protocol: &NvimProtocolAdapter,
 ) -> Result<(), String> {
     let Some(values) = message.as_array() else {
         return Err("RPC message is not an array".to_owned());
@@ -285,7 +313,7 @@ fn dispatch_message(
                 .and_then(string_value)
                 .ok_or_else(|| "RPC notification has no method".to_owned())?;
             let params = &values[2];
-            handle_notification(&method, params, events)
+            handle_notification_with_protocol(&method, params, events, protocol)
         }
         Some(0) => {
             expect_rpc_message_len(values, 4, "RPC request")?;
@@ -332,16 +360,26 @@ fn handle_request(
     write_shared_message(writer, &frame)
 }
 
+#[cfg(test)]
 pub(crate) fn handle_notification(
     method: &str,
     params: &Value,
     events: &Sender<NvimEvent>,
 ) -> Result<(), String> {
+    handle_notification_with_protocol(method, params, events, &NvimProtocolAdapter::unknown())
+}
+
+fn handle_notification_with_protocol(
+    method: &str,
+    params: &Value,
+    events: &Sender<NvimEvent>,
+    protocol: &NvimProtocolAdapter,
+) -> Result<(), String> {
     if method != "redraw" {
         return Ok(());
     }
 
-    let parsed_events = parse_redraw_events(params)?;
+    let parsed_events = parse_redraw_events(params, protocol)?;
     for event in parsed_events {
         send_event(events, event)?;
     }
@@ -349,7 +387,10 @@ pub(crate) fn handle_notification(
     Ok(())
 }
 
-fn parse_redraw_events(params: &Value) -> Result<Vec<NvimEvent>, String> {
+fn parse_redraw_events(
+    params: &Value,
+    protocol: &NvimProtocolAdapter,
+) -> Result<Vec<NvimEvent>, String> {
     let redraw_events = params
         .as_array()
         .ok_or_else(|| "redraw notification params are not an array".to_owned())?;
@@ -404,7 +445,7 @@ fn parse_redraw_events(params: &Value) -> Result<Vec<NvimEvent>, String> {
                     name, payload_index
                 )
             })?;
-            parsed_events.push(parse_redraw_payload(&name, args)?);
+            parsed_events.push(parse_redraw_payload(protocol, &name, args)?);
         }
     }
 
@@ -465,7 +506,11 @@ fn expect_arg_count(
     ))
 }
 
-fn parse_redraw_payload(name: &str, args: &[Value]) -> Result<NvimEvent, String> {
+fn parse_redraw_payload(
+    protocol: &NvimProtocolAdapter,
+    name: &str,
+    args: &[Value],
+) -> Result<NvimEvent, String> {
     match name {
         "default_colors_set" => {
             expect_arg_count(args, 3, 5, name)?;
@@ -570,10 +615,7 @@ fn parse_redraw_payload(name: &str, args: &[Value]) -> Result<NvimEvent, String>
             expect_arg_count(args, 6, 6, name)?;
             parse_win_pos(args)
         }
-        "win_float_pos" => {
-            expect_arg_count(args, 11, 11, name)?;
-            parse_win_float_pos(args)
-        }
+        "win_float_pos" => protocol.parse_win_float_pos(args),
         "win_viewport" => {
             expect_arg_count(args, 8, 8, name)?;
             parse_win_viewport(args)
@@ -582,10 +624,7 @@ fn parse_redraw_payload(name: &str, args: &[Value]) -> Result<NvimEvent, String>
             expect_arg_count(args, 6, 6, name)?;
             parse_win_viewport_margins(args)
         }
-        "msg_set_pos" => {
-            expect_arg_count(args, 6, 6, name)?;
-            parse_msg_set_pos(args)
-        }
+        "msg_set_pos" => protocol.parse_msg_set_pos(args),
         "win_external_pos" => {
             expect_arg_count(args, 2, 2, name)?;
             Ok(NvimEvent::WinExternalPos {

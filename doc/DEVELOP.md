@@ -66,7 +66,7 @@ Inside the VM, install:
 - Rust through `rustup`;
 - Git for Windows, including Git Bash;
 - CMake, Python 3.11+, and `just`;
-- Neovim 0.12 or newer.
+- Neovim 0.10 or newer.
 
 The [Rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html)
 and [Visual Studio Build Tools workload reference](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=visualstudio)
@@ -125,11 +125,13 @@ does not replace native x64 Windows validation for release artifacts.
 
 ## Neovim version requirement
 
-The minimum supported Neovim version is **0.12.0**. This applies to both
+The minimum supported Neovim version is **0.10.0**. This applies to both
 embedded Neovim processes and remote sessions opened with `--connect`. The
-client targets the UI protocol and API behavior available in Neovim 0.12;
-older versions are unsupported and may fail during protocol negotiation or
-leave the frontend waiting for an incompatible response.
+Neovim UI protocol has versioned multigrid payloads, so the client creates a
+protocol adapter after `nvim_get_api_info()` and normalizes those payloads
+before they reach application state. Neovim 0.10 and 0.11 use the legacy
+floating-window and message-grid payloads; Neovim 0.12 and newer use the
+extended payloads with screen positions and compositor indices.
 
 Check the version used by the development shell or an external configuration
 with:
@@ -250,8 +252,9 @@ be forced with `NVIM_GPUI_RIME_DEPLOY=1`.
   layout, compositor state, settings integration, and Neovim event dispatch.
 - `src/clipboard.rs` owns GPUI system clipboard access, `nvim_paste` text
   insertion, and the remote clipboard provider bridge.
-- `src/nvim.rs` and `src/nvim/` own embedded/remote MessagePack-RPC, redraw
-  decoding, environment selection, transport, and child-process lifecycle.
+- `src/nvim.rs` and `src/nvim/` own embedded/remote MessagePack-RPC, versioned
+  redraw decoding through `compat.rs`, environment selection, transport, and
+  child-process lifecycle.
 - `src/grid.rs` and `src/grid/` contain the logical cell model and the single
   custom `GridElement`. The model retains one logical cell per terminal
   position, coalesces ordinary neighboring text into shaped lines, and paints
@@ -278,7 +281,8 @@ following redraw areas into the application model:
 - grid creation, resize, clear, destroy, line updates, scrolling, and cursor
   movement;
 - normal split positions and floating-grid positions/visibility, including
-  Neovim's exact `compindex` order and configured `zindex`;
+  Neovim's exact `compindex` order on newer versions and the legacy `zindex`
+  ordering used by Neovim 0.10/0.11;
 - native message/cmdline grid positioning through `msg_set_pos`;
 - floating-window `blend` attributes, including the `winblend` value that
   Neovim folds into the final highlight attributes;
@@ -296,19 +300,22 @@ behavior, and broader redraw coverage remain future slices.
 
 ## Graceful window close
 
-The main window registers `Window::on_window_should_close` and returns `false`
-while it asynchronously asks Neovim for modified buffers through
-`nvim_exec_lua`. The confirmation prompt is a GPUI overlay rendered above the
-editor; it is not an `ext_window` surface and does not participate in Neovim's
-grid layout.
+The main window registers `Window::on_window_should_close`. For embedded
+Neovim, it returns `false` while it asynchronously asks Neovim for modified
+buffers through `nvim_exec_lua`. The confirmation prompt is a GPUI overlay
+rendered above the editor; it is not an `ext_window` surface and does not
+participate in Neovim's grid layout.
+
+For Unix-socket and TCP connections, closing the client returns immediately
+without querying or changing any remote buffers. nvim-gpui then exits and
+drops only its RPC connection; the remote Neovim server remains running.
 
 The prompt offers three paths:
 
 - `Cancel` hides the prompt and keeps the session alive;
-- `Save All & Quit` runs `:wall`, then closes the frontend (and the embedded
-  Neovim process); and
-- `Discard & Quit` runs `:qa!` for embedded Neovim, while a remote session
-  closes only the frontend and leaves the external Neovim process running.
+- `Save All & Quit` runs `:wall`, then closes the frontend and the embedded
+  Neovim process; and
+- `Discard & Quit` runs `:qa!` for embedded Neovim.
 
 When the modified-buffer query fails, the prompt remains open and displays the
 error instead of silently discarding data. The `quit_on_window_close` setting

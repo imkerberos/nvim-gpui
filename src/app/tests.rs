@@ -9,7 +9,7 @@ use crate::{
         EmojiWidth, GridLineCell, HighlightAttrs, HighlightId,
     },
     image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
-    nvim::NvimEvent,
+    nvim::{NvimEvent, NvimFloatAnchor, NvimFloatPosition},
     parse_cli, CliAction, CliOptions, NvimConnection,
 };
 use gpui::{point, px};
@@ -202,13 +202,59 @@ fn startup_keeps_grid_hidden_until_matching_resize_is_flushed() {
         width: 3,
         height: 2,
     });
+    app.apply_nvim_event(NvimEvent::GridLine {
+        grid: 1,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("initial", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
     app.apply_nvim_event(NvimEvent::Flush);
     assert!(!app.nvim_grid_ready);
+    assert_eq!(app.grid.rows()[0].cells()[0].text, "initial");
 
     app.apply_nvim_event(NvimEvent::GridResized {
         grid: 1,
         width: 4,
         height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::GridLine {
+        grid: 1,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("ready", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+    assert!(app.nvim_grid_ready);
+    assert_eq!(app.grid.rows()[0].cells()[0].text, "ready");
+}
+
+#[test]
+fn startup_does_not_show_a_cursor_only_flush() {
+    let mut app = NvimGpui {
+        nvim_grid_ready: false,
+        startup_resize_target: Some((3, 2)),
+        ..Default::default()
+    };
+
+    app.apply_nvim_event(NvimEvent::Flush);
+    assert!(!app.nvim_grid_ready);
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 1,
+        width: 3,
+        height: 2,
+    });
+    app.apply_nvim_event(NvimEvent::Flush);
+    assert!(!app.nvim_grid_ready);
+
+    app.apply_nvim_event(NvimEvent::GridLine {
+        grid: 1,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("ready", HighlightId(1), 1)],
+        wraps_to_next: false,
     });
     app.apply_nvim_event(NvimEvent::Flush);
     assert!(app.nvim_grid_ready);
@@ -667,15 +713,10 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
     app.apply_nvim_event(NvimEvent::WinFloatPos {
         grid: 3,
         win: Vec::new(),
-        anchor: "NW".to_owned(),
-        anchor_grid: 1,
-        anchor_row: 0,
-        anchor_col: 0,
+        position: NvimFloatPosition::Screen { row: 5, col: 6 },
         mouse_enabled: true,
         zindex: 50,
         compindex: 7,
-        screen_row: 5,
-        screen_col: 6,
     });
     app.apply_nvim_event(NvimEvent::Flush);
 
@@ -724,28 +765,18 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
     app.apply_nvim_event(NvimEvent::WinFloatPos {
         grid: 2,
         win: Vec::new(),
-        anchor: "NW".to_owned(),
-        anchor_grid: 1,
-        anchor_row: 0,
-        anchor_col: 0,
+        position: NvimFloatPosition::Screen { row: 1, col: 1 },
         mouse_enabled: false,
         zindex: 100,
         compindex: 2,
-        screen_row: 1,
-        screen_col: 1,
     });
     app.apply_nvim_event(NvimEvent::WinFloatPos {
         grid: 3,
         win: Vec::new(),
-        anchor: "NW".to_owned(),
-        anchor_grid: 1,
-        anchor_row: 0,
-        anchor_col: 0,
+        position: NvimFloatPosition::Screen { row: 2, col: 2 },
         mouse_enabled: false,
         zindex: 40,
         compindex: 1,
-        screen_row: 2,
-        screen_col: 2,
     });
 
     // Margins can arrive before win_pos (as they do during initial
@@ -810,6 +841,55 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
         })
     );
     assert_eq!((placement.row, placement.col), (4, 5));
+}
+
+#[test]
+fn legacy_float_position_is_resolved_from_anchor_grid() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 2,
+        width: 20,
+        height: 10,
+    });
+    app.apply_nvim_event(NvimEvent::WinPos {
+        grid: 2,
+        win: Vec::new(),
+        row: 4,
+        col: 7,
+        width: 20,
+        height: 10,
+    });
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 3,
+        width: 4,
+        height: 3,
+    });
+    app.apply_nvim_event(NvimEvent::WinFloatPos {
+        grid: 3,
+        win: Vec::new(),
+        position: NvimFloatPosition::Anchored {
+            anchor: NvimFloatAnchor::SouthEast,
+            anchor_grid: 2,
+            row: 5,
+            col: 6,
+        },
+        mouse_enabled: true,
+        zindex: 50,
+        compindex: -1,
+    });
+
+    let placement = app.grid_placement(3);
+    assert_eq!((placement.row, placement.col), (7, 10));
+
+    app.apply_nvim_event(NvimEvent::GridResized {
+        grid: 3,
+        width: 6,
+        height: 4,
+    });
+
+    let placement = app.grid_placement(3);
+    assert_eq!((placement.row, placement.col), (6, 8));
 }
 
 #[test]

@@ -30,10 +30,9 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Neovim requirement
 
-nvim-gpui requires Neovim **0.12.0 or newer**. This requirement applies to
-both embedded sessions and `--connect` targets. Older Neovim versions are not
-supported and may fail during UI protocol negotiation or leave the client
-waiting for an incompatible response.
+nvim-gpui requires Neovim **0.10.0 or newer**. This requirement applies to
+both embedded sessions and `--connect` targets. The client adapts the
+versioned multigrid UI payloads used by Neovim 0.10, 0.11, and 0.12+.
 
 ## Quick start
 

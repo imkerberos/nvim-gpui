@@ -1,3 +1,4 @@
+use super::compat::NvimProtocolAdapter;
 use super::environment::{
     apply_project_nvim_environment, mark_embedded_gui_environment, parse_environment,
     project_nvim_environment_is_active_at, remove_project_nvim_environment, NVIM_GPUI_ENV,
@@ -11,8 +12,8 @@ use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
 use super::{
-    disconnect_reason, DisconnectReason, NvimCapabilities, NvimEvent, NvimProcess, NvimTheme,
-    NVIM_EXITED,
+    disconnect_reason, DisconnectReason, NvimCapabilities, NvimEvent, NvimFloatAnchor,
+    NvimFloatPosition, NvimProcess, NvimProtocolInfo, NvimTheme, NvimVersion, NVIM_EXITED,
 };
 use crate::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
@@ -92,6 +93,112 @@ fn api_metadata_builds_version_and_ui_capabilities() {
     assert!(!protocol.capabilities.supports_ui_option("ext_hlstate"));
     assert!(protocol.capabilities.supports_ui_event("grid_line"));
     assert!(protocol.capabilities.supports_ui_event("flush"));
+}
+
+#[test]
+fn protocol_adapter_selects_ui_event_schema_from_neovim_version() {
+    let legacy = NvimProtocolAdapter::from_protocol(&NvimProtocolInfo {
+        version: NvimVersion {
+            major: 0,
+            minor: 10,
+            patch: 4,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let extended = NvimProtocolAdapter::from_protocol(&NvimProtocolInfo {
+        version: NvimVersion {
+            major: 0,
+            minor: 12,
+            patch: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let legacy_message = legacy
+        .parse_msg_set_pos(&[
+            Value::from(3),
+            Value::from(20),
+            Value::Boolean(true),
+            Value::from("─"),
+        ])
+        .expect("legacy message position should decode");
+    assert!(matches!(
+        legacy_message,
+        NvimEvent::MsgSetPos {
+            zindex: 200,
+            compindex: -1,
+            ..
+        }
+    ));
+
+    let extended_message = extended
+        .parse_msg_set_pos(&[
+            Value::from(3),
+            Value::from(20),
+            Value::Boolean(true),
+            Value::from("─"),
+            Value::from(200),
+            Value::from(4),
+        ])
+        .expect("extended message position should decode");
+    assert!(matches!(
+        extended_message,
+        NvimEvent::MsgSetPos {
+            zindex: 200,
+            compindex: 4,
+            ..
+        }
+    ));
+
+    let legacy_float = legacy
+        .parse_win_float_pos(&[
+            Value::from(3),
+            Value::Ext(1, vec![205, 3, 233]),
+            Value::from("SE"),
+            Value::from(1),
+            Value::from(5),
+            Value::from(6),
+            Value::Boolean(true),
+            Value::from(50),
+        ])
+        .expect("legacy float position should decode");
+    assert!(matches!(
+        legacy_float,
+        NvimEvent::WinFloatPos {
+            position: NvimFloatPosition::Anchored {
+                anchor: NvimFloatAnchor::SouthEast,
+                ..
+            },
+            compindex: -1,
+            ..
+        }
+    ));
+
+    let extended_float = extended
+        .parse_win_float_pos(&[
+            Value::from(3),
+            Value::Ext(1, vec![205, 3, 233]),
+            Value::from("NW"),
+            Value::from(1),
+            Value::from(5),
+            Value::from(6),
+            Value::Boolean(true),
+            Value::from(50),
+            Value::from(7),
+            Value::from(8),
+            Value::from(9),
+        ])
+        .expect("extended float position should decode");
+    assert!(matches!(
+        extended_float,
+        NvimEvent::WinFloatPos {
+            position: NvimFloatPosition::Screen { row: 8, col: 9 },
+            compindex: 7,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -476,7 +583,7 @@ fn disconnect_reason_distinguishes_shutdown_transport_and_protocol_failures() {
     );
     assert_eq!(
         disconnect_reason(&Err(NVIM_EXITED.to_owned()), false, true, None),
-        DisconnectReason::TransportClosed
+        DisconnectReason::CleanExit
     );
     assert_eq!(
         disconnect_reason(&Err(NVIM_EXITED.to_owned()), false, false, Some(false)),
@@ -1122,15 +1229,10 @@ fn redraw_multigrid_window_events_are_decoded() {
         NvimEvent::WinFloatPos {
             grid: 3,
             win: vec![205, 3, 233],
-            anchor: "NW".to_owned(),
-            anchor_grid: 1,
-            anchor_row: 0,
-            anchor_col: 0,
+            position: NvimFloatPosition::Screen { row: 5, col: 6 },
             mouse_enabled: true,
             zindex: 50,
             compindex: 7,
-            screen_row: 5,
-            screen_col: 6,
         }
     );
     assert_eq!(
@@ -1230,6 +1332,75 @@ fn redraw_msg_set_pos_is_decoded() {
             sep_char: "─".to_owned(),
             zindex: 200,
             compindex: 9,
+        }
+    );
+}
+
+#[test]
+fn redraw_legacy_msg_set_pos_is_normalized() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("msg_set_pos"),
+        Value::Array(vec![
+            Value::from(3),
+            Value::from(20),
+            Value::Boolean(true),
+            Value::from("─"),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("legacy msg_set_pos should be available"),
+        NvimEvent::MsgSetPos {
+            grid: 3,
+            row: 20,
+            scrolled: true,
+            sep_char: "─".to_owned(),
+            zindex: 200,
+            compindex: -1,
+        }
+    );
+}
+
+#[test]
+fn redraw_legacy_win_float_pos_is_normalized() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("win_float_pos"),
+        Value::Array(vec![
+            Value::from(3),
+            Value::Ext(1, vec![205, 3, 233]),
+            Value::from("SE"),
+            Value::from(1),
+            Value::from(5),
+            Value::from(6),
+            Value::Boolean(true),
+            Value::from(50),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("legacy win_float_pos should be available"),
+        NvimEvent::WinFloatPos {
+            grid: 3,
+            win: vec![205, 3, 233],
+            position: NvimFloatPosition::Anchored {
+                anchor: NvimFloatAnchor::SouthEast,
+                anchor_grid: 1,
+                row: 5,
+                col: 6,
+            },
+            mouse_enabled: true,
+            zindex: 50,
+            compindex: -1,
         }
     );
 }

@@ -219,8 +219,25 @@ impl NvimGpui {
             left.kind
                 .paint_rank()
                 .cmp(&right.kind.paint_rank())
-                .then_with(|| left.placement.compindex.cmp(&right.placement.compindex))
-                .then_with(|| left.placement.z_index.cmp(&right.placement.z_index))
+                .then_with(|| {
+                    let left_has_compindex = left.placement.compindex >= 0;
+                    let right_has_compindex = right.placement.compindex >= 0;
+                    if left_has_compindex && right_has_compindex {
+                        left.placement
+                            .compindex
+                            .cmp(&right.placement.compindex)
+                            .then_with(|| left.placement.z_index.cmp(&right.placement.z_index))
+                    } else {
+                        // Neovim 0.10/0.11 do not send compindex. Their
+                        // compositor orders layers by z-index, so use that
+                        // legacy ordering whenever either side lacks the
+                        // newer exact composition index.
+                        left.placement
+                            .z_index
+                            .cmp(&right.placement.z_index)
+                            .then_with(|| left.placement.compindex.cmp(&right.placement.compindex))
+                    }
+                })
                 .then_with(|| left.grid_id.cmp(&right.grid_id))
         });
 
@@ -282,6 +299,46 @@ mod tests {
         assert_eq!(frame.layers[0].kind, GridLayerKind::Main);
         assert_eq!(frame.layers[1].kind, GridLayerKind::Message);
         assert_eq!(frame.layers[2].kind, GridLayerKind::Float);
+    }
+
+    #[test]
+    fn compositor_uses_legacy_zindex_when_compindex_is_unavailable() {
+        let mut app = NvimGpui::default();
+        app.other_grids
+            .insert(2, Rc::new(grid::GridModel::new(4, 2)));
+        app.other_grids
+            .insert(3, Rc::new(grid::GridModel::new(6, 3)));
+        app.grid_placements.insert(
+            2,
+            GridPlacement {
+                kind: GridLayerKind::Float,
+                visible: true,
+                z_index: 50,
+                compindex: -1,
+                ..Default::default()
+            },
+        );
+        app.grid_placements.insert(
+            3,
+            GridPlacement {
+                kind: GridLayerKind::Float,
+                visible: true,
+                z_index: 100,
+                compindex: -1,
+                ..Default::default()
+            },
+        );
+
+        let frame = app.compositor_frame();
+
+        assert_eq!(
+            frame
+                .layers
+                .iter()
+                .map(|layer| layer.grid_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]

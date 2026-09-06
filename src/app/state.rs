@@ -224,7 +224,7 @@ impl NvimGpui {
     }
 
     pub(super) fn update_startup_grid_ready(&mut self) {
-        if self.nvim_grid_ready || !self.startup_flush_seen {
+        if self.nvim_grid_ready || !self.startup_flush_seen || !self.startup_grid_content_seen {
             return;
         }
 
@@ -257,7 +257,7 @@ impl NvimGpui {
         if !self.nvim_grid_ready {
             self.startup_resize_target = Some(size);
             self.update_startup_grid_ready();
-            if self.nvim_grid_ready {
+            if self.nvim_grid_ready && !self.startup_redraw_pending {
                 return;
             }
         }
@@ -266,24 +266,50 @@ impl NvimGpui {
             return;
         };
 
-        if self.last_resize == Some(size) {
-            return;
-        }
+        let resize_succeeded = if self.last_resize == Some(size) {
+            true
+        } else {
+            match nvim.send_resize(width, height) {
+                Ok(()) => {
+                    log::debug!(
+                        target: "nvim_gpui::state",
+                        "sent Neovim resize: width={}, height={}",
+                        width,
+                        height
+                    );
+                    self.last_resize = Some(size);
+                    true
+                }
+                Err(error) => {
+                    log::error!(target: "nvim_gpui::state", "Neovim resize failed: {error}");
+                    self.rpc_status = format!("rpc resize error: {error}");
+                    false
+                }
+            }
+        };
 
-        match nvim.send_resize(width, height) {
-            Ok(()) => {
-                log::debug!(
-                    target: "nvim_gpui::state",
-                    "sent Neovim resize: width={}, height={}",
-                    width,
-                    height
-                );
-                self.last_resize = Some(size);
-            }
-            Err(error) => {
-                log::error!(target: "nvim_gpui::state", "Neovim resize failed: {error}");
-                self.rpc_status = format!("rpc resize error: {error}");
-            }
+        if resize_succeeded && self.startup_redraw_pending {
+            self.startup_redraw_pending = false;
+            self.request_startup_redraw();
+        }
+    }
+
+    pub(super) fn request_startup_redraw(&self) {
+        let Some(nvim) = self.nvim.as_ref() else {
+            return;
+        };
+        match nvim.request(
+            "nvim_command",
+            rmpv::Value::Array(vec![rmpv::Value::from("redraw!")]),
+        ) {
+            Ok(_) => log::debug!(
+                target: "nvim_gpui::state",
+                "requested a complete redraw after Neovim startup/reconnect"
+            ),
+            Err(error) => log::warn!(
+                target: "nvim_gpui::state",
+                "could not request a complete redraw after Neovim startup/reconnect: {error}"
+            ),
         }
     }
 

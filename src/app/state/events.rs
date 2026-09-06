@@ -49,12 +49,19 @@ impl NvimGpui {
                 );
                 self.ime_coordinates_dirty = true;
                 if grid == 1 {
+                    if !self.nvim_grid_ready {
+                        // A resize starts a new startup snapshot. Do not let
+                        // a cursor-only Flush from the old dimensions make
+                        // the new, still-empty grid visible.
+                        self.startup_grid_content_seen = false;
+                    }
                     self.pending_grid = Some(self.new_styled_grid(width as usize, height as usize));
                     self.grid_size = Some((width, height));
                 } else {
                     self.pending_grid_mut_for(grid)
                         .resize(width as usize, height as usize);
                 }
+                self.refresh_float_position(grid);
                 self.pending_destroyed_grids.remove(&grid);
             }
             NvimEvent::GridLine {
@@ -64,6 +71,9 @@ impl NvimGpui {
                 cells,
                 wraps_to_next,
             } => {
+                if grid == 1 && !self.nvim_grid_ready {
+                    self.startup_grid_content_seen = true;
+                }
                 self.pending_grid_mut_for(grid).apply_grid_line(
                     row as usize,
                     col_start as usize,
@@ -72,6 +82,9 @@ impl NvimGpui {
                 );
             }
             NvimEvent::GridClear { grid } => {
+                if grid == 1 && !self.nvim_grid_ready {
+                    self.startup_grid_content_seen = true;
+                }
                 self.pending_grid_mut_for(grid).clear();
             }
             NvimEvent::GridDestroy { grid } => {
@@ -152,34 +165,34 @@ impl NvimGpui {
                 placement.height = height;
                 placement.z_index = 0;
                 placement.compindex = -1;
+                placement.float_position = None;
                 placement.kind = super::super::compositor::GridLayerKind::Window;
                 placement.mouse_enabled = true;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
+                self.refresh_anchored_float_positions(grid);
             }
             NvimEvent::WinFloatPos {
                 grid,
                 win: _,
-                anchor: _,
-                anchor_grid: _,
-                anchor_row: _,
-                anchor_col: _,
+                position,
                 mouse_enabled,
                 zindex,
                 compindex,
-                screen_row,
-                screen_col,
             } => {
                 self.ime_coordinates_dirty = true;
+                let (row, col) = self.resolve_float_position(grid, position);
                 let mut placement = self.grid_placement(grid);
-                placement.row = screen_row;
-                placement.col = screen_col;
+                placement.row = row;
+                placement.col = col;
                 placement.z_index = zindex;
                 placement.compindex = compindex;
+                placement.float_position = Some(position);
                 placement.kind = super::super::compositor::GridLayerKind::Float;
                 placement.mouse_enabled = mouse_enabled;
                 placement.visible = true;
                 self.set_grid_placement(grid, placement);
+                self.refresh_anchored_float_positions(grid);
             }
             NvimEvent::WinViewport {
                 grid,

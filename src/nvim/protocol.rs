@@ -356,23 +356,6 @@ pub(super) fn parse_win_pos(args: &[Value]) -> Result<NvimEvent, String> {
     })
 }
 
-pub(super) fn parse_win_float_pos(args: &[Value]) -> Result<NvimEvent, String> {
-    Ok(NvimEvent::WinFloatPos {
-        grid: parse_u64_value(&args[0], "win_float_pos grid")?,
-        win: parse_window_id(&args[1])?,
-        anchor: string_value(&args[2]).unwrap_or_default(),
-        anchor_grid: parse_u64_value(&args[3], "win_float_pos anchor grid")?,
-        anchor_row: parse_i64_value(&args[4], "win_float_pos anchor row")?,
-        anchor_col: parse_i64_value(&args[5], "win_float_pos anchor column")?,
-        mouse_enabled: bool_value(&args[6])
-            .ok_or_else(|| "win_float_pos has an invalid mouse flag".to_owned())?,
-        zindex: parse_i64_value(&args[7], "win_float_pos z-index")?,
-        compindex: parse_i64_value(&args[8], "win_float_pos composition index")?,
-        screen_row: parse_i64_value(&args[9], "win_float_pos screen row")?,
-        screen_col: parse_i64_value(&args[10], "win_float_pos screen column")?,
-    })
-}
-
 pub(super) fn parse_win_viewport(args: &[Value]) -> Result<NvimEvent, String> {
     Ok(NvimEvent::WinViewport {
         grid: parse_u64_value(&args[0], "win_viewport grid")?,
@@ -394,19 +377,6 @@ pub(super) fn parse_win_viewport_margins(args: &[Value]) -> Result<NvimEvent, St
         bottom: parse_u64_value(&args[3], "win_viewport_margins bottom")?,
         left: parse_u64_value(&args[4], "win_viewport_margins left")?,
         right: parse_u64_value(&args[5], "win_viewport_margins right")?,
-    })
-}
-
-pub(super) fn parse_msg_set_pos(args: &[Value]) -> Result<NvimEvent, String> {
-    Ok(NvimEvent::MsgSetPos {
-        grid: parse_u64_value(&args[0], "msg_set_pos grid")?,
-        row: parse_u64_value(&args[1], "msg_set_pos row")?,
-        scrolled: bool_value(&args[2])
-            .ok_or_else(|| "msg_set_pos has an invalid scrolled flag".to_owned())?,
-        sep_char: string_value(&args[3])
-            .ok_or_else(|| "msg_set_pos has an invalid separator character".to_owned())?,
-        zindex: parse_i64_value(&args[4], "msg_set_pos z-index")?,
-        compindex: parse_i64_value(&args[5], "msg_set_pos composition index")?,
     })
 }
 
