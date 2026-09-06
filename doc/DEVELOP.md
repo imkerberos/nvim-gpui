@@ -9,19 +9,60 @@ the root [README](../README.md).
 The repository uses a Nix flake and `direnv`. The flake follows the
 `nixos-26.05` nixpkgs channel and provides Rust, GPUI's native build
 dependencies, Neovim, `lazy.nvim`, `snacks.nvim`, the Markdown Tree-sitter
-parser, ImageMagick, CMake, `just`, and `gnumake`.
+parser, ImageMagick, CMake, `just`, `gh`, and `gnumake`.
 
 ```sh
 direnv allow
 nix develop
 ```
 
-The shell keeps generated data in the checkout:
+The platform development tasks provide a single entry point for setting up or
+entering the development environment:
 
-- `.cache/cargo-target` is `CARGO_TARGET_DIR`.
-- `.cache/cargo-home` is `CARGO_HOME`.
+```sh
+just dev                 # select the current platform automatically
+just dev-macos           # enter the macOS Nix development shell
+just dev-linux           # enter the Linux Nix development shell
+just dev-windows         # install Windows prerequisites with winget
+```
+
+`dev-macos` and `dev-linux` enter this repository's Nix flake. `dev-windows`
+must be run from an elevated PowerShell or Command Prompt with `winget`.
+It installs the x64 Visual Studio 2022 Build Tools with the C++ workload,
+CMake components, and Windows 10 SDK 20348, plus Rustup, Git, CMake, Python
+3.11, Neovim, `just`, `gh`, 7-Zip, and aria2. It then installs the stable Rust
+toolchain and the `x86_64-pc-windows-msvc` target. The task also finds the
+MSVC `Hostx64/x64/link.exe` and persists it in
+`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`, so another `link.exe` cannot be
+selected accidentally. Restart the terminal after installation, then use an
+x64 Native Tools Command Prompt for VS 2022, or start PowerShell from that
+environment, so `cl.exe` is on `PATH`.
+
+On a fresh Windows installation, `git` and `just` are not available yet, so
+bootstrap the environment directly from PowerShell or Command Prompt. The
+repository includes a command wrapper that only requires the Windows-built-in
+PowerShell and `winget`:
+
+```powershell
+.\dev-windows.cmd
+```
+
+The equivalent direct PowerShell command is:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-windows.ps1
+```
+
+After the script installs Git and `just`, restart the terminal. Later runs can
+use `just dev-windows` or the platform dispatcher `just dev`.
+
+Cargo keeps its normal default locations:
+
+- `target/` is Cargo's default build output directory.
+- `~/.cargo/` is Cargo's default home for the registry, Git sources, and tools.
+- The operating system's default temporary directory is used for compiler and
+  build-script temporary files.
 - `.cache/nvim-*` contains the repository Neovim data, state, and cache.
-- `tmp/` is `TMPDIR` for compiler and build-script temporary files.
 
 The shell does not export `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
 `XDG_STATE_HOME`, or `XDG_CACHE_HOME` globally. This keeps Git and other
@@ -59,41 +100,40 @@ See the [VMware Apple silicon guest limitations](https://knowledge.broadcom.com/
 and [Microsoft's Windows on Arm emulation documentation](https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation)
 before creating the VM. Use a Windows 11 ARM64 image, not an x64 image.
 
-Inside the VM, install:
+Inside the VM, run `just dev-windows` from an elevated PowerShell or Command Prompt
+terminal. It installs the required tools automatically through `winget`:
 
 - Visual Studio 2022 Build Tools with **Desktop development with C++**, the
   MSVC v143 x64/x86 build tools, a Windows SDK, and CMake tools;
 - Rust through `rustup`;
-- Git for Windows, including Git Bash;
+- Git for Windows (Git Bash is optional);
 - CMake, Python 3.11+, and `just`;
 - Neovim 0.10 or newer.
 
 The [Rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html)
 and [Visual Studio Build Tools workload reference](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=visualstudio)
 describe the compiler and SDK components. The full Visual Studio IDE is not
-required. Git Bash is needed because the repository's `justfile` runs recipes
-through Bash.
+required. The `Justfile` uses PowerShell on Windows, so Git Bash is optional.
 
-Start an **x64 Native Tools Command Prompt for VS 2022**, then launch Git
-Bash from that environment so `cl.exe` and `link.exe` are available. In the
-repository, install the target and the task runner:
+Start an **x64 Native Tools Command Prompt for VS 2022**, then use PowerShell
+from that environment so `cl.exe` is available. The setup task installs the
+target and the task runner; if bootstrapping without `just`, run the PowerShell
+script directly as described above:
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
 cargo install just
 ```
 
-For an ARM64 Windows guest, select the x64 target explicitly. These variables
-mirror the repository-scoped paths created by the Nix shell:
+For an ARM64 Windows guest, select the x64 target explicitly. Only the
+application's development data is kept in the repository:
 
 ```sh
 export CARGO_BUILD_TARGET=x86_64-pc-windows-msvc
-export CARGO_TARGET_DIR="$PWD/.cache/cargo-target"
-export CARGO_HOME="$PWD/.cache/cargo-home"
 export NVIM_GPUI_CACHE_DIR="$PWD/.cache"
 export NVIM_GPUI_CONFIG_DIR="$PWD/config"
 export SNACKS_KITTY=1
-mkdir -p "$CARGO_TARGET_DIR" "$CARGO_HOME" "$NVIM_GPUI_CACHE_DIR"
+mkdir -p "$NVIM_GPUI_CACHE_DIR"
 ```
 
 If Neovim is not on `PATH`, set `NVIM_GPUI_NVIM` to an absolute Windows path,
@@ -101,6 +141,15 @@ for example `C:/Program Files/Neovim/bin/nvim.exe`. The Nix shell's plugin
 paths are not available on Windows; the repository Neovim profile still works
 without those optional paths, while image and Tree-sitter development tests
 require installing the corresponding plugins separately.
+
+Do not fix the linker conflict by renaming or deleting unrelated `link.exe`
+files. Cargo uses the explicit MSVC linker configured by `dev-windows`; check it from
+PowerShell with:
+
+```powershell
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
+& $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER /?
+```
 
 Run the platform-independent checks and an x64 build with:
 
@@ -142,21 +191,26 @@ nvim --version | head -1
 
 ## just tasks
 
-Run tasks from the Nix development shell on macOS/Linux. On Windows, run the
-same Rust tasks from Git Bash in the Visual Studio developer environment; see
-[Windows development with VMware Fusion](#windows-development-with-vmware-fusion).
+Run tasks from the Nix development shell on macOS/Linux. On Windows, the
+Justfile uses PowerShell, so Git Bash is optional; run the tasks from the
+Visual Studio developer environment. See [Windows development with VMware
+Fusion](#windows-development-with-vmware-fusion).
 
 The tasks are grouped by responsibility. Low-level tasks do one operation;
-the `ci` and `package-*` tasks compose them:
+the `ci` and `pack-*` tasks compose them:
 
 ```text
 validation:  fmt, fmt-check, check, clippy, test, ci
-build:       build, build-release, run, gpvim
+build:       build, build-release, release, run, gpvim
+dev:         current OS -> dev-macos, dev-linux, or dev-windows
+ubuntu test: setup-ubuntu
 linux:       docker-build, docker-build-linux-aarch64
 rime:        rime-runtime, rime-runtime-check, rime-runtime-macos,
              rime-runtime-windows
-macOS:       bundle, macos-smoke, dmg, package-macos
-Windows:     bundle-windows, package-windows
+bundle:      current OS -> bundle-macos or bundle-windows
+smoke:       current OS -> smoke-macos or smoke-windows
+macOS:       bundle-macos, smoke-macos, dmg, pack-macos
+Windows:     bundle-windows, smoke-windows, pack-windows
 release:     release-prepare, release-check, release-notes
 ```
 
@@ -165,10 +219,15 @@ Common commands:
 ```sh
 just ci
 just build-release
+just release              # compatibility alias for build-release
+just dev                  # select the current platform development setup
 just run
+just bundle               # select bundle-macos or bundle-windows automatically
+just smoke                # select smoke-macos or smoke-windows automatically
 
-just package-macos       # macOS only: checks, runtime, AppBundle, smoke test, DMG
-just package-windows     # Windows only: checks, runtime, directory bundle
+just pack-macos          # macOS only: checks, runtime, AppBundle, smoke test, DMG
+just pack-windows        # Windows only: checks, runtime, directory bundle, smoke test
+just setup-ubuntu        # Ubuntu VM only: runtime libraries and IME support
 
 just docker-build x86_64
 just docker-build-linux-aarch64
@@ -179,10 +238,11 @@ just release-notes v0.2.0
 ```
 
 The dependency flow is intentional: `ci` runs `check`, Clippy, and tests;
-`dmg` runs after `macos-smoke`, which runs after `bundle` and
-`build-release`; `package-macos` additionally builds the macOS Rime runtime;
-and `package-windows` additionally builds the Windows Rime runtime. The old
-`release` task remains a compatibility alias for `build-release`.
+`dmg` runs after `smoke-macos`, which runs after `bundle-macos` and
+`build-release`; `pack-macos` additionally builds the macOS Rime runtime;
+`smoke-windows` runs after `bundle-windows`; and `pack-windows` additionally
+builds the Windows Rime runtime and smoke-tests both bundled executables. The
+old `release` task remains a compatibility alias for `build-release`.
 
 `Cargo.toml` is the canonical version source. Before creating a release, run
 `just release-prepare VERSION`, add the matching section to `CHANGELOG.md`,
@@ -194,11 +254,39 @@ body.
 `Makefile` forwards the common tasks to `just` for environments where a Make
 entry point is more convenient.
 
+### Ubuntu test environment
+
+`setup-ubuntu` prepares an Ubuntu desktop VM for testing an already-built
+nvim-gpui binary. It installs the GPUI runtime libraries, Neovim 0.12.5 when
+the existing Neovim is missing or older than 0.10, Ubuntu's default IBus with
+the ordinary `ibus-libpinyin` engine, and the system librime/Rime data needed
+by nvim-gpui's built-in Rime backend:
+
+```sh
+just setup-ubuntu
+```
+
+The two input paths are intentionally separate. `System IME` uses IBus and
+libpinyin; `Rime` loads librime directly inside nvim-gpui. The setup task does
+not install `ibus-rime`, because that would register Rime as an IBus engine and
+would blur this distinction. After setup, log out and back in if Ubuntu has
+not refreshed the desktop input-method session. Set
+`NVIM_GPUI_CONFIGURE_IBUS=0` when the VM already has its own input-method
+selection.
+
+If an older Neovim is already installed, the pinned test binary is placed at
+`/usr/local/bin/nvim-gpui-nvim` without replacing the existing `nvim` command.
+Use it explicitly when testing:
+
+```sh
+export NVIM_GPUI_NVIM=/usr/local/bin/nvim-gpui-nvim
+```
+
 ### Linux builds through Docker
 
 On macOS, Docker can build the Linux release for either supported Linux
-architecture. The task selects the Docker platform and keeps the result in a
-separate Cargo target directory:
+architecture. The task selects the Docker platform and keeps the copied
+result in a separate architecture-specific output directory:
 
 ```sh
 just docker-build x86_64
@@ -216,11 +304,12 @@ The resulting binaries are stored at:
 
 The task creates two persistent Docker data volumes. Each architecture has a
 separate Nix store (`nvim-gpui-nix-linux-x86_64` or
-`nvim-gpui-nix-linux-aarch64`), while downloaded Cargo sources use the shared
-`nvim-gpui-cargo-home` volume. Subsequent builds therefore reuse Nix packages
-and Cargo dependencies instead of downloading them again. The target
-directories remain separate because compiled objects cannot be shared between
-x86_64 and aarch64.
+`nvim-gpui-nix-linux-aarch64`), while Cargo's default home inside the container
+(`/root/.cargo`) uses the shared `nvim-gpui-cargo-home` volume. Subsequent
+builds therefore reuse Nix packages and Cargo dependencies instead of
+downloading them again. Cargo itself writes to the default `/workspace/target`
+directory; the two release binaries are copied into the architecture-specific
+artifact directory after the build.
 
 The task uses the pinned `nixos/nix:2.32.3` image by default. Override it only
 when intentionally testing another Nix image:
@@ -657,7 +746,7 @@ staging directory. On macOS, run:
 
 ```sh
 just rime-runtime-macos
-just bundle
+just bundle-macos
 ```
 
 The macOS builder uses merged plugins and static third-party dependencies,
@@ -665,7 +754,7 @@ defaults to a universal arm64/x86_64 dylib, and rejects Nix/Homebrew runtime
 paths. Set `NVIM_GPUI_RIME_STARTER_DATA=/path/to/curated-data` only when a
 different curated data source is needed. The starter data is a build input,
 not the user's Rime directory; user dictionaries remain in the
-application-private user-data directory. `just bundle` copies the validated
+application-private user-data directory. `just bundle-macos` copies the validated
 runtime into the AppBundle while preserving library symlinks. `just dmg`
 then creates the compressed macOS package.
 
@@ -702,7 +791,12 @@ Windows executable, so this layout is also the clean-environment bundle
 contract. It is a directory bundle rather than an installer and still needs
 installer integration and code signing.
 
-On macOS, run `just rime-runtime-macos` first. `just bundle` validates the
+`just smoke-windows` runs both bundled executables with `--version` and checks
+that they start successfully. `just smoke` selects `smoke-macos` or
+`smoke-windows` for the current operating system. `pack-windows` includes this
+smoke test before the release workflow creates its zip archive.
+
+On macOS, run `just rime-runtime-macos` first. `just bundle-macos` validates the
 staged runtime and copies it into the AppBundle; it does not copy user data or
 silently fall back to a system librime. It creates:
 
@@ -770,4 +864,4 @@ native packaging validation are available.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also
-be checked with `nix develop -c just package-macos`.
+be checked with `nix develop -c just pack-macos`.

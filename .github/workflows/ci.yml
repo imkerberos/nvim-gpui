@@ -49,14 +49,14 @@ jobs:
       - name: Cache Cargo downloads
         uses: actions/cache@v4
         with:
-          path: .cache/cargo-home
+          path: ~/.cargo
           key: cargo-${{ matrix.nix_system }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
           restore-keys: |
             cargo-${{ matrix.nix_system }}-
 
       - name: Run checks and macOS package validation
         if: matrix.nix_system == 'aarch64-darwin'
-        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just package-macos
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-macos
 
       - name: Run Linux checks
         if: matrix.nix_system != 'aarch64-darwin'
@@ -74,7 +74,7 @@ jobs:
       - name: Cache Cargo downloads
         uses: actions/cache@v4
         with:
-          path: .cache/cargo-home
+          path: ~/.cargo
           key: cargo-windows-x86_64-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-windows-x86_64-
@@ -85,10 +85,8 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup component add clippy rustfmt
-          $cargoHome = Join-Path $env:GITHUB_WORKSPACE '.cache\cargo-home'
-          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
-          "CARGO_HOME=$cargoHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          (Join-Path $cargoHome 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+          $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           cargo install just --locked
 
       - name: Install pinned Neovim

@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            .cache/cargo-home
+            ~/.cargo
             .cache/rime-build/macos
           key: macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flake.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
           restore-keys: |
@@ -68,7 +68,7 @@ jobs:
       - name: Build, test, and package macOS
         env:
           NVIM_GPUI_PACKAGE_ARCH: ${{ matrix.arch }}
-        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just package-macos
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-macos
 
       - name: Archive AppBundle
         env:
@@ -113,7 +113,7 @@ jobs:
       - name: Cache Cargo downloads
         uses: actions/cache@v4
         with:
-          path: .cache/cargo-home
+          path: ~/.cargo
           key: release-cargo-${{ matrix.nix_system }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
           restore-keys: |
             release-cargo-${{ matrix.nix_system }}-
@@ -141,7 +141,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            .cache/cargo-home
+            ~/.cargo
             .cache/rime-build/windows-x86_64
           key: windows-x86_64-${{ hashFiles('Cargo.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
           restore-keys: |
@@ -153,9 +153,8 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup component add clippy rustfmt
-          $env:CARGO_HOME = Join-Path $env:GITHUB_WORKSPACE '.cache\cargo-home'
           cargo install just --locked
-          (Join-Path $env:CARGO_HOME 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Install pinned Neovim
         shell: pwsh
@@ -174,33 +173,22 @@ jobs:
           }
           $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Build, test, and package Windows bundle
+      - name: Build, test, package, and smoke-test Windows bundle
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
           $artifactDir = Join-Path $root '.cache\artifacts\windows-x86_64'
-          $targetDir = Join-Path $artifactDir 'cargo-target'
           $rimeBuildDir = Join-Path $root '.cache\rime-build\windows-x86_64'
           $runtimeDir = Join-Path $artifactDir 'rime-runtime'
           $bundleDir = Join-Path $artifactDir 'nvim-gpui'
-          New-Item -ItemType Directory -Force -Path $artifactDir, $targetDir, $rimeBuildDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $artifactDir, $rimeBuildDir | Out-Null
 
-          $env:CARGO_HOME = Join-Path $root '.cache\cargo-home'
-          $env:CARGO_TARGET_DIR = $targetDir
           $env:NVIM_GPUI_RIME_WINDOWS_ARCH = 'x64'
           $env:NVIM_GPUI_RIME_BUILD_DIR = $rimeBuildDir
           $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT = $runtimeDir
           $env:NVIM_GPUI_WINDOWS_BUNDLE_OUTPUT = $bundleDir
 
-          just package-windows
-          & (Join-Path $bundleDir 'nvim-gpui.exe') --version
-          if ($LASTEXITCODE -ne 0) {
-            throw 'nvim-gpui.exe smoke test failed'
-          }
-          & (Join-Path $bundleDir 'gpvim.exe') --version
-          if ($LASTEXITCODE -ne 0) {
-            throw 'gpvim.exe smoke test failed'
-          }
+          just pack-windows
 
           $zip = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64.zip"
           if (Test-Path $zip) {

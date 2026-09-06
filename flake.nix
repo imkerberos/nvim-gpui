@@ -45,6 +45,7 @@
               cargo
               clippy
               cmake
+              gh
               gnumake
               just
               neovim
@@ -80,25 +81,21 @@
               # it into the application artifact; user data never comes from
               # this Nix package.
               export NVIM_GPUI_RIME_STARTER_DATA="''${NVIM_GPUI_RIME_STARTER_DATA:-${rimeStarterData}}"
-              export PATH="$PWD/.cache/cargo-target/debug:$PWD/bin:$PATH"
+              export PATH="$PWD/target/debug:$PWD/bin:$PATH"
               export NVIM_GPUI_NVIM="''${NVIM_GPUI_NVIM:-$(command -v nvim)}"
               export SNACKS_KITTY="''${SNACKS_KITTY:-1}"
-              export CARGO_TARGET_DIR="$NVIM_GPUI_CACHE_DIR/cargo-target"
-              export CARGO_HOME="$NVIM_GPUI_CACHE_DIR/cargo-home"
-              export TMPDIR="$PWD/tmp"
-              mkdir -p "$CARGO_TARGET_DIR" "$CARGO_HOME" "$TMPDIR" \
-                "$NVIM_GPUI_CONFIG_DIR/$NVIM_APPNAME" \
+              mkdir -p "$NVIM_GPUI_CONFIG_DIR/$NVIM_APPNAME" \
                 "$NVIM_GPUI_CACHE_DIR/nvim-data" \
                 "$NVIM_GPUI_CACHE_DIR/nvim-state" \
                 "$NVIM_GPUI_CACHE_DIR/nvim-cache"
               export CARGO_TERM_COLOR=always
               echo "nvim-gpui development shell"
-              echo "  cargo target $CARGO_TARGET_DIR"
-              echo "  cargo home   $CARGO_HOME"
-              echo "  temp         $TMPDIR"
+              echo "  cargo target $PWD/target (Cargo default)"
+              echo "  cargo home   ~/.cargo (Cargo default)"
+              echo "  temp         system default"
               echo "  nvim config  $NVIM_GPUI_CONFIG_DIR/$NVIM_APPNAME"
               echo "  image tools  $NVIM_GPUI_IMAGEMAGICK"
-              echo "  gpvim        $CARGO_TARGET_DIR/debug/gpvim (after cargo build)"
+              echo "  gpvim        $PWD/target/debug/gpvim (after cargo build)"
               echo "  just check   type-check and verify formatting"
               echo "  just run     launch the GPUI application"
             '';

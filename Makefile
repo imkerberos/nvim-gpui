@@ -1,8 +1,11 @@
-.DEFAULT_GOAL := check
+.DEFAULT_GOAL := default
 
 JUST ?= just
 
-.PHONY: check fmt fmt-check clippy build build-release release bundle dmg gpvim test run ci package-macos package-windows
+.PHONY: default check fmt fmt-check clippy build build-release release dev dev-macos dev-linux dev-windows bundle bundle-macos bundle-windows smoke smoke-macos smoke-windows dmg gpvim test run ci pack-macos pack-windows
+
+default:
+	$(JUST)
 
 check:
 	$(JUST) check
@@ -23,10 +26,37 @@ build-release:
 	$(JUST) build-release
 
 release:
-	$(JUST) release
+	$(JUST) build-release
+
+dev:
+	$(JUST) dev
+
+dev-macos:
+	$(JUST) dev-macos
+
+dev-linux:
+	$(JUST) dev-linux
+
+dev-windows:
+	$(JUST) dev-windows
 
 bundle:
 	$(JUST) bundle
+
+bundle-macos:
+	$(JUST) bundle-macos
+
+bundle-windows:
+	$(JUST) bundle-windows
+
+smoke:
+	$(JUST) smoke
+
+smoke-macos:
+	$(JUST) smoke-macos
+
+smoke-windows:
+	$(JUST) smoke-windows
 
 dmg:
 	$(JUST) dmg
@@ -43,8 +73,8 @@ run:
 ci:
 	$(JUST) ci
 
-package-macos:
-	$(JUST) package-macos
+pack-macos:
+	$(JUST) pack-macos
 
-package-windows:
-	$(JUST) package-windows
+pack-windows:
+	$(JUST) pack-windows
