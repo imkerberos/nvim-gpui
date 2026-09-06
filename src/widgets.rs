@@ -8,9 +8,6 @@ use gpui::{
 use std::{ops::Range, rc::Rc, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[cfg(target_os = "windows")]
-use gpui::WindowControlArea;
-
 pub(crate) const BACKGROUND: u32 = 0x1e1e2e;
 pub(crate) const SURFACE: u32 = 0x181825;
 pub(crate) const SURFACE_BRIGHT: u32 = 0x313244;
@@ -954,23 +951,4 @@ mod tests {
         assert_eq!(display.map_display_to_full(0), 0);
         assert_eq!(display.map_display_to_full(display.text.len()), 0);
     }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn window_control_button(
-    label: &'static str,
-    area: WindowControlArea,
-    background: u32,
-    foreground: u32,
-) -> impl IntoElement {
-    div()
-        .w(px(46.0))
-        .h_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgb(background))
-        .text_color(rgb(foreground))
-        .window_control_area(area)
-        .child(label)
 }

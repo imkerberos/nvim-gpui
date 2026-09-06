@@ -1,6 +1,4 @@
 use super::super::*;
-#[cfg(target_os = "windows")]
-use crate::widgets::window_control_button;
 use crate::{
     gui,
     widgets::{logo_image, titlebar_button, IME_ACTIVE, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
@@ -34,6 +32,9 @@ pub(crate) fn themed_titlebar(
     source: Option<Entity<NvimGpui>>,
     rime_state: Option<RimeTitlebarState>,
 ) -> impl IntoElement {
+    #[cfg(target_os = "windows")]
+    let close_source = source.clone();
+
     let title_area = div()
         .flex_1()
         .h_full()
@@ -47,18 +48,16 @@ pub(crate) fn themed_titlebar(
         }))
         .text_color(rgb(foreground))
         .window_control_area(WindowControlArea::Drag)
-        .on_mouse_down(MouseButton::Left, |event, window, _cx| {
-            if event.click_count == 2 {
-                // On macOS this forwards to AppKit's standard titlebar
-                // double-click action (normally zoom/maximize). On Windows,
-                // WindowControlArea::Drag lets the native caption handling do
-                // the same job, so this is harmless there.
-                window.titlebar_double_click();
-            }
-        })
         .child(img(logo_image()).w(px(20.0)).h(px(20.0)))
         .child(div().w(px(6.0)))
         .child(title);
+
+    #[cfg(target_os = "macos")]
+    let title_area = title_area.on_mouse_down(MouseButton::Left, |event, window, _cx| {
+        if event.click_count == 2 {
+            window.titlebar_double_click();
+        }
+    });
 
     let mut titlebar = div()
         .w_full()
@@ -108,21 +107,64 @@ pub(crate) fn themed_titlebar(
             WindowControlArea::Min,
             background,
             foreground,
+            |window, _cx| window.minimize_window(),
         ))
         .child(window_control_button(
             "□",
             WindowControlArea::Max,
             background,
             foreground,
+            |window, _cx| window.zoom_window(),
         ))
         .child(window_control_button(
             "×",
             WindowControlArea::Close,
             background,
             foreground,
+            move |window, cx| {
+                let should_close = close_source
+                    .as_ref()
+                    .map(|view| {
+                        view.update(cx, |view, cx| view.request_window_close(cx))
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(true);
+                if should_close {
+                    if close_source.is_some() {
+                        cx.quit();
+                    } else {
+                        window.remove_window();
+                    }
+                }
+            },
         ));
 
     titlebar
+}
+
+#[cfg(target_os = "windows")]
+fn window_control_button(
+    label: &'static str,
+    area: WindowControlArea,
+    background: u32,
+    foreground: u32,
+    action: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(label)
+        .w(px(46.0))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgb(background))
+        .text_color(rgb(foreground))
+        .window_control_area(area)
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            window.prevent_default();
+            action(window, cx);
+        })
+        .child(label)
 }
 
 fn rime_indicator(

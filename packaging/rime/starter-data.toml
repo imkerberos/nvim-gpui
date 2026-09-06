@@ -16,3 +16,33 @@ files = [
   "symbols.yaml",
   "essay.txt",
 ]
+
+# The Windows builder uses these pinned official Rime repositories when no
+# local nixpkgs rime-data directory is available. Each archive is verified
+# before extraction and cached under the librime build directory.
+[download]
+cache_key = "rime-data-0.38.20231116"
+
+[[download.archives]]
+name = "rime-prelude"
+url = "https://github.com/rime/rime-prelude/archive/dd84abecc33f0b05469f1d744e32d2b60b3529e3.tar.gz"
+sha256 = "e3480724ee509f630f0af61ac16b9ae5c1b79a5794891333236f5a69044f84e6"
+files = ["default.yaml", "key_bindings.yaml", "punctuation.yaml", "symbols.yaml"]
+
+[[download.archives]]
+name = "rime-luna-pinyin"
+url = "https://github.com/rime/rime-luna-pinyin/archive/79aeae200a7370720be98232844c0715f277e1c0.tar.gz"
+sha256 = "0ac0b3101b36e27e3f877003d8b682fbc32b2f6ddb79ede1c84617bc3398debb"
+files = ["luna_pinyin.schema.yaml", "luna_pinyin.dict.yaml", "pinyin.yaml"]
+
+[[download.archives]]
+name = "rime-stroke"
+url = "https://github.com/rime/rime-stroke/archive/e6c7608925009636577ff7469eecc870f1de18f3.tar.gz"
+sha256 = "81bbc9757efab6d02f685dd9a2b8034a5f6f6dc84ac2a210801d9e614a871627"
+files = ["stroke.schema.yaml", "stroke.dict.yaml"]
+
+[[download.archives]]
+name = "rime-essay"
+url = "https://github.com/rime/rime-essay/archive/e0519d0579722a0871efb68189272cba61a7350b.tar.gz"
+sha256 = "60d92c2a4d2faca1ebb8918c4caf73b8fa8303d047b48e5cee45a331802f3752"
+files = ["essay.txt"]

@@ -45,9 +45,104 @@ The markers are injected before startup rather than set through RPC, so they
 are available during theme selection. They are not injected when connecting
 to an already-running remote Neovim process.
 
+## Windows development with VMware Fusion
+
+On an Apple silicon Mac, use VMware Fusion with a Windows 11 ARM64 guest.
+VMware Fusion cannot run an x86/x86_64 Windows guest directly on Apple
+silicon, but Windows 11 on Arm can run x64 user-mode applications through its
+built-in emulation layer. This allows an x64 nvim-gpui build to be compiled
+and smoke-tested in the VM; release validation should still include a native
+x64 Windows host or CI runner because emulated CPU and virtual GPU behavior
+is not identical.
+
+See the [VMware Apple silicon guest limitations](https://knowledge.broadcom.com/external/article/315602/)
+and [Microsoft's Windows on Arm emulation documentation](https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation)
+before creating the VM. Use a Windows 11 ARM64 image, not an x64 image.
+
+Inside the VM, install:
+
+- Visual Studio 2022 Build Tools with **Desktop development with C++**, the
+  MSVC v143 x64/x86 build tools, a Windows SDK, and CMake tools;
+- Rust through `rustup`;
+- Git for Windows, including Git Bash;
+- CMake, Python 3.11+, and `just`;
+- Neovim 0.12 or newer.
+
+The [Rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html)
+and [Visual Studio Build Tools workload reference](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=visualstudio)
+describe the compiler and SDK components. The full Visual Studio IDE is not
+required. Git Bash is needed because the repository's `justfile` runs recipes
+through Bash.
+
+Start an **x64 Native Tools Command Prompt for VS 2022**, then launch Git
+Bash from that environment so `cl.exe` and `link.exe` are available. In the
+repository, install the target and the task runner:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo install just
+```
+
+For an ARM64 Windows guest, select the x64 target explicitly. These variables
+mirror the repository-scoped paths created by the Nix shell:
+
+```sh
+export CARGO_BUILD_TARGET=x86_64-pc-windows-msvc
+export CARGO_TARGET_DIR="$PWD/.cache/cargo-target"
+export CARGO_HOME="$PWD/.cache/cargo-home"
+export NVIM_GPUI_CACHE_DIR="$PWD/.cache"
+export NVIM_GPUI_CONFIG_DIR="$PWD/config"
+export SNACKS_KITTY=1
+mkdir -p "$CARGO_TARGET_DIR" "$CARGO_HOME" "$NVIM_GPUI_CACHE_DIR"
+```
+
+If Neovim is not on `PATH`, set `NVIM_GPUI_NVIM` to an absolute Windows path,
+for example `C:/Program Files/Neovim/bin/nvim.exe`. The Nix shell's plugin
+paths are not available on Windows; the repository Neovim profile still works
+without those optional paths, while image and Tree-sitter development tests
+require installing the corresponding plugins separately.
+
+Run the platform-independent checks and an x64 build with:
+
+```sh
+just ci
+cargo build --release --bins --target x86_64-pc-windows-msvc
+cargo run --target x86_64-pc-windows-msvc --bin nvim-gpui
+```
+
+For the Windows Rime runtime and directory bundle, switch to PowerShell in
+the same Visual Studio developer environment:
+
+```powershell
+$env:NVIM_GPUI_RIME_STARTER_DATA = "C:\path\to\curated-data"
+.\packaging\rime\build-windows.ps1
+.\packaging\windows\bundle.ps1
+```
+
+The resulting Windows bundle is described in the [packaging](#packaging)
+section. VMware Fusion is a development and smoke-test environment here; it
+does not replace native x64 Windows validation for release artifacts.
+
+## Neovim version requirement
+
+The minimum supported Neovim version is **0.12.0**. This applies to both
+embedded Neovim processes and remote sessions opened with `--connect`. The
+client targets the UI protocol and API behavior available in Neovim 0.12;
+older versions are unsupported and may fail during protocol negotiation or
+leave the frontend waiting for an incompatible response.
+
+Check the version used by the development shell or an external configuration
+with:
+
+~~~sh
+nvim --version | head -1
+~~~
+
 ## just tasks
 
-Run tasks from the Nix development shell:
+Run tasks from the Nix development shell on macOS/Linux. On Windows, run the
+same Rust tasks from Git Bash in the Visual Studio developer environment; see
+[Windows development with VMware Fusion](#windows-development-with-vmware-fusion).
 
 ```sh
 just fmt          # format Rust sources
@@ -462,9 +557,14 @@ development environment with CMake, Git, Python 3.11+, and the Visual
 Studio/LLVM toolchain required by librime. The builder pins the same librime
 revision as macOS, invokes librime's official dependency and library build
 targets, uses static third-party dependencies, and stages `rime.dll` with the
-starter data. Set `NVIM_GPUI_RIME_WINDOWS_ARCH` when the default `x64` target
-is not appropriate. If Boost is not already cached, librime's official Boost
-installer may also require `aria2c` and `7z`.
+starter data. If `NVIM_GPUI_RIME_STARTER_DATA` is not set, it downloads the
+four pinned official Rime data archives listed in
+`packaging/rime/starter-data.toml`, verifies their SHA-256 digests, and caches
+them below the librime build directory. Set `NVIM_GPUI_RIME_STARTER_DATA` to a
+local data directory for an offline or custom build. Set
+`NVIM_GPUI_RIME_WINDOWS_ARCH` when the default `x64` target is not appropriate.
+If Boost is not already cached, librime's official Boost installer may also
+require `aria2c` and `7z`.
 
 After staging the runtime, `just bundle-windows` creates a Windows directory
 bundle at `.cache/windows/nvim-gpui`:

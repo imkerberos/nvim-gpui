@@ -83,9 +83,6 @@ if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $runtimeTool -PathType Leaf)) {
     Fail "runtime staging tool does not exist: $runtimeTool"
 }
-if ([string]::IsNullOrWhiteSpace($DataSource)) {
-    Fail 'starter data is required; pass -DataSource DIR or set NVIM_GPUI_RIME_STARTER_DATA'
-}
 
 $manifestText = Get-Content -LiteralPath $manifest -Raw
 $repositoryMatch = [regex]::Match($manifestText, '(?m)^repository\s*=\s*"([^"]+)"\s*$')
@@ -99,9 +96,6 @@ $sourceRevision = $revisionMatch.Groups[1].Value
 $DataSource = Resolve-RepoPath $DataSource
 $Output = Resolve-RepoPath $Output
 $WorkDir = Resolve-RepoPath $WorkDir
-if (-not (Test-Path -LiteralPath $DataSource -PathType Container)) {
-    Fail "starter data directory does not exist: $DataSource"
-}
 
 Assert-NotDirectory $Output $repoRoot 'output'
 Assert-OutsideDirectory $Output $WorkDir 'output'
@@ -202,14 +196,22 @@ if (Test-Path -LiteralPath $pluginDir -PathType Container) {
     }
 }
 
-# Keep starter data independent from the librime source tree. The selector
-# copies one general-purpose schema and its dependency closure instead of
-# embedding the complete collection of Rime schemas and dictionaries.
-Invoke-Native 'python.exe' @(
+# Keep starter data independent from the librime source tree. When no local
+# nixpkgs rime-data directory is supplied, the selector downloads the pinned
+# official Rime data archives, verifies them, and reuses them from the cache.
+$starterDataArguments = @(
     (Join-Path $repoRoot 'scripts\rime_starter_data.py'),
-    '--source', $DataSource,
     '--output', $artifactData
 )
+if ([string]::IsNullOrWhiteSpace($DataSource)) {
+    $starterDataArguments += @('--download', '--cache-dir', (Join-Path $WorkDir 'rime-data'))
+} else {
+    if (-not (Test-Path -LiteralPath $DataSource -PathType Container)) {
+        Fail "starter data directory does not exist: $DataSource"
+    }
+    $starterDataArguments += @('--source', $DataSource)
+}
+Invoke-Native 'python.exe' $starterDataArguments
 
 Invoke-Native 'python.exe' @(
     $runtimeTool, 'stage', '--source', $artifactDir, '--output', $Output,

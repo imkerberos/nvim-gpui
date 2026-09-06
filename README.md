@@ -28,6 +28,13 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - Image support for plugins such as `snacks.nvim`.
 - Built-in Rime input method in the macOS AppBundle.
 
+## Neovim requirement
+
+nvim-gpui requires Neovim **0.12.0 or newer**. This requirement applies to
+both embedded sessions and `--connect` targets. Older Neovim versions are not
+supported and may fail during UI protocol negotiation or leave the client
+waiting for an incompatible response.
+
 ## Quick start
 
 Install Neovim and nvim-gpui with Homebrew:
