@@ -2,6 +2,7 @@ use super::*;
 
 impl NvimGpui {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {
         self.compositor_frame()
             .layers

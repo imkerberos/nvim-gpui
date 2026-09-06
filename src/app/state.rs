@@ -1,11 +1,14 @@
 use super::*;
+use crate::input::{
+    key_to_nvim_input, rime_key_event, rime_modifier_transition, should_route_key_to_neovim,
+};
 
 mod events;
 mod grid_state;
 mod layers;
 mod lifecycle;
 
-pub(super) struct PendingRedrawState {
+pub(crate) struct PendingRedrawState {
     ui_options: HashMap<String, String>,
     display_options: grid::DisplayOptions,
     guifont: Option<String>,
@@ -57,7 +60,7 @@ impl NvimGpui {
             .expect("pending redraw was initialized")
     }
 
-    pub(super) fn commit_pending_redraw(&mut self) {
+    pub(crate) fn commit_pending_redraw(&mut self) {
         let Some(pending) = self.pending_redraw.take() else {
             return;
         };
@@ -110,7 +113,7 @@ impl NvimGpui {
         }
     }
 
-    pub(super) fn apply_runtime_settings(&mut self) {
+    pub(crate) fn apply_runtime_settings(&mut self) {
         self.nerd_font_family = self
             .bundled_nerd_font_registered
             .then(|| self.settings.nerd_font.family().to_owned());
@@ -139,7 +142,7 @@ impl NvimGpui {
         self.settings_save_error = self.settings.save().err();
     }
 
-    pub(super) fn apply_ime_backend_setting(&mut self) {
+    pub(crate) fn apply_ime_backend_setting(&mut self) {
         let rime_enabled =
             self.settings.ime_backend == settings::ImeBackend::Rime && self.rime_backend.is_some();
         let mut config = self.input_router.config();
@@ -156,7 +159,7 @@ impl NvimGpui {
         self.system_ime.clear();
     }
 
-    pub(super) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
+    pub(crate) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
         if let Some(font) = &self.resolved_grid_font {
             return font.clone();
         }
@@ -171,7 +174,7 @@ impl NvimGpui {
         font
     }
 
-    pub(super) fn current_grid_wide_font(&mut self, window: &Window) -> GuiFontSpec {
+    pub(crate) fn current_grid_wide_font(&mut self, window: &Window) -> GuiFontSpec {
         if let Some(font) = &self.resolved_grid_wide_font {
             return font.clone();
         }
@@ -189,7 +192,7 @@ impl NvimGpui {
         font
     }
 
-    pub(super) fn current_cursor_mode(&self) -> grid::CursorModeInfo {
+    pub(crate) fn current_cursor_mode(&self) -> grid::CursorModeInfo {
         if !self.cursor_style_enabled {
             return grid::CursorModeInfo::default();
         }
@@ -199,14 +202,14 @@ impl NvimGpui {
             .unwrap_or_default()
     }
 
-    pub(super) fn theme_background(&self) -> u32 {
+    pub(crate) fn theme_background(&self) -> u32 {
         self.theme
             .normal_background
             .or(self.theme.default_background)
             .unwrap_or(BACKGROUND)
     }
 
-    pub(super) fn theme_foreground(&self) -> u32 {
+    pub(crate) fn theme_foreground(&self) -> u32 {
         self.theme
             .normal_foreground
             .or(self.theme.default_foreground)
@@ -237,7 +240,7 @@ impl NvimGpui {
         }
     }
 
-    pub(super) fn complete_startup_maximize(&mut self) {
+    pub(crate) fn complete_startup_maximize(&mut self) {
         self.startup_maximize_pending = false;
         self.startup_resize_target = None;
         self.startup_flush_seen = false;
@@ -249,7 +252,7 @@ impl NvimGpui {
         );
     }
 
-    pub(super) fn sync_nvim_size(&mut self, window: &mut Window) {
+    pub(crate) fn sync_nvim_size(&mut self, window: &mut Window) {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.linespace);
@@ -544,7 +547,7 @@ impl NvimGpui {
         self.handle_rime_keycode(keycode, modifiers, true, cx)
     }
 
-    pub(super) fn on_modifiers_changed(
+    pub(crate) fn on_modifiers_changed(
         &mut self,
         event: &gpui::ModifiersChangedEvent,
         window: &mut Window,
@@ -589,7 +592,7 @@ impl NvimGpui {
         }
     }
 
-    pub(super) fn on_key_down(
+    pub(crate) fn on_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,

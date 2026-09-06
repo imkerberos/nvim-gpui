@@ -1,13 +1,44 @@
 mod about;
+mod quit_confirmation;
 mod settings;
+mod startup_error;
 
 pub(crate) use about::AboutWindow;
+pub(crate) use quit_confirmation::quit_confirmation_dialog;
 pub(crate) use settings::SettingsWindow;
+pub(crate) use startup_error::startup_error_dialog;
 
 use crate::app::{themed_titlebar_options, NvimGpui};
 use gpui::{
     prelude::*, size, App, Bounds, Entity, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
+
+pub(crate) fn dialog_overlay(id: &'static str, panel: impl IntoElement) -> gpui::Div {
+    let backdrop = gpui::div()
+        .id(id)
+        .absolute()
+        .left(gpui::px(0.0))
+        .top(gpui::px(0.0))
+        .w_full()
+        .h_full()
+        .bg(gpui::rgba(0x00000099))
+        .on_any_mouse_down(|_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        });
+
+    gpui::div()
+        .absolute()
+        .left(gpui::px(0.0))
+        .top(gpui::px(0.0))
+        .w_full()
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(backdrop)
+        .child(panel)
+}
 
 pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
     let existing = source.read(cx).settings_window_handle();

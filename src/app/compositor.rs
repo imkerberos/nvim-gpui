@@ -6,7 +6,7 @@ use super::*;
 /// compositor make decisions from context instead of inferring that a grid is
 /// floating from `zindex` or `compindex`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GridLayerKind {
+pub(crate) enum GridLayerKind {
     Main,
     Window,
     Float,
@@ -25,11 +25,11 @@ impl GridLayerKind {
 
 /// A rectangle expressed in Neovim grid cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct GridRect {
-    pub(super) row: i64,
-    pub(super) col: i64,
-    pub(super) width: u64,
-    pub(super) height: u64,
+pub(crate) struct GridRect {
+    pub(crate) row: i64,
+    pub(crate) col: i64,
+    pub(crate) width: u64,
+    pub(crate) height: u64,
 }
 
 impl GridRect {
@@ -58,14 +58,14 @@ impl GridRect {
 /// receive its position before its `grid_resize`, and a placement may omit a
 /// width or height altogether.
 #[derive(Debug, Clone)]
-pub(super) struct CompositorLayer {
-    pub(super) grid_id: u64,
-    pub(super) kind: GridLayerKind,
-    pub(super) model: Rc<grid::GridModel>,
-    pub(super) placement: GridPlacement,
-    pub(super) content_rect: GridRect,
-    pub(super) surface_rect: GridRect,
-    pub(super) clip_rect: GridRect,
+pub(crate) struct CompositorLayer {
+    pub(crate) grid_id: u64,
+    pub(crate) kind: GridLayerKind,
+    pub(crate) model: Rc<grid::GridModel>,
+    pub(crate) placement: GridPlacement,
+    pub(crate) content_rect: GridRect,
+    pub(crate) surface_rect: GridRect,
+    pub(crate) clip_rect: GridRect,
 }
 
 impl CompositorLayer {
@@ -102,22 +102,22 @@ impl CompositorLayer {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CompositorFrame {
-    pub(super) layers: Vec<CompositorLayer>,
+pub(crate) struct CompositorFrame {
+    pub(crate) layers: Vec<CompositorLayer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct MouseTarget {
-    pub(super) grid_id: u64,
-    pub(super) row: u64,
-    pub(super) col: u64,
+pub(crate) struct MouseTarget {
+    pub(crate) grid_id: u64,
+    pub(crate) row: u64,
+    pub(crate) col: u64,
 }
 
 impl CompositorFrame {
     /// Convert a GPUI point into the screen grid coordinate space used by
     /// multigrid placements. Keep this next to hit testing so mouse routing
     /// and the legacy main-grid coordinate helper cannot drift apart.
-    pub(super) fn point_in_grid_space(
+    pub(crate) fn point_in_grid_space(
         position: Point<Pixels>,
         cell_width: Pixels,
         line_height: Pixels,
@@ -137,7 +137,7 @@ impl CompositorFrame {
     /// Return the topmost visible layer that is allowed to receive mouse
     /// input at this screen point. Layers are stored in paint order, so the
     /// reverse traversal mirrors the visual hit-test order.
-    pub(super) fn hit_test(
+    pub(crate) fn hit_test(
         &self,
         position: Point<Pixels>,
         cell_width: Pixels,
@@ -158,7 +158,7 @@ impl CompositorFrame {
     /// Resolve a point against a previously captured grid. Drag release and
     /// move events must continue going to the grid that received the press,
     /// even after the pointer leaves its visual rectangle.
-    pub(super) fn target_for_grid(
+    pub(crate) fn target_for_grid(
         &self,
         grid_id: u64,
         position: Point<Pixels>,
@@ -179,7 +179,7 @@ impl NvimGpui {
     /// Build the committed multigrid state in the order in which the current
     /// renderer paints it. This is deliberately pure data construction; the
     /// GPUI element tree will consume it in a later compositor step.
-    pub(super) fn compositor_frame(&self) -> CompositorFrame {
+    pub(crate) fn compositor_frame(&self) -> CompositorFrame {
         let main_model = Rc::clone(&self.grid);
         let main_width = main_model.width() as u64;
         let main_height = main_model.height() as u64;

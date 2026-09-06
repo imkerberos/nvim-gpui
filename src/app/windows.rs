@@ -2,8 +2,8 @@ mod debug;
 mod layout;
 mod titlebar;
 
-pub(super) use debug::DebugWindow;
-pub(super) use layout::{
+pub(crate) use debug::DebugWindow;
+pub(crate) use layout::{
     initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
     parse_guifont_spec, parse_non_negative_float,
 };

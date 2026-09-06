@@ -1,26 +1,20 @@
 use crate::{
     grid,
-    grid::GridElement,
     gui::{AboutWindow, SettingsWindow},
     image_store,
     image_store::{GridId, ImageId, KittyEvent},
-    input,
-    input::{
-        key_to_nvim_input, rime_key_event, rime_modifier_transition, should_route_key_to_neovim,
-        EntityInputHandler, InputRouter, InputRouterConfig, InputTarget, SystemImeState,
-    },
+    input::{InputRouter, InputRouterConfig, InputTarget, SystemImeState},
     nvim::{
         self, DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimProcess,
         NvimTheme, NvimVersion,
     },
     platform, settings,
-    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT, WARNING},
+    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
     CliOptions, NvimConnection,
 };
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
-    Context, ElementInputHandler, Entity, FocusHandle, Focusable, Image, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent,
+    Context, Entity, FocusHandle, Image, KeyDownEvent, MouseButton, Pixels, Point, Render,
     SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea,
     WindowHandle, WindowKind, WindowOptions,
 };
@@ -29,18 +23,17 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     ffi::OsString,
-    ops::Range,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-const DEFAULT_GRID_WIDTH: u32 = 80;
-const DEFAULT_GRID_HEIGHT: u32 = 24;
-const DEFAULT_GRID_FONT_SIZE: f32 = 14.0;
-const DEFAULT_GRID_CELL_WIDTH: f32 = DEFAULT_GRID_FONT_SIZE * 0.6;
-const DEFAULT_GRID_LINE_HEIGHT: f32 = 20.0;
-const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &[
+pub(crate) const DEFAULT_GRID_WIDTH: u32 = 80;
+pub(crate) const DEFAULT_GRID_HEIGHT: u32 = 24;
+pub(crate) const DEFAULT_GRID_FONT_SIZE: f32 = 14.0;
+pub(crate) const DEFAULT_GRID_CELL_WIDTH: f32 = DEFAULT_GRID_FONT_SIZE * 0.6;
+pub(crate) const DEFAULT_GRID_LINE_HEIGHT: f32 = 20.0;
+pub(crate) const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &[
     "Menlo",
     "SF Mono",
     "Monaco",
@@ -51,14 +44,14 @@ const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &[
     "Liberation Mono",
     "Courier New",
 ];
-const MIN_WINDOW_WIDTH: f32 = 80.0;
-const MIN_WINDOW_HEIGHT: f32 = 44.0;
-const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
-const DEFAULT_WINDOW_TITLE: &str = "gpvim";
-const LOGO_ASSET: &str = "neovim-gpui.png";
-const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
-const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
-const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
+pub(crate) const MIN_WINDOW_WIDTH: f32 = 80.0;
+pub(crate) const MIN_WINDOW_HEIGHT: f32 = 44.0;
+pub(crate) const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
+pub(crate) const DEFAULT_WINDOW_TITLE: &str = "gpvim";
+pub(crate) const LOGO_ASSET: &str = "neovim-gpui.png";
+pub(crate) const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
+pub(crate) const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
+pub(crate) const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
 
 struct AppAssets;
 
@@ -78,15 +71,15 @@ impl AssetSource for AppAssets {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EditorState {
-    mode: String,
-    file: &'static str,
-    line: usize,
-    column: usize,
+pub(crate) struct EditorState {
+    pub(crate) mode: String,
+    pub(crate) file: &'static str,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum QuitDialogState {
+pub(crate) enum QuitDialogState {
     #[default]
     Hidden,
     Checking,
@@ -99,9 +92,9 @@ enum QuitDialogState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct GuiFontSpec {
-    family: String,
-    size: f32,
+pub(crate) struct GuiFontSpec {
+    pub(crate) family: String,
+    pub(crate) size: f32,
 }
 
 impl Default for GuiFontSpec {
@@ -114,7 +107,7 @@ impl Default for GuiFontSpec {
 }
 
 impl GuiFontSpec {
-    fn system(window: &Window) -> Self {
+    pub(crate) fn system(window: &Window) -> Self {
         let available_fonts = window.text_system().all_font_names();
         let font_size = px(DEFAULT_GRID_FONT_SIZE);
         let family = PREFERRED_SYSTEM_MONOSPACE_FONTS
@@ -142,7 +135,7 @@ impl GuiFontSpec {
         }
     }
 
-    fn line_height(&self, window: &Window, linespace: f32) -> Pixels {
+    pub(crate) fn line_height(&self, window: &Window, linespace: f32) -> Pixels {
         let font = font(self.family.clone());
         let font_size = px(self.size);
         let text_system = window.text_system();
@@ -153,7 +146,7 @@ impl GuiFontSpec {
         line_height_from_metrics(glyph_height, font_size, linespace)
     }
 
-    fn cell_width(&self, window: &Window) -> Pixels {
+    pub(crate) fn cell_width(&self, window: &Window) -> Pixels {
         let font = font(self.family.clone());
         let font_size = px(self.size);
         window
@@ -176,63 +169,63 @@ impl Default for EditorState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GridViewport {
-    topline: u64,
-    botline: u64,
-    curline: u64,
-    curcol: u64,
-    line_count: u64,
-    scroll_delta: i64,
+pub(crate) struct GridViewport {
+    pub(crate) topline: u64,
+    pub(crate) botline: u64,
+    pub(crate) curline: u64,
+    pub(crate) curcol: u64,
+    pub(crate) line_count: u64,
+    pub(crate) scroll_delta: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GridViewportMargins {
-    top: u64,
-    bottom: u64,
-    left: u64,
-    right: u64,
+pub(crate) struct GridViewportMargins {
+    pub(crate) top: u64,
+    pub(crate) bottom: u64,
+    pub(crate) left: u64,
+    pub(crate) right: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridPlacement {
-    row: i64,
-    col: i64,
-    width: u64,
-    height: u64,
+    pub(crate) row: i64,
+    pub(crate) col: i64,
+    pub(crate) width: u64,
+    pub(crate) height: u64,
     /// Configured float stacking level. `compindex` remains the primary
     /// render key because Neovim computes it as the exact compositing order;
     /// `z_index` is retained for the protocol's same-order/group semantics.
-    z_index: i64,
-    compindex: i64,
-    float_position: Option<NvimFloatPosition>,
+    pub(crate) z_index: i64,
+    pub(crate) compindex: i64,
+    pub(crate) float_position: Option<NvimFloatPosition>,
     /// Whether Neovim allows this floating grid to receive mouse input.
     /// Neovim uses this when the client sends `nvim_input_mouse` with grid 0.
-    mouse_enabled: bool,
-    kind: compositor::GridLayerKind,
-    visible: bool,
-    viewport: Option<GridViewport>,
-    viewport_margins: Option<GridViewportMargins>,
-    message_scrolled: bool,
-    message_separator: Option<char>,
+    pub(crate) mouse_enabled: bool,
+    pub(crate) kind: compositor::GridLayerKind,
+    pub(crate) visible: bool,
+    pub(crate) viewport: Option<GridViewport>,
+    pub(crate) viewport_margins: Option<GridViewportMargins>,
+    pub(crate) message_scrolled: bool,
+    pub(crate) message_separator: Option<char>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ImageLayer {
-    image: ImageId,
-    grid: u64,
-    row: usize,
-    column: usize,
-    columns: u32,
-    rows: u32,
-    z_index: i32,
+    pub(crate) image: ImageId,
+    pub(crate) grid: u64,
+    pub(crate) row: usize,
+    pub(crate) column: usize,
+    pub(crate) columns: u32,
+    pub(crate) rows: u32,
+    pub(crate) z_index: i32,
 }
 
 #[derive(Clone)]
-struct ViewportAnimation {
-    previous_grid: Rc<grid::GridModel>,
-    scroll_delta: i64,
-    started_at: Instant,
-    presented: bool,
+pub(crate) struct ViewportAnimation {
+    pub(crate) previous_grid: Rc<grid::GridModel>,
+    pub(crate) scroll_delta: i64,
+    pub(crate) started_at: Instant,
+    pub(crate) presented: bool,
 }
 
 impl ViewportAnimation {
@@ -242,18 +235,23 @@ impl ViewportAnimation {
         .min(1.0)
     }
 
-    fn is_active(&self, now: Instant) -> bool {
+    pub(crate) fn is_active(&self, now: Instant) -> bool {
         self.progress(now) < 1.0
     }
 
-    fn mark_presented(&mut self, now: Instant) {
+    pub(crate) fn mark_presented(&mut self, now: Instant) {
         if !self.presented {
             self.started_at = now;
             self.presented = true;
         }
     }
 
-    fn offsets(&self, now: Instant, max_delta: usize, line_height: Pixels) -> (Pixels, Pixels) {
+    pub(crate) fn offsets(
+        &self,
+        now: Instant,
+        max_delta: usize,
+        line_height: Pixels,
+    ) -> (Pixels, Pixels) {
         let progress = self.progress(now);
         let progress = progress * progress * (3.0 - 2.0 * progress);
         let delta = self
@@ -288,83 +286,83 @@ impl Default for GridPlacement {
 }
 
 pub(crate) struct NvimGpui {
-    focus_handle: Option<FocusHandle>,
-    state: EditorState,
-    grid: Rc<grid::GridModel>,
-    pending_grid: Option<Rc<grid::GridModel>>,
-    nvim: Option<NvimProcess>,
-    input_router: InputRouter,
-    last_modifiers: gpui::Modifiers,
-    rime_backend: Option<RimeBackend>,
-    rime_context: Option<RimeContextSnapshot>,
-    rime_menu_open: bool,
-    rime_menu_message: Option<String>,
-    system_ime: SystemImeState,
-    rpc_status: String,
-    api_level: Option<u64>,
-    nvim_version: Option<NvimVersion>,
-    grid_size: Option<(u32, u32)>,
-    guifont: Option<String>,
-    guifontwide: Option<String>,
-    window_title: String,
-    window_icon: String,
-    ui_options: HashMap<String, String>,
-    display_options: grid::DisplayOptions,
-    mouse_option: String,
-    mouse_enabled: bool,
-    mouse_capture: Option<u64>,
-    nvim_mode: String,
-    quit_dialog: QuitDialogState,
-    scroll_remainder: gpui::Point<f32>,
-    linespace: f32,
-    cursor_style_enabled: bool,
-    cursor_modes: Vec<grid::CursorModeInfo>,
-    cursor_mode_index: usize,
-    cursor_blink_started_at: Instant,
-    event_task: Option<Task<()>>,
-    clipboard_task: Option<Task<()>>,
-    reconnect_task: Option<Task<()>>,
-    reconnect_attempt: u32,
-    window_bounds_subscription: Option<Subscription>,
-    last_resize: Option<(u32, u32)>,
-    resolved_grid_font: Option<GuiFontSpec>,
-    resolved_grid_wide_font: Option<GuiFontSpec>,
-    shaping_cache: grid::SharedShapedLineCache,
-    cursor_animation: Option<grid::CursorAnimation>,
-    other_grids: HashMap<u64, Rc<grid::GridModel>>,
-    pending_other_grids: HashMap<u64, Rc<grid::GridModel>>,
-    grid_placements: HashMap<u64, GridPlacement>,
-    pending_grid_placements: HashMap<u64, GridPlacement>,
-    pending_destroyed_grids: HashSet<u64>,
-    viewport_animations: HashMap<u64, ViewportAnimation>,
-    cursor_grid: u64,
-    pending_cursor_grid: Option<u64>,
+    pub(crate) focus_handle: Option<FocusHandle>,
+    pub(crate) state: EditorState,
+    pub(crate) grid: Rc<grid::GridModel>,
+    pub(crate) pending_grid: Option<Rc<grid::GridModel>>,
+    pub(crate) nvim: Option<NvimProcess>,
+    pub(crate) input_router: InputRouter,
+    pub(crate) last_modifiers: gpui::Modifiers,
+    pub(crate) rime_backend: Option<RimeBackend>,
+    pub(crate) rime_context: Option<RimeContextSnapshot>,
+    pub(crate) rime_menu_open: bool,
+    pub(crate) rime_menu_message: Option<String>,
+    pub(crate) system_ime: SystemImeState,
+    pub(crate) rpc_status: String,
+    pub(crate) api_level: Option<u64>,
+    pub(crate) nvim_version: Option<NvimVersion>,
+    pub(crate) grid_size: Option<(u32, u32)>,
+    pub(crate) guifont: Option<String>,
+    pub(crate) guifontwide: Option<String>,
+    pub(crate) window_title: String,
+    pub(crate) window_icon: String,
+    pub(crate) ui_options: HashMap<String, String>,
+    pub(crate) display_options: grid::DisplayOptions,
+    pub(crate) mouse_option: String,
+    pub(crate) mouse_enabled: bool,
+    pub(crate) mouse_capture: Option<u64>,
+    pub(crate) nvim_mode: String,
+    pub(crate) quit_dialog: QuitDialogState,
+    pub(crate) scroll_remainder: gpui::Point<f32>,
+    pub(crate) linespace: f32,
+    pub(crate) cursor_style_enabled: bool,
+    pub(crate) cursor_modes: Vec<grid::CursorModeInfo>,
+    pub(crate) cursor_mode_index: usize,
+    pub(crate) cursor_blink_started_at: Instant,
+    pub(crate) event_task: Option<Task<()>>,
+    pub(crate) clipboard_task: Option<Task<()>>,
+    pub(crate) reconnect_task: Option<Task<()>>,
+    pub(crate) reconnect_attempt: u32,
+    pub(crate) window_bounds_subscription: Option<Subscription>,
+    pub(crate) last_resize: Option<(u32, u32)>,
+    pub(crate) resolved_grid_font: Option<GuiFontSpec>,
+    pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
+    pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) cursor_animation: Option<grid::CursorAnimation>,
+    pub(crate) other_grids: HashMap<u64, Rc<grid::GridModel>>,
+    pub(crate) pending_other_grids: HashMap<u64, Rc<grid::GridModel>>,
+    pub(crate) grid_placements: HashMap<u64, GridPlacement>,
+    pub(crate) pending_grid_placements: HashMap<u64, GridPlacement>,
+    pub(crate) pending_destroyed_grids: HashSet<u64>,
+    pub(crate) viewport_animations: HashMap<u64, ViewportAnimation>,
+    pub(crate) cursor_grid: u64,
+    pub(crate) pending_cursor_grid: Option<u64>,
     /// Grid whose element owns the currently registered system IME handler.
     /// This is separate from `cursor_grid` because the platform input handler
     /// lives for the painted frame, while Neovim cursor state can change
     /// between frames.
-    ime_input_grid: Option<u64>,
-    ime_coordinates_dirty: bool,
-    image_store: image_store::ImageStore,
-    image_sources: HashMap<ImageId, Arc<Image>>,
-    nerd_font_family: Option<String>,
-    glyph_coverage_cache: grid::SharedGlyphCoverageCache,
-    settings: settings::Settings,
-    logger: Option<flexi_logger::LoggerHandle>,
-    bundled_nerd_font_registered: bool,
-    settings_save_error: Option<String>,
-    cli_install_error: Option<String>,
-    settings_window: Option<WindowHandle<SettingsWindow>>,
-    about_window: Option<WindowHandle<AboutWindow>>,
-    theme: NvimTheme,
-    pending_theme: Option<NvimTheme>,
-    pending_redraw: Option<state::PendingRedrawState>,
-    nvim_grid_ready: bool,
-    startup_resize_target: Option<(u32, u32)>,
-    startup_flush_seen: bool,
-    startup_grid_content_seen: bool,
-    startup_redraw_pending: bool,
-    startup_maximize_pending: bool,
+    pub(crate) ime_input_grid: Option<u64>,
+    pub(crate) ime_coordinates_dirty: bool,
+    pub(crate) image_store: image_store::ImageStore,
+    pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
+    pub(crate) nerd_font_family: Option<String>,
+    pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) settings: settings::Settings,
+    pub(crate) logger: Option<flexi_logger::LoggerHandle>,
+    pub(crate) bundled_nerd_font_registered: bool,
+    pub(crate) settings_save_error: Option<String>,
+    pub(crate) cli_install_error: Option<String>,
+    pub(crate) settings_window: Option<WindowHandle<SettingsWindow>>,
+    pub(crate) about_window: Option<WindowHandle<AboutWindow>>,
+    pub(crate) theme: NvimTheme,
+    pub(crate) pending_theme: Option<NvimTheme>,
+    pub(crate) pending_redraw: Option<state::PendingRedrawState>,
+    pub(crate) nvim_grid_ready: bool,
+    pub(crate) startup_resize_target: Option<(u32, u32)>,
+    pub(crate) startup_flush_seen: bool,
+    pub(crate) startup_grid_content_seen: bool,
+    pub(crate) startup_redraw_pending: bool,
+    pub(crate) startup_maximize_pending: bool,
 }
 
 impl NvimGpui {
@@ -484,20 +482,16 @@ impl Default for NvimGpui {
     }
 }
 
-mod compositor;
-mod editor;
+pub(crate) mod compositor;
 mod startup;
 mod state;
-mod windows;
+pub(crate) mod windows;
+mod workspace;
 
 pub(crate) use startup::run;
-use windows::{
-    initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
-    parse_guifont_spec, parse_non_negative_float, DebugWindow,
-};
+use windows::DebugWindow;
 pub(crate) use windows::{
-    themed_titlebar, themed_titlebar_enabled, themed_titlebar_options, RimeTitlebarState,
+    initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
+    parse_guifont_spec, parse_non_negative_float,
 };
-
-#[cfg(test)]
-mod tests;
+pub(crate) use windows::{themed_titlebar, themed_titlebar_enabled, themed_titlebar_options};

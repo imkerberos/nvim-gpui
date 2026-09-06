@@ -1,9 +1,9 @@
-use super::{
-    initial_window_size_for_grid, parse_guifont_spec, themed_titlebar_enabled, EditorState,
-    GridPlacement, GridViewport, GridViewportMargins, NvimGpui, DEFAULT_GRID_CELL_WIDTH,
-    DEFAULT_GRID_LINE_HEIGHT, DEFAULT_WINDOW_TITLE, THEMED_TITLEBAR_HEIGHT,
-};
 use crate::{
+    app::{
+        initial_window_size_for_grid, parse_guifont_spec, themed_titlebar_enabled, EditorState,
+        GridPlacement, GridViewport, GridViewportMargins, NvimGpui, DEFAULT_GRID_CELL_WIDTH,
+        DEFAULT_GRID_LINE_HEIGHT, DEFAULT_WINDOW_TITLE, THEMED_TITLEBAR_HEIGHT,
+    },
     grid::{
         AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
         EmojiWidth, GridLineCell, HighlightAttrs, HighlightId,
@@ -551,15 +551,27 @@ fn empty_guifont_falls_back_to_a_safe_grid_font() {
 #[test]
 fn grid_line_height_keeps_a_terminal_sized_cell_and_explicit_linespace() {
     assert_eq!(
-        f32::from(super::line_height_from_metrics(px(15.0), px(16.0), 0.0)),
+        f32::from(crate::app::line_height_from_metrics(
+            px(15.0),
+            px(16.0),
+            0.0
+        )),
         20.0
     );
     assert_eq!(
-        f32::from(super::line_height_from_metrics(px(15.0), px(16.0), 2.0)),
+        f32::from(crate::app::line_height_from_metrics(
+            px(15.0),
+            px(16.0),
+            2.0
+        )),
         22.0
     );
     assert_eq!(
-        f32::from(super::line_height_from_metrics(px(19.0), px(16.0), 0.0)),
+        f32::from(crate::app::line_height_from_metrics(
+            px(19.0),
+            px(16.0),
+            0.0
+        )),
         20.0
     );
 }
@@ -611,8 +623,8 @@ fn theme_changes_become_visible_at_flush() {
         },
     });
 
-    assert_eq!(app.theme_background(), super::BACKGROUND);
-    assert_eq!(app.theme_foreground(), super::TEXT);
+    assert_eq!(app.theme_background(), crate::widgets::BACKGROUND);
+    assert_eq!(app.theme_foreground(), crate::widgets::TEXT);
 
     app.apply_nvim_event(NvimEvent::Flush);
 
@@ -1024,7 +1036,7 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
 #[test]
 fn delayed_viewport_animation_starts_when_presented() {
     let started_at = Instant::now() - Duration::from_secs(1);
-    let mut animation = super::ViewportAnimation {
+    let mut animation = crate::app::ViewportAnimation {
         previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
         scroll_delta: 1,
         started_at,

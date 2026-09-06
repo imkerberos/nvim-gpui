@@ -1,5 +1,6 @@
 pub mod app;
 mod clipboard;
+mod editor;
 pub mod grid;
 pub(crate) mod gui;
 pub mod helper;

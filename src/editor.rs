@@ -1,5 +1,18 @@
-use super::*;
-use gpui::FontFallbacks;
+use crate::{
+    app::{compositor, GridPlacement, GuiFontSpec, ImageLayer, NvimGpui},
+    grid,
+    grid::GridElement,
+    input,
+    input::InputTarget,
+    settings,
+    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT},
+};
+use gpui::{
+    div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Window,
+};
+use std::{ops::Range, rc::Rc, time::Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 impl Focusable for NvimGpui {
@@ -456,274 +469,6 @@ impl NvimGpui {
 
         Some(popup)
     }
-
-    fn quit_confirmation_dialog(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let state = match &self.quit_dialog {
-            QuitDialogState::Hidden | QuitDialogState::Quitting => return None,
-            state => state,
-        };
-
-        let mut body = div().w_full().flex().flex_col().gap_2();
-        match state {
-            QuitDialogState::Checking => {
-                body = body.child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(MUTED_TEXT))
-                        .child("Checking for unsaved changes…"),
-                );
-            }
-            QuitDialogState::Saving => {
-                body = body.child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(MUTED_TEXT))
-                        .child("Saving files…"),
-                );
-            }
-            QuitDialogState::Confirm {
-                modified_buffers,
-                error,
-            } => {
-                if let Some(error) = error {
-                    body = body.child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(WARNING))
-                            .whitespace_normal()
-                            .child(error.clone()),
-                    );
-                }
-                if modified_buffers.is_empty() {
-                    body = body.child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(MUTED_TEXT))
-                            .child("Neovim may still have unsaved changes."),
-                    );
-                } else {
-                    body = body.child(div().text_sm().text_color(rgb(MUTED_TEXT)).child(format!(
-                        "The following {} {} unsaved changes:",
-                        if modified_buffers.len() == 1 {
-                            "file"
-                        } else {
-                            "files"
-                        },
-                        if modified_buffers.len() == 1 {
-                            "has"
-                        } else {
-                            "have"
-                        }
-                    )));
-                    let mut files = div()
-                        .id("quit-dialog-files")
-                        .w_full()
-                        .max_h(px(180.0))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_2()
-                        .rounded_sm()
-                        .bg(rgb(BACKGROUND));
-                    for name in modified_buffers {
-                        files = files.child(
-                            div()
-                                .w_full()
-                                .text_sm()
-                                .whitespace_normal()
-                                .child(name.clone()),
-                        );
-                    }
-                    body = body.child(files);
-                }
-
-                let cancel = div()
-                    .id("quit-dialog-cancel")
-                    .px_3()
-                    .py_2()
-                    .rounded_sm()
-                    .text_sm()
-                    .text_color(rgb(TEXT))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(SURFACE_BRIGHT)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.cancel_quit_dialog(cx);
-                    }))
-                    .child("Cancel");
-                let discard = div()
-                    .id("quit-dialog-discard")
-                    .px_3()
-                    .py_2()
-                    .rounded_sm()
-                    .text_sm()
-                    .bg(rgb(0xf38ba8))
-                    .text_color(rgb(BACKGROUND))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0xf5bde6)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.discard_and_quit(cx);
-                    }))
-                    .child("Discard & Quit");
-                let save = div()
-                    .id("quit-dialog-save")
-                    .px_3()
-                    .py_2()
-                    .rounded_sm()
-                    .text_sm()
-                    .bg(rgb(ACCENT))
-                    .text_color(rgb(BACKGROUND))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0xa6c8ff)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.save_and_quit(cx);
-                    }))
-                    .child("Save All & Quit");
-                body = body.child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .mt_2()
-                        .child(cancel)
-                        .child(discard)
-                        .child(save),
-                );
-            }
-            QuitDialogState::Hidden | QuitDialogState::Quitting => unreachable!(),
-        }
-
-        let title = match state {
-            QuitDialogState::Checking => "Preparing to quit",
-            QuitDialogState::Saving => "Saving changes",
-            QuitDialogState::Confirm { .. } => "Unsaved changes",
-            QuitDialogState::Hidden | QuitDialogState::Quitting => unreachable!(),
-        };
-        let panel = div()
-            .id("quit-confirmation-dialog")
-            .w(px(520.0))
-            .max_w(px(720.0))
-            .p_4()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(SURFACE_BRIGHT))
-            .bg(rgb(SURFACE))
-            .text_color(rgb(TEXT))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-            .child(body);
-
-        let backdrop = div()
-            .id("quit-confirmation-backdrop")
-            .absolute()
-            .left(px(0.0))
-            .top(px(0.0))
-            .w_full()
-            .h_full()
-            .bg(gpui::rgba(0x00000099))
-            .on_any_mouse_down(|_, window, cx| {
-                window.prevent_default();
-                cx.stop_propagation();
-            });
-        Some(
-            div()
-                .absolute()
-                .left(px(0.0))
-                .top(px(0.0))
-                .w_full()
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(backdrop)
-                .child(panel),
-        )
-    }
-
-    fn startup_error_dialog(&self) -> Option<gpui::Div> {
-        if self.nvim.is_some() {
-            return None;
-        }
-
-        let error = self
-            .rpc_status
-            .strip_prefix("rpc: ")
-            .unwrap_or(&self.rpc_status)
-            .to_owned();
-        let ok = div()
-            .id("startup-error-ok")
-            .px_3()
-            .py_2()
-            .rounded_sm()
-            .text_sm()
-            .bg(rgb(ACCENT))
-            .text_color(rgb(BACKGROUND))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(0xa6c8ff)))
-            .on_click(|_, _, cx| cx.quit())
-            .child("OK");
-        let panel = div()
-            .id("startup-error-dialog")
-            .w(px(520.0))
-            .max_w(px(720.0))
-            .p_4()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(SURFACE_BRIGHT))
-            .bg(rgb(SURFACE))
-            .text_color(rgb(TEXT))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Neovim connection failed"),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(WARNING))
-                    .whitespace_normal()
-                    .child(error),
-            )
-            .child(div().w_full().flex().justify_end().mt_2().child(ok));
-        let backdrop = div()
-            .id("startup-error-backdrop")
-            .absolute()
-            .left(px(0.0))
-            .top(px(0.0))
-            .w_full()
-            .h_full()
-            .bg(gpui::rgba(0x00000099))
-            .on_any_mouse_down(|_, window, cx| {
-                window.prevent_default();
-                cx.stop_propagation();
-            });
-
-        Some(
-            div()
-                .absolute()
-                .left(px(0.0))
-                .top(px(0.0))
-                .w_full()
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(backdrop)
-                .child(panel),
-        )
-    }
 }
 
 fn candidate_marker(index: usize) -> &'static str {
@@ -906,9 +651,12 @@ impl NvimGpui {
     }
 }
 
-impl Render for NvimGpui {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_window_title(&self.window_title);
+impl NvimGpui {
+    pub(crate) fn render_editor_surface(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         self.sync_nvim_size(window);
 
         let gui_font = self.current_grid_font(window);
@@ -916,40 +664,8 @@ impl Render for NvimGpui {
         let line_height = gui_font.line_height(window, self.linespace);
         let cursor_mode = self.current_cursor_mode();
         let cursor_blink_started_at = self.cursor_blink_started_at;
-        let theme_background = self.theme_background();
-        let theme_foreground = self.theme_foreground();
 
         let entity = cx.entity();
-        let mut root = div()
-            .size_full()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme_background))
-            .text_color(rgb(theme_foreground))
-            .capture_key_down(cx.listener(Self::on_key_down))
-            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed));
-
-        if let Some(focus_handle) = self.focus_handle.as_ref() {
-            root = root.track_focus(focus_handle);
-        }
-
-        if themed_titlebar_enabled() {
-            root = root.child(themed_titlebar(
-                self.window_title.clone(),
-                theme_background,
-                theme_foreground,
-                Some(entity.clone()),
-                (self.settings.ime_backend == settings::ImeBackend::Rime
-                    && self.rime_backend.is_some())
-                .then_some(RimeTitlebarState {
-                    enabled: self.input_router.config().rime_enabled,
-                    active: self.input_router.target() == InputTarget::Rime,
-                    menu_open: self.rime_menu_open,
-                    menu_message: self.rime_menu_message.clone(),
-                }),
-            ));
-        }
 
         let cell_width = gui_font.cell_width(window);
         let grid_ready = self.nvim_grid_ready;
@@ -1179,19 +895,12 @@ impl Render for NvimGpui {
             }
         }
 
-        root = root.child(editor);
-        if let Some(quit_dialog) = self.quit_confirmation_dialog(cx) {
-            root = root.child(quit_dialog);
-        }
-        if let Some(startup_error_dialog) = self.startup_error_dialog() {
-            root = root.child(startup_error_dialog);
-        }
-        root
+        editor
     }
 }
 
 impl NvimGpui {
-    pub(super) fn mouse_option_allows_mode(mouse_option: &str, nvim_mode: &str) -> bool {
+    pub(crate) fn mouse_option_allows_mode(mouse_option: &str, nvim_mode: &str) -> bool {
         let mode = nvim_mode.chars().next().unwrap_or('n');
         let required = match mode {
             'i' | 'R' | 's' | 'S' => 'i',
@@ -1208,6 +917,7 @@ impl NvimGpui {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn nvim_mouse_position(
         position: gpui::Point<Pixels>,
         cell_width: Pixels,
