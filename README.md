@@ -196,13 +196,16 @@ For a Nix-wrapped Neovim, pass the wrapper's absolute path with
 --no-debug-window    Hide the auxiliary debug window
 --embed              Start a local embedded Neovim (default)
 --connect ADDRESS    Connect to a running Neovim session
+--connect-timeout SECONDS  Set the remote TCP connection timeout (default: 3)
 --nvim-command PATH  Select the Neovim executable for embed mode
 --cwd PATH           Set Neovim's working directory
 --                   Pass all following arguments to Neovim
 ```
 
 `ADDRESS` may be a TCP address such as `HOST:PORT`, or a Unix socket path.
-Unknown arguments are passed through to embedded Neovim.
+`--connect-timeout` accepts a positive number of seconds, including decimals,
+and applies only to remote TCP connections. Unknown arguments are passed
+through to embedded Neovim.
 
 ## Clipboard
 

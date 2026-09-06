@@ -237,6 +237,18 @@ impl NvimGpui {
         }
     }
 
+    pub(super) fn complete_startup_maximize(&mut self) {
+        self.startup_maximize_pending = false;
+        self.startup_resize_target = None;
+        self.startup_flush_seen = false;
+        self.startup_grid_content_seen = false;
+        self.startup_redraw_pending = true;
+        log::debug!(
+            target: "nvim_gpui::state",
+            "startup window maximized; waiting for the final Neovim grid"
+        );
+    }
+
     pub(super) fn sync_nvim_size(&mut self, window: &mut Window) {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
@@ -254,7 +266,17 @@ impl NvimGpui {
         let height = (available_height / f32::from(line_height)).floor().max(1.0) as u32;
         let size = (width, height);
 
+        if self.startup_maximize_pending {
+            if !window.is_maximized() {
+                return;
+            }
+            self.complete_startup_maximize();
+        }
+
         if !self.nvim_grid_ready {
+            if self.last_resize != Some(size) {
+                self.startup_redraw_pending = true;
+            }
             self.startup_resize_target = Some(size);
             self.update_startup_grid_ready();
             if self.nvim_grid_ready && !self.startup_redraw_pending {

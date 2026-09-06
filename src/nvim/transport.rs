@@ -1,8 +1,9 @@
 use rmpv::Value;
 use std::io::{BufReader, ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -38,25 +39,15 @@ pub(super) type RpcStreams = (
     RemoteConnection,
 );
 
-pub(super) fn connect_remote(address: &str) -> Result<RpcStreams, String> {
+pub(super) fn connect_remote_with_timeout(
+    address: &str,
+    connect_timeout: Duration,
+) -> Result<RpcStreams, String> {
     if let Some(address) = address
         .strip_prefix("tcp://")
         .or_else(|| address.strip_prefix("tcp:"))
     {
-        let stream = TcpStream::connect(address)
-            .map_err(|error| format!("failed to connect to Neovim at {address}: {error}"))?;
-        let _ = stream.set_nodelay(true);
-        let reader = stream
-            .try_clone()
-            .map_err(|error| format!("failed to clone Neovim TCP reader: {error}"))?;
-        let writer = stream
-            .try_clone()
-            .map_err(|error| format!("failed to clone Neovim TCP writer: {error}"))?;
-        return Ok((
-            Box::new(reader),
-            Box::new(writer),
-            RemoteConnection::Tcp(stream),
-        ));
+        return connect_tcp(address, connect_timeout);
     }
 
     if let Some(path) = address
@@ -70,8 +61,31 @@ pub(super) fn connect_remote(address: &str) -> Result<RpcStreams, String> {
         return connect_unix(address);
     }
 
-    let stream = TcpStream::connect(address)
-        .map_err(|error| format!("failed to connect to Neovim at {address}: {error}"))?;
+    connect_tcp(address, connect_timeout)
+}
+
+fn connect_tcp(address: &str, connect_timeout: Duration) -> Result<RpcStreams, String> {
+    let mut last_error = None;
+    let addresses = address
+        .to_socket_addrs()
+        .map_err(|error| format!("failed to resolve Neovim address {address}: {error}"))?;
+
+    for socket_address in addresses {
+        match TcpStream::connect_timeout(&socket_address, connect_timeout) {
+            Ok(stream) => return tcp_streams(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    let error = last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "address resolved to no endpoints".to_owned());
+    Err(format!(
+        "failed to connect to Neovim at {address} within {connect_timeout:?}: {error}"
+    ))
+}
+
+fn tcp_streams(stream: TcpStream) -> Result<RpcStreams, String> {
     let _ = stream.set_nodelay(true);
     let reader = stream
         .try_clone()

@@ -364,6 +364,7 @@ pub(crate) struct NvimGpui {
     startup_flush_seen: bool,
     startup_grid_content_seen: bool,
     startup_redraw_pending: bool,
+    startup_maximize_pending: bool,
 }
 
 impl NvimGpui {
@@ -478,6 +479,7 @@ impl Default for NvimGpui {
             startup_flush_seen: false,
             startup_grid_content_seen: false,
             startup_redraw_pending: false,
+            startup_maximize_pending: false,
         }
     }
 }

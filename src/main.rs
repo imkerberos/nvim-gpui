@@ -11,7 +11,7 @@ pub mod platform;
 pub mod settings;
 pub(crate) mod widgets;
 
-use std::{env, ffi::OsString, fs, path::PathBuf};
+use std::{env, ffi::OsString, fs, path::PathBuf, time::Duration};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliAction {
@@ -30,6 +30,7 @@ pub(crate) enum NvimConnection {
 pub(crate) struct CliOptions {
     debug_window: bool,
     connection: NvimConnection,
+    connect_timeout: Duration,
     nvim_command: Option<OsString>,
     working_directory: Option<OsString>,
     nvim_args: Vec<OsString>,
@@ -41,6 +42,7 @@ where
 {
     let mut debug_window = false;
     let mut connection = NvimConnection::Embed;
+    let mut connect_timeout = None;
     let mut explicit_embed = false;
     let mut nvim_command = None;
     let mut working_directory = None;
@@ -81,6 +83,24 @@ where
                         return Err("--connect requires an address".to_owned());
                     }
                     connection = NvimConnection::Remote(address.to_owned());
+                    continue;
+                }
+                Some("--connect-timeout") => {
+                    let timeout = args
+                        .next()
+                        .ok_or_else(|| "--connect-timeout requires seconds".to_owned())?;
+                    let timeout = timeout
+                        .into_string()
+                        .map_err(|_| "--connect-timeout must be valid UTF-8".to_owned())?;
+                    connect_timeout = Some(parse_connect_timeout(&timeout)?);
+                    continue;
+                }
+                Some(value) if value.starts_with("--connect-timeout=") => {
+                    let timeout = value.trim_start_matches("--connect-timeout=");
+                    if timeout.is_empty() {
+                        return Err("--connect-timeout requires seconds".to_owned());
+                    }
+                    connect_timeout = Some(parse_connect_timeout(timeout)?);
                     continue;
                 }
                 Some("--nvim-command") => {
@@ -134,6 +154,9 @@ where
     if explicit_embed && matches!(connection, NvimConnection::Remote(_)) {
         return Err("--embed and --connect cannot be used together".to_owned());
     }
+    if connect_timeout.is_some() && matches!(connection, NvimConnection::Embed) {
+        return Err("--connect-timeout requires --connect".to_owned());
+    }
     if matches!(connection, NvimConnection::Remote(_))
         && (nvim_command.is_some() || !nvim_args.is_empty())
     {
@@ -145,17 +168,31 @@ where
     Ok(CliAction::Run(CliOptions {
         debug_window,
         connection,
+        connect_timeout: connect_timeout.unwrap_or(nvim::DEFAULT_CONNECT_TIMEOUT),
         nvim_command,
         working_directory,
         nvim_args,
     }))
 }
 
+fn parse_connect_timeout(value: &str) -> Result<Duration, String> {
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|_| format!("--connect-timeout must be a positive number of seconds: {value}"))?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(format!(
+            "--connect-timeout must be a positive number of seconds: {value}"
+        ));
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| format!("--connect-timeout is outside the supported range: {value}"))
+}
+
 fn print_help() {
     println!(
         "Usage: gpvim [GPUI options] [--] [Neovim options]\n\n\
-GPUI options:\n  --debug-window       Show the auxiliary debug window (opt-in)\n  --no-debug-window    Hide the auxiliary debug window\n  --embed              Start a local embedded Neovim (default)\n  --connect ADDRESS    Connect to a Neovim msgpack-rpc socket\n  --nvim-command PATH  Select the local Neovim executable for embed mode\n  --cwd PATH           Set the working directory for Neovim\n  -h, --help           Show this help\n  -V, --version        Show the GPUI version\n\n\
-ADDRESS may be HOST:PORT, tcp:HOST:PORT, unix:/path, or a Unix socket path.\nAll other arguments are passed to embedded Neovim. Use -- to pass an argument\nthat would otherwise be interpreted as a GPUI option."
+GPUI options:\n  --debug-window             Show the auxiliary debug window (opt-in)\n  --no-debug-window          Hide the auxiliary debug window\n  --embed                    Start a local embedded Neovim (default)\n  --connect ADDRESS          Connect to a Neovim msgpack-rpc socket\n  --connect-timeout SECONDS  Set the remote TCP connection timeout (default: 3)\n  --nvim-command PATH        Select the local Neovim executable for embed mode\n  --cwd PATH                 Set the working directory for Neovim\n  -h, --help                 Show this help\n  -V, --version              Show the GPUI version\n\n\
+ADDRESS may be HOST:PORT, tcp:HOST:PORT, unix:/path, or a Unix socket path.\nSECONDS must be a positive number and may include decimals. The timeout applies\nto remote TCP connections; Unix socket connections are not affected. All other\narguments are passed to embedded Neovim. Use -- to pass an argument that would\notherwise be interpreted as a GPUI option."
     );
 }
 

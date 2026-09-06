@@ -22,12 +22,15 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     io::Cursor,
+    net::TcpListener,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::channel,
         Arc,
     },
+    thread,
+    time::Duration,
 };
 
 #[test]
@@ -220,6 +223,26 @@ fn embedded_nvim_reports_protocol_metadata_before_ui_events() {
         events.try_recv().expect("ApiReady should be queued"),
         NvimEvent::ApiReady { .. }
     ));
+}
+
+#[test]
+fn remote_connect_rejects_endpoint_without_rpc_handshake() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+    let address = listener
+        .local_addr()
+        .expect("test listener should have an address");
+    let server = thread::spawn(move || {
+        let (_stream, _) = listener.accept().expect("test listener should accept");
+        thread::sleep(Duration::from_secs(3));
+    });
+
+    let error = match NvimProcess::connect(80, 24, &address.to_string()) {
+        Ok(_) => panic!("an endpoint without an RPC handshake must fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error, "Neovim RPC handshake did not complete");
+    server.join().expect("test server should exit");
 }
 
 #[test]

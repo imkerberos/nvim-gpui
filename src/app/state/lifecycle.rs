@@ -36,6 +36,7 @@ impl NvimGpui {
         nerd_font_registered: bool,
         app_settings: settings::Settings,
         initial_theme: Option<NvimTheme>,
+        startup_maximized: bool,
         logger: Option<flexi_logger::LoggerHandle>,
     ) -> Self {
         let nvim_available = nvim.is_ok();
@@ -67,6 +68,7 @@ impl NvimGpui {
         this.bundled_nerd_font_registered = nerd_font_registered;
         this.nvim_grid_ready = !nvim_available;
         this.startup_redraw_pending = nvim_available;
+        this.startup_maximize_pending = nvim_available && startup_maximized;
         this.apply_runtime_settings();
         this.rime_backend = initialize_rime_backend(&this.settings);
         if this.rime_backend.is_some() {

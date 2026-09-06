@@ -466,6 +466,15 @@ The AppBundle imports the macOS login-shell environment before starting
 Neovim. This is needed because Finder and LaunchServices do not normally
 inherit the interactive shell's complete `PATH` and Neovim-related variables.
 
+To test an already-running remote Neovim instance, use `--connect` and set
+`--connect-timeout` when the endpoint may be unavailable. The timeout is a
+positive number of seconds and applies to TCP connections; it defaults to
+three seconds:
+
+```sh
+gpvim --connect 127.0.0.1:16662 --connect-timeout 3
+```
+
 ## Packaging
 
 ### Built-in Rime runtime

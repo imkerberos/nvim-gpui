@@ -9,7 +9,7 @@ use crate::{
         EmojiWidth, GridLineCell, HighlightAttrs, HighlightId,
     },
     image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
-    nvim::{NvimEvent, NvimFloatAnchor, NvimFloatPosition},
+    nvim::{NvimEvent, NvimFloatAnchor, NvimFloatPosition, DEFAULT_CONNECT_TIMEOUT},
     parse_cli, CliAction, CliOptions, NvimConnection,
 };
 use gpui::{point, px};
@@ -32,6 +32,7 @@ fn cli_keeps_unknown_arguments_for_neovim() {
         CliAction::Run(CliOptions {
             debug_window: false,
             connection: NvimConnection::Embed,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: None,
             working_directory: None,
             nvim_args: vec![
@@ -52,6 +53,7 @@ fn cli_only_shows_the_debug_window_when_requested() {
         CliAction::Run(CliOptions {
             debug_window: true,
             connection: NvimConnection::Embed,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: None,
             working_directory: None,
             nvim_args: Vec::new(),
@@ -69,6 +71,7 @@ fn cli_separator_forwards_gpui_named_arguments_to_neovim() {
         CliAction::Run(CliOptions {
             debug_window: false,
             connection: NvimConnection::Embed,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: None,
             working_directory: None,
             nvim_args: vec![OsString::from("--no-debug-window")],
@@ -90,11 +93,42 @@ fn cli_selects_a_remote_neovim_without_forwarding_remote_arguments() {
         CliAction::Run(CliOptions {
             debug_window: false,
             connection: NvimConnection::Remote("unix:/tmp/nvim.sock".to_owned()),
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: None,
             working_directory: None,
             nvim_args: Vec::new(),
         })
     );
+}
+
+#[test]
+fn cli_parses_remote_connect_timeout_in_seconds() {
+    let action = parse_cli([
+        OsString::from("--connect=127.0.0.1:16662"),
+        OsString::from("--connect-timeout"),
+        OsString::from("0.25"),
+    ])
+    .expect("CLI should parse");
+
+    assert_eq!(
+        action,
+        CliAction::Run(CliOptions {
+            debug_window: false,
+            connection: NvimConnection::Remote("127.0.0.1:16662".to_owned()),
+            connect_timeout: Duration::from_millis(250),
+            nvim_command: None,
+            working_directory: None,
+            nvim_args: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn cli_rejects_connect_timeout_without_remote_mode() {
+    let error = parse_cli([OsString::from("--connect-timeout"), OsString::from("1")])
+        .expect_err("connect timeout should require remote mode");
+
+    assert_eq!(error, "--connect-timeout requires --connect");
 }
 
 #[test]
@@ -111,6 +145,7 @@ fn cli_selects_a_wrapped_nvim_command_for_embed_mode() {
         CliAction::Run(CliOptions {
             debug_window: false,
             connection: NvimConnection::Embed,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: Some(OsString::from("/nix/store/example/bin/nvim")),
             working_directory: None,
             nvim_args: vec![OsString::from("--clean")],
@@ -131,6 +166,7 @@ fn cli_preserves_a_working_directory_for_app_bundle_launches() {
         CliAction::Run(CliOptions {
             debug_window: false,
             connection: NvimConnection::Embed,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             nvim_command: None,
             working_directory: Some(OsString::from("/Users/example/project")),
             nvim_args: vec![OsString::from("README.md")],
@@ -258,6 +294,26 @@ fn startup_does_not_show_a_cursor_only_flush() {
     });
     app.apply_nvim_event(NvimEvent::Flush);
     assert!(app.nvim_grid_ready);
+}
+
+#[test]
+fn startup_maximize_transition_restarts_the_final_grid_sync() {
+    let mut app = NvimGpui {
+        nvim_grid_ready: false,
+        startup_maximize_pending: true,
+        startup_resize_target: Some((80, 24)),
+        startup_flush_seen: true,
+        startup_grid_content_seen: true,
+        ..Default::default()
+    };
+
+    app.complete_startup_maximize();
+
+    assert!(!app.startup_maximize_pending);
+    assert!(app.startup_resize_target.is_none());
+    assert!(!app.startup_flush_seen);
+    assert!(!app.startup_grid_content_seen);
+    assert!(app.startup_redraw_pending);
 }
 
 #[test]

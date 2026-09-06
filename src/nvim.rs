@@ -36,7 +36,7 @@ use protocol::{
     term_event_notification_frame,
 };
 use session::run_session;
-use transport::{connect_remote, write_shared_message, RemoteConnection, SharedWriter};
+use transport::{write_shared_message, RemoteConnection, SharedWriter};
 use types::NvimCommand;
 pub use types::{DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimTheme};
 use version::parse_protocol_info;
@@ -46,6 +46,7 @@ const CLIENT_NAME: &str = "nvim-gpui";
 const NVIM_GPUI_STARTUP_COMMAND: &str = "let g:nvim_gpui = v:true";
 const NVIM_EXITED: &str = "nvim process exited";
 const STARTUP_THEME_TIMEOUT: Duration = Duration::from_secs(1);
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 type PendingRequests = Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>;
 pub type RpcRequestHandler = Arc<dyn Fn(&Value) -> Result<Value, String> + Send + Sync + 'static>;
@@ -59,6 +60,7 @@ pub(crate) enum ConnectionSpec {
     },
     Remote {
         address: String,
+        connect_timeout: Duration,
     },
 }
 
@@ -136,13 +138,23 @@ impl NvimProcess {
     }
 
     pub fn connect(width: u32, height: u32, address: &str) -> Result<Self, String> {
+        Self::connect_with_timeout(width, height, address, DEFAULT_CONNECT_TIMEOUT)
+    }
+
+    pub fn connect_with_timeout(
+        width: u32,
+        height: u32,
+        address: &str,
+        connect_timeout: Duration,
+    ) -> Result<Self, String> {
         log::info!(
             target: "nvim_gpui::nvim",
-            "connecting to remote Neovim address={address}"
+            "connecting to remote Neovim address={address}, timeout={connect_timeout:?}"
         );
-        let (reader, writer, remote) = connect_remote(address)?;
+        let (reader, writer, remote) =
+            transport::connect_remote_with_timeout(address, connect_timeout)?;
         let writer: SharedWriter = Arc::new(Mutex::new(writer));
-        Self::start_workers(
+        let process = Self::start_workers(
             width,
             height,
             writer,
@@ -151,8 +163,13 @@ impl NvimProcess {
             Some(Arc::new(remote)),
             ConnectionSpec::Remote {
                 address: address.to_owned(),
+                connect_timeout,
             },
-        )
+        )?;
+        if process.protocol().is_none() {
+            return Err("Neovim RPC handshake did not complete".to_owned());
+        }
+        Ok(process)
     }
 
     pub fn reconnect(&self, width: u32, height: u32) -> Result<Self, String> {
@@ -179,7 +196,10 @@ impl NvimProcess {
             ConnectionSpec::Embedded { command, args } => {
                 Self::spawn_with_command(width, height, command, args.clone())
             }
-            ConnectionSpec::Remote { address } => Self::connect(width, height, address),
+            ConnectionSpec::Remote {
+                address,
+                connect_timeout,
+            } => Self::connect_with_timeout(width, height, address, *connect_timeout),
         }?;
         if process.protocol().is_none() {
             return Err("Neovim RPC handshake did not complete".to_owned());

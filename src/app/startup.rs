@@ -31,12 +31,16 @@ pub(crate) fn run(
                 options.nvim_args,
             )
         }
-        NvimConnection::Remote(address) => {
-            NvimProcess::connect(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT, &address)
-        }
+        NvimConnection::Remote(address) => NvimProcess::connect_with_timeout(
+            DEFAULT_GRID_WIDTH,
+            DEFAULT_GRID_HEIGHT,
+            &address,
+            options.connect_timeout,
+        ),
     };
     if let Err(error) = &nvim {
         log::error!(target: "nvim_gpui::startup", "Neovim initialization failed: {error}");
+        eprintln!("[nvim-gpui] Neovim initialization failed: {error}");
     }
     let show_debug_window = options.debug_window;
     let initial_theme = nvim.as_ref().ok().and_then(NvimProcess::startup_theme);
@@ -77,6 +81,7 @@ pub(crate) fn run(
                     nerd_font_registered,
                     app_settings.clone(),
                     initial_theme,
+                    startup_maximized,
                     logger,
                 )
             });
