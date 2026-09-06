@@ -61,7 +61,7 @@ Invoke-Native 'python.exe' @(
     '--require-data'
 )
 
-Invoke-Native 'cargo.exe' @('build', '--release', '--bins')
+Invoke-Native 'cargo.exe' @('build', '--locked', '--release', '--bins')
 
 $cargoTarget = if ($env:CARGO_TARGET_DIR) {
     Resolve-RepoPath $env:CARGO_TARGET_DIR

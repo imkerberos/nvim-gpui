@@ -10,6 +10,7 @@ const APPLICATION_BUNDLE_IDENTIFIER: &str = "dev.nvim-gpui";
 const SYMBOLS_NERD_FONT: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFont-Regular.ttf");
 const SYMBOLS_NERD_FONT_MONO: &[u8] =
     include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+#[cfg(target_os = "macos")]
 const APPLICATION_ICON_ICNS: &[u8] =
     include_bytes!("../assets/icons/neovim-gpui_1024x1024_1024x1024.icns");
 

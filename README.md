@@ -10,8 +10,8 @@ A native macOS graphical frontend for Neovim.
 Neovim editing experience, but it is not yet a complete replacement for
 Neovide or a terminal UI.
 
-Platform support is currently limited to macOS. Linux and Windows support are
-coming soon.
+macOS is currently the primary supported platform. Linux and Windows builds
+are validated by CI, but their distribution support remains experimental.
 
 <p align="center">
   <img src="assets/screenshots/editor-cjk.png" alt="CJK text editing in nvim-gpui" width="32%">

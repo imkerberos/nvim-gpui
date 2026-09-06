@@ -20,15 +20,16 @@
         let
           pkgs = import nixpkgs { inherit system; };
           linuxLibraries = with pkgs; [
-            fontconfig
-            freetype
-            libGL
-            libxkbcommon
-            wayland
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXi
-            xorg.libXrandr
+              fontconfig
+              freetype
+              libGL
+              libxcb
+              libxkbcommon
+              wayland
+              libx11
+              libxcursor
+              libxi
+              libxrandr
           ];
           nativeLibraries = with pkgs; [
             openssl
@@ -99,7 +100,7 @@
               echo "  image tools  $NVIM_GPUI_IMAGEMAGICK"
               echo "  gpvim        $CARGO_TARGET_DIR/debug/gpvim (after cargo build)"
               echo "  just check   type-check and verify formatting"
-              echo "  just run     launch the GPUI scaffold"
+              echo "  just run     launch the GPUI application"
             '';
           };
         });

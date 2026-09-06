@@ -171,6 +171,7 @@ fn login_shell_environment() -> Option<HashMap<OsString, OsString>> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn parse_environment(bytes: &[u8]) -> HashMap<OsString, OsString> {
     bytes
         .split(|byte| *byte == 0)

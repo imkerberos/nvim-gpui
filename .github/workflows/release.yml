@@ -8,6 +8,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NEOVIM_VERSION: 0.12.5
+
 jobs:
   build:
     name: macOS ${{ matrix.arch }} package
@@ -40,6 +47,16 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Cache Cargo and Rime build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cargo-home
+            .cache/rime-build/macos
+          key: macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flake.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
+          restore-keys: |
+            macos-${{ matrix.arch }}-
+
       - name: Verify Apple Silicon runner
         run: |
           test "$(uname -m)" = "arm64"
@@ -48,11 +65,10 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
 
-      - name: Build macOS Rime runtime
-        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just rime-runtime-macos
-
-      - name: Build AppBundle and DMG
-        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just dmg
+      - name: Build, test, and package macOS
+        env:
+          NVIM_GPUI_PACKAGE_ARCH: ${{ matrix.arch }}
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just package-macos
 
       - name: Archive AppBundle
         env:
@@ -69,9 +85,139 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
 
+  linux:
+    name: Linux ${{ matrix.arch }} release validation
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            nix_system: x86_64-linux
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            nix_system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/cargo-home
+          key: release-cargo-${{ matrix.nix_system }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
+          restore-keys: |
+            release-cargo-${{ matrix.nix_system }}-
+
+      - name: Build and test Linux release
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just ci
+
+      - name: Build Linux release binaries
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just build-release
+
+  windows:
+    name: Windows x86_64 package
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: python scripts/release.py check $env:GITHUB_REF_NAME
+
+      - name: Cache Cargo and Rime build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cargo-home
+            .cache/rime-build/windows-x86_64
+          key: windows-x86_64-${{ hashFiles('Cargo.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
+          restore-keys: |
+            windows-x86_64-
+
+      - name: Install Rust components and just
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add clippy rustfmt
+          $env:CARGO_HOME = Join-Path $env:GITHUB_WORKSPACE '.cache\cargo-home'
+          cargo install just --locked
+          (Join-Path $env:CARGO_HOME 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install pinned Neovim
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION"
+          $archive = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION.zip"
+          if (-not (Test-Path (Join-Path $installDir 'nvim.exe'))) {
+            Invoke-WebRequest `
+              -Uri "https://github.com/neovim/neovim/releases/download/v$env:NEOVIM_VERSION/nvim-win64.zip" `
+              -OutFile $archive
+            if (Test-Path $installDir) {
+              Remove-Item $installDir -Recurse -Force
+            }
+            Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+            Rename-Item (Join-Path $env:RUNNER_TEMP 'nvim-win64') $installDir
+          }
+          $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build, test, and package Windows bundle
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $artifactDir = Join-Path $root '.cache\artifacts\windows-x86_64'
+          $targetDir = Join-Path $artifactDir 'cargo-target'
+          $rimeBuildDir = Join-Path $root '.cache\rime-build\windows-x86_64'
+          $runtimeDir = Join-Path $artifactDir 'rime-runtime'
+          $bundleDir = Join-Path $artifactDir 'nvim-gpui'
+          New-Item -ItemType Directory -Force -Path $artifactDir, $targetDir, $rimeBuildDir | Out-Null
+
+          $env:CARGO_HOME = Join-Path $root '.cache\cargo-home'
+          $env:CARGO_TARGET_DIR = $targetDir
+          $env:NVIM_GPUI_RIME_WINDOWS_ARCH = 'x64'
+          $env:NVIM_GPUI_RIME_BUILD_DIR = $rimeBuildDir
+          $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT = $runtimeDir
+          $env:NVIM_GPUI_WINDOWS_BUNDLE_OUTPUT = $bundleDir
+
+          just package-windows
+          & (Join-Path $bundleDir 'nvim-gpui.exe') --version
+          if ($LASTEXITCODE -ne 0) {
+            throw 'nvim-gpui.exe smoke test failed'
+          }
+          & (Join-Path $bundleDir 'gpvim.exe') --version
+          if ($LASTEXITCODE -ne 0) {
+            throw 'gpvim.exe smoke test failed'
+          }
+
+          $zip = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+          Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-${{ github.ref_name }}-windows-x86_64
+          path: nvim-gpui-${{ github.ref_name }}-windows-x86_64.zip
+          if-no-files-found: error
+
   publish:
     name: Publish release packages
-    needs: build
+    needs: [build, linux, windows]
     runs-on: macos-15
     timeout-minutes: 15
 
@@ -90,11 +236,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
-          gh release create "$GITHUB_REF_NAME" \
-            nvim-gpui-aarch64.dmg \
-            nvim-gpui-x86_64.dmg \
-            nvim-gpui-aarch64.app.zip \
-            nvim-gpui-x86_64.app.zip \
+          assets=(
+            nvim-gpui-aarch64.dmg
+            nvim-gpui-x86_64.dmg
+            nvim-gpui-aarch64.app.zip
+            nvim-gpui-x86_64.app.zip
+            "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64.zip"
+          )
+          shasum -a 256 "${assets[@]}" > SHA256SUMS
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" \
+            "${assets[@]}" \
+            SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md
+            --clobber

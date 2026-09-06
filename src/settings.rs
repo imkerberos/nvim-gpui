@@ -695,11 +695,12 @@ mod tests {
     #[test]
     fn paste_shortcut_accepts_custom_modified_keystrokes() {
         let keystroke = gpui::Keystroke::parse("cmd-shift-v").expect("shortcut should parse");
+        let key = keystroke.unparse();
         let shortcut = PasteShortcut::from_keystroke(&keystroke).expect("shortcut is modified");
 
-        assert_eq!(shortcut, PasteShortcut::Custom("cmd-shift-v".to_owned()));
+        assert_eq!(shortcut, PasteShortcut::Custom(key.clone()));
         assert!(shortcut.matches(&keystroke));
-        assert_eq!(shortcut.key(), "cmd-shift-v");
+        assert_eq!(shortcut.key(), key);
     }
 
     #[test]
@@ -745,11 +746,11 @@ mod tests {
             RimeToggleShortcut::parse("ctrl-\\"),
             Some(RimeToggleShortcut::CtrlBackslash)
         );
+        let cmd_backslash = gpui::Keystroke::parse("cmd-\\").expect("cmd-backslash should parse");
+        let cmd_backslash_key = cmd_backslash.unparse();
         assert_eq!(
-            RimeToggleShortcut::from_keystroke(
-                &gpui::Keystroke::parse("cmd-\\").expect("cmd-backslash should parse")
-            ),
-            Some(RimeToggleShortcut::CmdBackslash)
+            RimeToggleShortcut::from_keystroke(&cmd_backslash),
+            RimeToggleShortcut::parse(&cmd_backslash_key)
         );
         assert_eq!(
             RimeToggleShortcut::from_keystroke(

@@ -146,24 +146,43 @@ Run tasks from the Nix development shell on macOS/Linux. On Windows, run the
 same Rust tasks from Git Bash in the Visual Studio developer environment; see
 [Windows development with VMware Fusion](#windows-development-with-vmware-fusion).
 
-```sh
-just fmt          # format Rust sources
-just fmt-check    # check formatting without changing files
-just check        # formatting and cargo check
-just clippy       # Clippy with warnings denied
-just test         # all Rust tests
-just ci           # fmt-check, clippy, and test
-just run          # launch the development GUI
-just bundle       # build and verify .cache/macos/nvim-gpui.app on macOS
-just dmg          # build the arch-named compressed macOS DMG on macOS
-just rime-runtime-macos # build and validate the macOS librime runtime
-just rime-runtime-windows # build and validate the pinned Windows runtime
-just bundle-windows # build the Windows directory bundle
-just rime-runtime-check # validate a staged application-private Rime runtime
-just release-prepare 0.2.0  # synchronize release version metadata
-just release-check v0.2.0    # validate metadata and changelog before tagging
-just release-notes v0.2.0    # preview the GitHub Release notes
+The tasks are grouped by responsibility. Low-level tasks do one operation;
+the `ci` and `package-*` tasks compose them:
+
+```text
+validation:  fmt, fmt-check, check, clippy, test, ci
+build:       build, build-release, run, gpvim
+linux:       docker-build, docker-build-linux-aarch64
+rime:        rime-runtime, rime-runtime-check, rime-runtime-macos,
+             rime-runtime-windows
+macOS:       bundle, macos-smoke, dmg, package-macos
+Windows:     bundle-windows, package-windows
+release:     release-prepare, release-check, release-notes
 ```
+
+Common commands:
+
+```sh
+just ci
+just build-release
+just run
+
+just package-macos       # macOS only: checks, runtime, AppBundle, smoke test, DMG
+just package-windows     # Windows only: checks, runtime, directory bundle
+
+just docker-build x86_64
+just docker-build-linux-aarch64
+
+just release-prepare 0.2.0
+just release-check v0.2.0
+just release-notes v0.2.0
+```
+
+The dependency flow is intentional: `ci` runs `check`, Clippy, and tests;
+`dmg` runs after `macos-smoke`, which runs after `bundle` and
+`build-release`; `package-macos` additionally builds the macOS Rime runtime;
+and `package-windows` additionally builds the Windows Rime runtime. The old
+`release` task remains a compatibility alias for `build-release`.
 
 `Cargo.toml` is the canonical version source. Before creating a release, run
 `just release-prepare VERSION`, add the matching section to `CHANGELOG.md`,
@@ -174,6 +193,89 @@ body.
 
 `Makefile` forwards the common tasks to `just` for environments where a Make
 entry point is more convenient.
+
+### Linux builds through Docker
+
+On macOS, Docker can build the Linux release for either supported Linux
+architecture. The task selects the Docker platform and keeps the result in a
+separate Cargo target directory:
+
+```sh
+just docker-build x86_64
+just docker-build-linux-aarch64
+```
+
+The resulting binaries are stored at:
+
+```text
+.cache/artifacts/linux-x86_64/release/nvim-gpui
+.cache/artifacts/linux-x86_64/release/gpvim
+.cache/artifacts/linux-aarch64/release/nvim-gpui
+.cache/artifacts/linux-aarch64/release/gpvim
+```
+
+The task creates two persistent Docker data volumes. Each architecture has a
+separate Nix store (`nvim-gpui-nix-linux-x86_64` or
+`nvim-gpui-nix-linux-aarch64`), while downloaded Cargo sources use the shared
+`nvim-gpui-cargo-home` volume. Subsequent builds therefore reuse Nix packages
+and Cargo dependencies instead of downloading them again. The target
+directories remain separate because compiled objects cannot be shared between
+x86_64 and aarch64.
+
+The task uses the pinned `nixos/nix:2.32.3` image by default. Override it only
+when intentionally testing another Nix image:
+
+```sh
+NVIM_GPUI_NIX_IMAGE=nixos/nix:2.32.3 just docker-build x86_64
+```
+
+The Docker task passes `sandbox = false` and `filter-syscalls = false` to the
+inner Nix command. The second option is required when `linux/amd64` runs
+through QEMU on an Apple Silicon host: Nix's seccomp BPF syscall filter cannot
+be loaded through that emulation layer. Docker already provides the outer
+container isolation, so the task does not require `--privileged`.
+
+Docker can produce Linux binaries only. Those binaries are useful for local
+compile and smoke testing, but they are not release artifacts because a Nix
+development shell can leave dynamic references to Nix-provided libraries.
+The release workflow therefore builds Linux on native GitHub runners and uses
+that job as release validation. macOS and Windows packages still use their
+respective native build environments.
+
+### CI/CD workflow
+
+The repository uses native runners for platform validation and keeps Docker as
+an optional local helper:
+
+| Event | Jobs | Result |
+| --- | --- | --- |
+| Pull request or push to `develop`, `master`, or `main` | macOS arm64, Linux x86_64, Linux arm64, Windows x86_64 | Formatting, Clippy, and tests; macOS also builds and smoke-tests its AppBundle and DMG. |
+| Push of a `v*` tag | macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64 | Release metadata validation, native build/test validation, macOS packages, and a Windows directory bundle. |
+| Successful completion of every release job | Publish job | Creates or updates the GitHub Release, attaches packages, and uploads `SHA256SUMS`. |
+
+The release workflow is gated: a package is not published when any platform
+validation or packaging job fails. Re-running a failed workflow is safe; the
+publish step updates an existing release and replaces assets with the newly
+verified files.
+
+The only intentional release-time manual steps are preparing the version and
+changelog, then pushing the tag:
+
+```sh
+just release-prepare 0.6.0
+# add or update ## [0.6.0] in CHANGELOG.md
+just release-check v0.6.0
+git add Cargo.toml Cargo.lock Casks/nvim-gpui.rb packaging/macos/Info.plist CHANGELOG.md
+git commit -m "release: prepare v0.6.0"
+git tag -a v0.6.0 -m "nvim-gpui v0.6.0"
+git push origin develop v0.6.0
+```
+
+Linux distribution packages such as Debian, Ubuntu, and Flatpak are not
+published yet. Linux currently uses system librime and system GUI libraries,
+so adding those packages requires a separate runtime/dependency policy. The
+Linux jobs still compile and test every release so this packaging work cannot
+silently break the product.
 
 The development Neovim profile is at
 `config/nvim-gpui/init.lua`. It loads the Nix-provided plugins without cloning
@@ -200,7 +302,7 @@ GUI windows, and platform packaging:
 | `packaging/rime/` | librime source-build manifests/builders and curated starter-data selection. |
 | `packaging/macos/`, `packaging/windows/` | AppBundle validation and platform bundle scripts. |
 | `scripts/` | Release metadata, runtime staging/validation, and starter-data tooling. |
-| `.github/workflows/` | macOS CI and macOS-only release automation. |
+| `.github/workflows/` | Native cross-platform CI and gated release automation. |
 | `assets/` | Icons, screenshots, and bundled Nerd Fonts. |
 | `.cache/`, `tmp/` | Ignored build outputs, runtime artifacts, Neovim state, and temporary files. |
 
@@ -482,16 +584,16 @@ gpvim --connect 127.0.0.1:16662 --connect-timeout 3
 The native Rime backend and the application-private macOS runtime are
 implemented and verified. The macOS AppBundle carries librime and a small
 starter-data set, so the packaged application does not need a system or Nix
-librime installation at runtime. Windows has a local builder and directory
-bundle, but those remain outside CI/CD until they can be compiled and tested on
-a Windows host. Linux initially uses a system librime; a bundled Linux
+librime installation at runtime. Windows has the same private-runtime layout,
+and its x86_64 builder and directory bundle are built and smoke-tested by the
+release workflow. Linux initially uses a system librime; a bundled Linux
 runtime is reserved for a future self-contained package.
 
 The packaging policy is:
 
 - macOS ships a private librime runtime and curated starter data;
-- Windows has the same intended private-runtime layout, with local-only
-  builder and bundle tasks until Windows-host validation is available;
+- Windows has the same private-runtime layout; the current release contract
+  validates and publishes x86_64 bundles from a native Windows runner;
 - Linux uses a system librime for now;
 - the runtime includes librime's dependent libraries and any dynamically
   loaded modules, not only the main library file;
@@ -512,8 +614,7 @@ remain available. The bundled runtime layout is described by
 validates platform artifacts. The macOS source builder, runtime staging, and
 AppBundle integration are complete. The Windows source builder is a
 PowerShell wrapper around librime's official `install-boost.bat` and
-`build.bat` flow; it remains a local validation path because this checkout
-does not currently have a Windows host.
+`build.bat` flow; the release workflow runs it on a native Windows runner.
 
 Settings follow the packaging boundary: macOS and Windows display the bundled
 librime and shared-data paths as read-only values, while Linux keeps those two
@@ -583,7 +684,8 @@ If Boost is not already cached, librime's official Boost installer may also
 require `aria2c` and `7z`.
 
 After staging the runtime, `just bundle-windows` creates a Windows directory
-bundle at `.cache/windows/nvim-gpui`:
+bundle at `.cache/windows/nvim-gpui` locally, or at the workflow's isolated
+artifact directory in CI:
 
 ```text
 .cache/windows/nvim-gpui/
@@ -596,9 +698,9 @@ bundle at `.cache/windows/nvim-gpui`:
 ```
 
 The `rime/` location is intentional: the runtime resolver searches beside the
-Windows executable, so this layout is also the first clean-environment bundle
+Windows executable, so this layout is also the clean-environment bundle
 contract. It is a directory bundle rather than an installer and still needs
-Windows-host validation, archive/installer integration, and code signing.
+installer integration and code signing.
 
 On macOS, run `just rime-runtime-macos` first. `just bundle` validates the
 staged runtime and copies it into the AppBundle; it does not copy user data or
@@ -646,17 +748,26 @@ than leaving the GUI process alive.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs `just ci` and builds/verifies the macOS
-AppBundle for pushes and pull requests. Linux is not tested or supported yet.
-`.github/workflows/release.yml` runs on `v*` tags, builds both macOS targets on
-Apple Silicon runners (the Intel target uses the `x86_64-darwin` Nix shell
-under Rosetta), verifies that each bundle has no Nix store runtime dependency,
-uploads arch-specific workflow artifacts, and attaches both macOS packages to
-a GitHub Release. Windows runtime and bundle scripts remain available for
-local validation, but Windows is deliberately excluded from CI/CD until a
-Windows host is available. Release signing and notarization are intentionally
-not configured because they require project-specific platform credentials.
+`.github/workflows/ci.yml` runs on pushes and pull requests. It checks macOS
+arm64, Linux x86_64/arm64, and Windows x86_64. The macOS job also builds and
+smoke-tests the private Rime runtime, AppBundle, and DMG. The Linux jobs use
+native runners rather than the local Docker/QEMU path.
+
+`.github/workflows/release.yml` runs on `v*` tags. It validates release
+metadata and changelog entries, builds both macOS targets on Apple Silicon
+runners (the Intel target uses the `x86_64-darwin` Nix shell under Rosetta),
+validates Linux x86_64/arm64 release builds, and builds/tests the Windows
+x86_64 directory bundle. The publish job runs only after every validation job
+has succeeded, attaches the macOS and Windows packages, and uploads a
+`SHA256SUMS` file. Re-running the workflow is idempotent for an existing
+GitHub Release.
+
+Release signing and notarization are intentionally not configured because
+they require project-specific platform credentials. Linux distribution
+packages and Windows ARM64 packages are also outside the current release
+contract; the CI matrix is ready to grow when their runtime policies and
+native packaging validation are available.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also
-be checked with `nix develop -c just bundle` or `nix develop -c just dmg`.
+be checked with `nix develop -c just package-macos`.

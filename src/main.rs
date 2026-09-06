@@ -12,7 +12,10 @@ pub mod platform;
 pub mod settings;
 pub(crate) mod widgets;
 
-use std::{env, ffi::OsString, fs, path::PathBuf, time::Duration};
+use std::{env, ffi::OsString, path::PathBuf, time::Duration};
+
+#[cfg(target_os = "macos")]
+use std::fs;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliAction {

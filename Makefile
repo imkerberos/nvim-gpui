@@ -2,7 +2,7 @@
 
 JUST ?= just
 
-.PHONY: check fmt fmt-check clippy build release bundle dmg gpvim test run ci
+.PHONY: check fmt fmt-check clippy build build-release release bundle dmg gpvim test run ci package-macos package-windows
 
 check:
 	$(JUST) check
@@ -18,6 +18,9 @@ clippy:
 
 build:
 	$(JUST) build
+
+build-release:
+	$(JUST) build-release
 
 release:
 	$(JUST) release
@@ -39,3 +42,9 @@ run:
 
 ci:
 	$(JUST) ci
+
+package-macos:
+	$(JUST) package-macos
+
+package-windows:
+	$(JUST) package-windows

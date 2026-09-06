@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [develop, master, main]
   pull_request:
   workflow_dispatch:
 
@@ -14,13 +14,27 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NEOVIM_VERSION: 0.12.5
+
 jobs:
-  checks:
-    name: Checks (macOS)
-    # Determinate Nix currently supports macOS on Apple Silicon. Keep this
-    # label explicit instead of following macos-latest to a future image.
-    runs-on: macos-15
-    timeout-minutes: 30
+  nix-checks:
+    name: Checks (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS aarch64
+            runner: macos-15
+            nix_system: aarch64-darwin
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            nix_system: x86_64-linux
+          - name: Linux aarch64
+            runner: ubuntu-24.04-arm
+            nix_system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -32,11 +46,68 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/cargo-home
+          key: cargo-${{ matrix.nix_system }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
+          restore-keys: |
+            cargo-${{ matrix.nix_system }}-
+
+      - name: Run checks and macOS package validation
+        if: matrix.nix_system == 'aarch64-darwin'
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just package-macos
+
+      - name: Run Linux checks
+        if: matrix.nix_system != 'aarch64-darwin'
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just ci
+
+  windows-checks:
+    name: Checks (Windows x86_64)
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/cargo-home
+          key: cargo-windows-x86_64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-windows-x86_64-
+
+      - name: Install Rust components
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add clippy rustfmt
+          $cargoHome = Join-Path $env:GITHUB_WORKSPACE '.cache\cargo-home'
+          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
+          "CARGO_HOME=$cargoHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $cargoHome 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          cargo install just --locked
+
+      - name: Install pinned Neovim
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION"
+          $archive = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION.zip"
+          if (-not (Test-Path (Join-Path $installDir 'nvim.exe'))) {
+            Invoke-WebRequest `
+              -Uri "https://github.com/neovim/neovim/releases/download/v$env:NEOVIM_VERSION/nvim-win64.zip" `
+              -OutFile $archive
+            if (Test-Path $installDir) {
+              Remove-Item $installDir -Recurse -Force
+            }
+            Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+            Rename-Item (Join-Path $env:RUNNER_TEMP 'nvim-win64') $installDir
+          }
+          $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Run repository checks
-        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just ci
-
-      - name: Build and verify macOS Rime runtime
-        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just rime-runtime-macos
-
-      - name: Build and verify macOS AppBundle
-        run: nix develop --accept-flake-config .#devShells.aarch64-darwin.default -c just bundle
+        shell: pwsh
+        run: just ci
