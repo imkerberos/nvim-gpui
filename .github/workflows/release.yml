@@ -32,7 +32,7 @@ jobs:
             runner: macos-15
             nix_system: x86_64-darwin
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Check out source
