@@ -298,9 +298,9 @@ export NVIM_GPUI_NVIM=/usr/local/bin/nvim-gpui-nvim
 
 ### Linux builds through Docker
 
-On macOS, Docker can build the Linux release for either supported Linux
-architecture. The task selects the Docker platform and keeps the copied
-result in a separate architecture-specific output directory:
+On macOS, Docker can build Linux release-mode binaries for either supported
+architecture. The task selects the Docker platform and keeps the copied result
+in a separate architecture-specific output directory:
 
 ```sh
 just docker-build x86_64
@@ -345,11 +345,12 @@ The release workflow therefore builds Linux on native GitHub runners and uses
 that job as release validation. macOS and Windows packages still use their
 respective native build environments.
 
-### Local Ubuntu Linux packages
+### Ubuntu Linux packages
 
-These are local-only packaging tasks. They run Ubuntu 24.04 containers, install
-the Ubuntu build dependencies, compile the Rust application against Ubuntu's
-system libraries, and create Debian packages:
+These tasks run Ubuntu 24.04 containers, install the Ubuntu build dependencies,
+compile the Rust application against Ubuntu's system libraries, and create
+Debian packages. They are suitable for local testing and are also used by the
+Linux release jobs on native GitHub ARM64 and x86_64 runners:
 
 ```sh
 just pack-linux-x86_64
@@ -383,10 +384,11 @@ NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-x86_64
 NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-aarch64
 ```
 
-This task is intentionally not used by GitHub Actions or the release workflow.
-They are for local Ubuntu installation and runtime testing. The packages are
-linked against Ubuntu libraries rather than the Nix store, unlike
-`just docker-build x86_64`.
+The packages are linked against Ubuntu libraries rather than the Nix store,
+unlike the binaries produced by `just docker-build x86_64`. The release
+workflow runs these tasks on native Linux runners, so Docker is used only for
+the reproducible Ubuntu packaging environment and not for cross-architecture
+emulation.
 
 ### CI/CD workflow
 
@@ -396,7 +398,7 @@ an optional local helper:
 | Event | Jobs | Result |
 | --- | --- | --- |
 | Pull request or push to `develop`, `master`, or `main` | macOS arm64, Linux x86_64, Linux arm64, Windows x86_64 | Formatting, Clippy, and tests; macOS also builds and smoke-tests its AppBundle and DMG. |
-| Push of a `v*` tag | macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64 | Release metadata validation, native build/test validation, macOS packages, and a Windows directory bundle. |
+| Push of a `v*` tag | macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Ubuntu `.deb` packages, and Windows ZIP/installer packages. |
 | Successful completion of every release job | Publish job | Creates or updates the GitHub Release, attaches packages, and uploads `SHA256SUMS`. |
 
 The release workflow is gated: a package is not published when any platform
@@ -417,11 +419,22 @@ git tag -a v0.6.0 -m "nvim-gpui v0.6.0"
 git push origin develop v0.6.0
 ```
 
-Linux distribution packages such as Debian, Ubuntu, and Flatpak are not
-published yet. Linux currently uses system librime and system GUI libraries,
-so adding those packages requires a separate runtime/dependency policy. The
-Linux jobs still compile and test every release so this packaging work cannot
-silently break the product.
+The release assets use the following target names:
+
+```text
+nvim-gpui-vVERSION-darwin-aarch64.dmg
+nvim-gpui-vVERSION-darwin-x86_64.dmg
+nvim-gpui-vVERSION-linux-aarch64.deb
+nvim-gpui-vVERSION-linux-x86_64.deb
+nvim-gpui-vVERSION-windows-x86_64-setup.exe
+```
+
+The release also attaches App ZIP archives for macOS and a portable ZIP for
+Windows. Linux release packages are Ubuntu/Debian `.deb` files and use system
+librime, Rime data, and GUI libraries; Flatpak and a self-contained Linux Rime
+runtime remain future packaging work. Windows ARM64 is not a separate release
+target yet; the Windows x86_64 package can run on Windows 11 on Arm through
+x64 emulation.
 
 The development Neovim profile is at
 `config/nvim-gpui/init.lua`. It loads the Nix-provided plugins without cloning
@@ -911,17 +924,16 @@ native runners rather than the local Docker/QEMU path.
 `.github/workflows/release.yml` runs on `v*` tags. It validates release
 metadata and changelog entries, builds both macOS targets on Apple Silicon
 runners (the Intel target uses the `x86_64-darwin` Nix shell under Rosetta),
-validates Linux x86_64/arm64 release builds, and builds/tests the Windows
-x86_64 directory bundle. The publish job runs only after every validation job
-has succeeded, attaches the macOS and Windows packages, and uploads a
+validates and packages native Linux x86_64/arm64 `.deb` files through the
+Ubuntu Docker task, and builds/tests the Windows x86_64 bundle and installer.
+The publish job runs only after every platform job has succeeded, attaches all
+five platform packages plus the optional portable archives, and uploads a
 `SHA256SUMS` file. Re-running the workflow is idempotent for an existing
 GitHub Release.
 
 Release signing and notarization are intentionally not configured because
-they require project-specific platform credentials. Linux distribution
-packages and Windows ARM64 packages are also outside the current release
-contract; the CI matrix is ready to grow when their runtime policies and
-native packaging validation are available.
+they require project-specific platform credentials. The release contract is
+currently macOS arm64/x86_64, Linux arm64/x86_64, and Windows x86_64.
 
 Keep `Cargo.lock` and `flake.lock` in pull requests. Before submitting a
 change, run `nix develop -c just ci`; on macOS packaging changes should also

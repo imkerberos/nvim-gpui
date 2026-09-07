@@ -120,7 +120,7 @@ docker-build architecture:
 docker-build-linux-aarch64:
     just docker-build aarch64
 
-# Build a local Ubuntu package through Docker.
+# Build an Ubuntu package through Docker.
 [unix]
 _pack-linux platform deb_arch rust_target docker_platform volume_arch:
     #!/usr/bin/env bash

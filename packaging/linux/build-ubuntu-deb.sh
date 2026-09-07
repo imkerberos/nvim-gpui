@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build an Ubuntu-linked binary and package it as a local .deb.
+# Build an Ubuntu-linked binary and package it as a .deb.
 # This script is run as root inside the Ubuntu Docker container started by
 # `just pack-linux-x86_64` or `just pack-linux-aarch64`; it deliberately does
 # not use the Nix toolchain.

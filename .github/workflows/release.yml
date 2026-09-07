@@ -16,7 +16,7 @@ env:
   NEOVIM_VERSION: 0.12.5
 
 jobs:
-  build:
+  macos:
     name: macOS ${{ matrix.arch }} package
     strategy:
       fail-fast: false
@@ -75,18 +75,29 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: ditto -c -k --sequesterRsrc --keepParent ".cache/macos/nvim-gpui.app" ".cache/macos/nvim-gpui-${ARCH}.app.zip"
 
+      - name: Prepare macOS release assets
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cp \
+            ".cache/macos/nvim-gpui-${ARCH}.dmg" \
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-${ARCH}.dmg"
+          cp \
+            ".cache/macos/nvim-gpui-${ARCH}.app.zip" \
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-${ARCH}.app.zip"
+
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-${{ matrix.arch }}
+          name: nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}
           path: |
-            .cache/macos/nvim-gpui-${{ matrix.arch }}.dmg
-            .cache/macos/nvim-gpui-${{ matrix.arch }}.app.zip
+            nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}.dmg
+            nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}.app.zip
           if-no-files-found: error
-          include-hidden-files: true
+          include-hidden-files: false
 
   linux:
-    name: Linux ${{ matrix.arch }} release validation
+    name: Linux ${{ matrix.arch }} package
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +114,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Validate release metadata
+        run: python3 scripts/release.py check "$GITHUB_REF_NAME"
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -123,6 +137,20 @@ jobs:
 
       - name: Build Linux release binaries
         run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just build-release
+
+      - name: Build Ubuntu package
+        run: |
+          nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-linux-${{ matrix.arch }}
+          package="$(find "dist/ubuntu-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$package"
+          cp "$package" "nvim-gpui-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.deb"
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-${{ github.ref_name }}-linux-${{ matrix.arch }}
+          path: nvim-gpui-${{ github.ref_name }}-linux-${{ matrix.arch }}.deb
+          if-no-files-found: error
 
   windows:
     name: Windows x86_64 package
@@ -223,7 +251,7 @@ jobs:
 
   publish:
     name: Publish release packages
-    needs: [build, linux, windows]
+    needs: [macos, linux, windows]
     runs-on: macos-15
     timeout-minutes: 15
 
@@ -243,10 +271,12 @@ jobs:
         run: |
           python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
           assets=(
-            nvim-gpui-aarch64.dmg
-            nvim-gpui-x86_64.dmg
-            nvim-gpui-aarch64.app.zip
-            nvim-gpui-x86_64.app.zip
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-aarch64.dmg"
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-x86_64.dmg"
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-aarch64.app.zip"
+            "nvim-gpui-${GITHUB_REF_NAME}-darwin-x86_64.app.zip"
+            "nvim-gpui-${GITHUB_REF_NAME}-linux-aarch64.deb"
+            "nvim-gpui-${GITHUB_REF_NAME}-linux-x86_64.deb"
             "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64.zip"
             "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64-setup.exe"
           )

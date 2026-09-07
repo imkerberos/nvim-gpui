@@ -10,8 +10,9 @@ A native macOS graphical frontend for Neovim.
 Neovim editing experience, but it is not yet a complete replacement for
 Neovide or a terminal UI.
 
-macOS is currently the primary supported platform. Linux and Windows builds
-are validated by CI, but their distribution support remains experimental.
+macOS is currently the primary supported platform. Release packages are also
+built for Linux and Windows, but support on those platforms remains
+experimental.
 
 <p align="center">
   <img src="assets/screenshots/editor-cjk.png" alt="CJK text editing in nvim-gpui" width="32%">
@@ -26,7 +27,8 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - Unicode and CJK text support.
 - Bundled Nerd Font support.
 - Image support for plugins such as `snacks.nvim`.
-- Built-in Rime input method in the macOS AppBundle.
+- Built-in Rime input method with a private runtime on macOS and Windows, and
+  system librime support on Linux.
 
 ## Neovim requirement
 
@@ -60,12 +62,32 @@ directly:
 open -a nvim-gpui
 ```
 
+## Release packages
+
+Download the package matching your operating system and CPU architecture from
+the [latest release](https://github.com/imkerberos/nvim-gpui/releases/latest):
+
+| Target | Package | Installation |
+| --- | --- | --- |
+| `darwin-aarch64` | `nvim-gpui-v<VERSION>-darwin-aarch64.dmg` | Open the disk image and copy the app to `/Applications`. |
+| `darwin-x86_64` | `nvim-gpui-v<VERSION>-darwin-x86_64.dmg` | Open the disk image and copy the app to `/Applications`. |
+| `linux-aarch64` | `nvim-gpui-v<VERSION>-linux-aarch64.deb` | Install with `sudo apt install ./nvim-gpui-*.deb`. |
+| `linux-x86_64` | `nvim-gpui-v<VERSION>-linux-x86_64.deb` | Install with `sudo apt install ./nvim-gpui-*.deb`. |
+| `windows-x86_64` | `nvim-gpui-v<VERSION>-windows-x86_64-setup.exe` | Run the installer on x64 Windows or Windows 11 on Arm. |
+
+The release also includes App ZIP archives for macOS and a portable ZIP for
+Windows. The Linux packages target Ubuntu/Debian and use the system GUI and
+librime packages; install a compatible Neovim version separately. The Windows
+release is an x86_64 build and relies on Windows 11 on Arm's x64 application
+compatibility layer when used on ARM64 hardware.
+
 ## Built-in Rime input
 
-The macOS AppBundle includes a private `librime` runtime and a small,
-read-only starter data set. User dictionaries and custom schemas are stored
-outside the bundle in nvim-gpui's application-support directory; the bundled
-Rime data is not `~/Library/Rime`.
+The macOS and Windows packages include a private `librime` runtime and a
+small, read-only starter data set. User dictionaries and custom schemas are
+stored outside the bundle in nvim-gpui's application-support directory; the
+bundled Rime data is not `~/Library/Rime`. Linux packages use the system
+librime and Rime data installed through the distribution.
 
 To enable it, open Settings → IME:
 
@@ -83,7 +105,7 @@ Rime starts disabled even when it is selected as the backend. Press the
 platform default activation shortcut (`Cmd-\` on macOS, `Ctrl-\` on Linux and
 Windows) to toggle it, then enter Insert mode and type with Rime. The bundled
 runtime is selected automatically when
-the application is launched from the AppBundle; do not set
+the application is launched from the macOS AppBundle or Windows bundle; do not set
 `NVIM_GPUI_RIME_LIBRARY` or `NVIM_GPUI_RIME_SHARED_DIR` when testing that
 path.
 
