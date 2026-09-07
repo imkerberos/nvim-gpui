@@ -2,6 +2,10 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 python_command := if os_family() == "windows" { "python.exe" } else { "python3" }
+# Build the Windows distribution with the x64 toolchain, including build
+# scripts and proc-macros, even when the host itself is Windows ARM64.
+cargo_toolchain_arg := if os() == "windows" { "+stable-x86_64-pc-windows-msvc" } else { "" }
+cargo_target_args := if os() == "windows" { "--target x86_64-pc-windows-msvc" } else { "" }
 
 # Show available tasks when no task is specified.
 default:
@@ -9,45 +13,45 @@ default:
 
 # Format all Rust sources.
 fmt:
-    cargo fmt --all
+    cargo {{cargo_toolchain_arg}} fmt --all
 
 # Check formatting without changing files.
 fmt-check:
-    cargo fmt --all -- --check
+    cargo {{cargo_toolchain_arg}} fmt --all -- --check
 
 # Type-check the workspace.
 check: fmt-check
-    cargo check --all-targets --locked
+    cargo {{cargo_toolchain_arg}} check {{cargo_target_args}} --all-targets --locked
 
 # Run Clippy with warnings treated as errors.
 clippy:
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo {{cargo_toolchain_arg}} clippy {{cargo_target_args}} --locked --all-targets --all-features -- -D warnings
 
 # Run unit and integration tests.
 test:
-    cargo test --locked --all-targets
+    cargo {{cargo_toolchain_arg}} test {{cargo_target_args}} --locked --all-targets
 
 # Run the complete local CI validation suite.
 ci: check clippy test
 
 # Build debug binaries.
 build:
-    cargo build --locked
+    cargo {{cargo_toolchain_arg}} build {{cargo_target_args}} --locked
 
 # Build optimized binaries without packaging them.
 build-release:
-    cargo build --locked --release --bins
+    cargo {{cargo_toolchain_arg}} build {{cargo_target_args}} --locked --release --bins
 
 # Compatibility alias for build-release; use build-release in new scripts.
 release: build-release
 
 # Launch the GPUI application.
 run *args:
-    cargo run --bin nvim-gpui -- {{args}}
+    cargo {{cargo_toolchain_arg}} run {{cargo_target_args}} --bin nvim-gpui -- {{args}}
 
 # Launch the gpvim helper.
 gpvim *args:
-    cargo run --bin gpvim -- {{args}}
+    cargo {{cargo_toolchain_arg}} run {{cargo_target_args}} --bin gpvim -- {{args}}
 
 # Enter the macOS Nix development environment.
 dev-macos:
@@ -253,9 +257,14 @@ pack-macos: ci rime-runtime-macos dmg
 bundle-windows:
     powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/bundle.ps1
 
-# Run checks, build, and smoke-test the complete Windows package.
+# Build a Windows installer with Inno Setup from the directory bundle.
 [windows]
-pack-windows: ci rime-runtime-windows smoke-windows
+installer-windows: rime-runtime-windows bundle-windows
+    powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/installer.ps1
+
+# Run checks, build, smoke-test, and create the complete Windows package.
+[windows]
+pack-windows: ci installer-windows smoke-windows
 
 # Synchronize Cargo, AppBundle, and Homebrew release versions.
 release-prepare version:

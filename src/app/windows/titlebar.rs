@@ -93,6 +93,16 @@ pub(crate) fn themed_titlebar(
         }
     });
 
+    #[cfg(target_os = "windows")]
+    let title_area = title_area.on_mouse_down(MouseButton::Left, |event, window, _cx| {
+        window.prevent_default();
+        if event.click_count == 2 {
+            window.zoom_window();
+        } else {
+            crate::platform::start_window_move(window);
+        }
+    });
+
     let mut titlebar = div()
         .w_full()
         .h(px(THEMED_TITLEBAR_HEIGHT))

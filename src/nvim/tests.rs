@@ -634,6 +634,13 @@ fn startup_environment_parser_keeps_nul_delimited_values() {
 
 #[test]
 fn project_nvim_paths_are_applied_only_to_the_child_environment() {
+    let config_dir = Path::new("/repo/config");
+    let cache_dir = Path::new("/repo/.cache");
+    let expected_config_dir = config_dir.as_os_str().to_os_string();
+    let expected_data_dir = cache_dir.join("nvim-data").into_os_string();
+    let expected_state_dir = cache_dir.join("nvim-state").into_os_string();
+    let expected_cache_dir = cache_dir.join("nvim-cache").into_os_string();
+
     let mut environment = HashMap::from([
         (
             OsString::from("XDG_CONFIG_HOME"),
@@ -645,11 +652,11 @@ fn project_nvim_paths_are_applied_only_to_the_child_environment() {
         ),
         (
             OsString::from("NVIM_GPUI_CONFIG_DIR"),
-            OsString::from("/repo/config"),
+            expected_config_dir.clone(),
         ),
         (
             OsString::from("NVIM_GPUI_CACHE_DIR"),
-            OsString::from("/repo/.cache"),
+            cache_dir.as_os_str().to_os_string(),
         ),
     ]);
 
@@ -657,19 +664,19 @@ fn project_nvim_paths_are_applied_only_to_the_child_environment() {
 
     assert_eq!(
         environment.get(OsStr::new("XDG_CONFIG_HOME")),
-        Some(&OsString::from("/repo/config"))
+        Some(&expected_config_dir)
     );
     assert_eq!(
         environment.get(OsStr::new("XDG_DATA_HOME")),
-        Some(&OsString::from("/repo/.cache/nvim-data"))
+        Some(&expected_data_dir)
     );
     assert_eq!(
         environment.get(OsStr::new("XDG_STATE_HOME")),
-        Some(&OsString::from("/repo/.cache/nvim-state"))
+        Some(&expected_state_dir)
     );
     assert_eq!(
         environment.get(OsStr::new("XDG_CACHE_HOME")),
-        Some(&OsString::from("/repo/.cache/nvim-cache"))
+        Some(&expected_cache_dir)
     );
 }
 

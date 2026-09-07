@@ -2,7 +2,7 @@
 
 JUST ?= just
 
-.PHONY: default check fmt fmt-check clippy build build-release release dev dev-macos dev-linux dev-windows bundle bundle-macos bundle-windows smoke smoke-macos smoke-windows dmg gpvim test run ci pack-macos pack-windows
+.PHONY: default check fmt fmt-check clippy build build-release release dev dev-macos dev-linux dev-windows bundle bundle-macos bundle-windows installer-windows smoke smoke-macos smoke-windows dmg gpvim test run ci pack-macos pack-windows
 
 default:
 	$(JUST)
@@ -48,6 +48,9 @@ bundle-macos:
 
 bundle-windows:
 	$(JUST) bundle-windows
+
+installer-windows:
+	$(JUST) installer-windows
 
 smoke:
 	$(JUST) smoke

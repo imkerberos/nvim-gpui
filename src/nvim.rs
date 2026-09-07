@@ -10,6 +10,8 @@ use rmpv::Value;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -101,6 +103,8 @@ impl NvimProcess {
             nvim_args.len()
         );
         let mut command = Command::new(&nvim_command);
+        #[cfg(target_os = "windows")]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         apply_nvim_environment(&mut command);
         command
             .args(["--embed", "--cmd", NVIM_GPUI_STARTUP_COMMAND])

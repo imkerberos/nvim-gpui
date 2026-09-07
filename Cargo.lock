@@ -3476,6 +3476,7 @@ dependencies = [
  "async-channel 2.5.0",
  "base64",
  "core-graphics 0.24.0",
+ "embed-resource",
  "flexi_logger",
  "foreign-types",
  "futures-lite 2.6.1",
@@ -3486,9 +3487,11 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "raw-window-handle",
  "rmpv",
  "unicode-segmentation",
  "unicode-width",
+ "windows 0.61.3",
 ]
 
 [[package]]

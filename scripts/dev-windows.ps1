@@ -101,7 +101,7 @@ function Ensure-VisualStudioCppTools {
             --add Microsoft.VisualStudio.Workload.VCTools `
             --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             --add Microsoft.VisualStudio.Component.VC.CMake.Project `
-            --includeRecommended --quiet --norestart --wait
+            --includeRecommended --quiet --norestart
         if ($LASTEXITCODE -ne 0) {
             Fail 'Visual Studio could not be modified with the C++ workload'
         }
@@ -112,7 +112,7 @@ function Ensure-VisualStudioCppTools {
     & winget.exe install --id Microsoft.VisualStudio.2022.BuildTools --exact `
         --architecture x64 `
         --source winget --accept-source-agreements --accept-package-agreements `
-        --override '--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.CMake.Project --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --includeRecommended'
+        --override '--passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.CMake.Project --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --includeRecommended'
     if ($LASTEXITCODE -ne 0) {
         Fail 'winget could not install Visual Studio 2022 Build Tools'
     }
@@ -138,6 +138,7 @@ $packages = @(
     @{ Id = 'Casey.Just'; Name = 'just' },
     @{ Id = 'Neovim.Neovim'; Name = 'Neovim' },
     @{ Id = 'GitHub.cli'; Name = 'GitHub CLI' },
+    @{ Id = 'JRSoftware.InnoSetup'; Name = 'Inno Setup' },
     @{ Id = '7zip.7zip'; Name = '7-Zip' },
     @{ Id = 'aria2.aria2'; Name = 'aria2' }
 )
@@ -158,17 +159,32 @@ if ($rustup) {
     if ($LASTEXITCODE -ne 0) {
         Fail 'rustup could not select the stable toolchain'
     }
-
-    Write-Output 'ensuring Rust MSVC target: x86_64-pc-windows-msvc'
-    & $rustup.Source target add x86_64-pc-windows-msvc
-    if ($LASTEXITCODE -ne 0) {
-        Fail 'rustup could not install x86_64-pc-windows-msvc'
-    }
 }
 
 $linker = Find-MsvcLinker
 if (-not $linker) {
     Fail 'MSVC x64 linker was not found after installing Visual Studio Build Tools'
+}
+$windowsRustToolchain = 'stable-x86_64-pc-windows-msvc'
+if ($rustup) {
+    # Use the x64 host toolchain on Windows ARM so build scripts and
+    # proc-macros use the same architecture as the final distribution.
+    Write-Output "ensuring the Windows x64 Rust toolchain: $windowsRustToolchain"
+    & $rustup.Source toolchain install $windowsRustToolchain --profile minimal --force-non-host
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'rustup could not install the Windows x64 toolchain'
+    }
+    & $rustup.Source target add --toolchain $windowsRustToolchain x86_64-pc-windows-msvc
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'rustup could not install the Windows x64 target'
+    }
+    foreach ($component in @('clippy', 'rustfmt')) {
+        Write-Output "ensuring the Windows x64 Rust component: $component"
+        & $rustup.Source component add --toolchain $windowsRustToolchain $component
+        if ($LASTEXITCODE -ne 0) {
+            Fail "rustup could not install the Windows x64 component: $component"
+        }
+    }
 }
 $linkerVariable = 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'
 [Environment]::SetEnvironmentVariable($linkerVariable, $linker, 'User')
@@ -179,3 +195,4 @@ Write-Output ''
 Write-Output 'Windows development prerequisites are configured.'
 Write-Output 'Restart the terminal so newly installed commands are available.'
 Write-Output 'Then start an x64 Native Tools Command Prompt for VS 2022 and use PowerShell from it.'
+Write-Output "Windows packaging tasks use the Rust toolchain: $windowsRustToolchain"

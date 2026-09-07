@@ -156,6 +156,12 @@ jobs:
           cargo install just --locked
           (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          winget install --id JRSoftware.InnoSetup --exact --source winget `
+            --accept-source-agreements --accept-package-agreements
+
       - name: Install pinned Neovim
         shell: pwsh
         run: |
@@ -181,12 +187,14 @@ jobs:
           $rimeBuildDir = Join-Path $root '.cache\rime-build\windows-x86_64'
           $runtimeDir = Join-Path $artifactDir 'rime-runtime'
           $bundleDir = Join-Path $artifactDir 'nvim-gpui'
+          $installerDir = Join-Path $artifactDir 'installer'
           New-Item -ItemType Directory -Force -Path $artifactDir, $rimeBuildDir | Out-Null
 
           $env:NVIM_GPUI_RIME_WINDOWS_ARCH = 'x64'
           $env:NVIM_GPUI_RIME_BUILD_DIR = $rimeBuildDir
           $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT = $runtimeDir
           $env:NVIM_GPUI_WINDOWS_BUNDLE_OUTPUT = $bundleDir
+          $env:NVIM_GPUI_WINDOWS_INSTALLER_OUTPUT = $installerDir
 
           just pack-windows
 
@@ -196,11 +204,21 @@ jobs:
           }
           Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip
 
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $installer = Join-Path $installerDir "nvim-gpui-$version-setup.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Windows installer was not created: $installer"
+          }
+          $releaseInstaller = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64-setup.exe"
+          Copy-Item $installer $releaseInstaller -Force
+
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
           name: nvim-gpui-${{ github.ref_name }}-windows-x86_64
-          path: nvim-gpui-${{ github.ref_name }}-windows-x86_64.zip
+          path: |
+            nvim-gpui-${{ github.ref_name }}-windows-x86_64.zip
+            nvim-gpui-${{ github.ref_name }}-windows-x86_64-setup.exe
           if-no-files-found: error
 
   publish:
@@ -230,6 +248,7 @@ jobs:
             nvim-gpui-aarch64.app.zip
             nvim-gpui-x86_64.app.zip
             "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64.zip"
+            "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64-setup.exe"
           )
           shasum -a 256 "${assets[@]}" > SHA256SUMS
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

@@ -27,5 +27,16 @@ objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder", "NSRunningApplication", "libc"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6.2"
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+embed-resource = "3.0.11"
+
 [profile.dev]
 debug = 1

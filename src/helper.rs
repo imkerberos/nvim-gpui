@@ -2,9 +2,11 @@
 
 use std::{
     env, fs,
-    io::{self, ErrorKind},
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::io::{self, ErrorKind};
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;

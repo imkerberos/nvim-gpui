@@ -1,6 +1,9 @@
 use gpui::App;
 use std::borrow::Cow;
 
+#[cfg(target_os = "windows")]
+use gpui::Window;
+
 pub const SYMBOLS_NERD_FONT_FAMILY: &str = "Symbols Nerd Font";
 pub const SYMBOLS_NERD_FONT_MONO_FAMILY: &str = "Symbols Nerd Font Mono";
 
@@ -107,4 +110,34 @@ pub fn activate_existing_instance() -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn install_dock_icon() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_window_move(window: &Window) {
+    use raw_window_handle::RawWindowHandle;
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, WPARAM},
+        UI::{
+            Input::KeyboardAndMouse::ReleaseCapture,
+            WindowsAndMessaging::{SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN},
+        },
+    };
+
+    let Ok(window_handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::Win32(window_handle) = window_handle.as_raw() else {
+        return;
+    };
+
+    let hwnd = HWND(window_handle.hwnd.get() as _);
+    unsafe {
+        let _ = ReleaseCapture();
+        let _ = SendMessageW(
+            hwnd,
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTCAPTION as usize)),
+            Some(LPARAM(0)),
+        );
+    }
 }

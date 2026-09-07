@@ -1,11 +1,28 @@
-[CmdletBinding()]
 param(
-    [string]$DataSource = $env:NVIM_GPUI_RIME_STARTER_DATA,
-    [string]$Output = $(if ($env:NVIM_GPUI_RIME_RUNTIME_OUTPUT) { $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT } else { '.cache\rime-runtime' }),
-    [string]$WorkDir = $(if ($env:NVIM_GPUI_RIME_BUILD_DIR) { $env:NVIM_GPUI_RIME_BUILD_DIR } else { '.cache\rime-build\windows' })
+    [string]$DataSource,
+    [string]$Output,
+    [string]$WorkDir
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($DataSource)) {
+    $DataSource = $env:NVIM_GPUI_RIME_STARTER_DATA
+}
+if ([string]::IsNullOrWhiteSpace($Output)) {
+    $Output = if ($env:NVIM_GPUI_RIME_RUNTIME_OUTPUT) {
+        $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT
+    } else {
+        '.cache\rime-runtime'
+    }
+}
+if ([string]::IsNullOrWhiteSpace($WorkDir)) {
+    $WorkDir = if ($env:NVIM_GPUI_RIME_BUILD_DIR) {
+        $env:NVIM_GPUI_RIME_BUILD_DIR
+    } else {
+        '.cache\rime-build\windows'
+    }
+}
 
 function Fail([string]$Message) {
     throw "rime Windows build error: $Message"
@@ -47,6 +64,31 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments) {
     }
 }
 
+function Find-SevenZip {
+    $command = Get-Command '7z.exe' -ErrorAction SilentlyContinue
+    if ($command -and $command.Path) {
+        return $command.Path
+    }
+
+    $candidates = @()
+    if ($env:ProgramFiles) {
+        $candidates += Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $candidates += Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe'
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates += Join-Path $env:LOCALAPPDATA 'Programs\7-Zip\7z.exe'
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
 function Invoke-Batch([string]$BatchPath, [string[]]$Arguments = @()) {
     if (-not (Test-Path -LiteralPath $BatchPath -PathType Leaf)) {
         Fail "batch file does not exist: $BatchPath"
@@ -76,6 +118,14 @@ foreach ($command in @('cmake.exe', 'cmd.exe', 'git.exe', 'python.exe')) {
         Fail "required command not found: $command"
     }
 }
+
+$sevenZip = Find-SevenZip
+if (-not $sevenZip) {
+    Fail '7-Zip was not found; run dev-windows.cmd or install 7-Zip before building the Windows Rime runtime'
+}
+$sevenZipDirectory = [System.IO.Path]::GetDirectoryName($sevenZip)
+$env:Path = ($sevenZipDirectory, $env:Path) -join [System.IO.Path]::PathSeparator
+Write-Output "using 7-Zip: $sevenZip"
 
 if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
     Fail "runtime manifest does not exist: $manifest"

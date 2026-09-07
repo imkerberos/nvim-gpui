@@ -37,6 +37,10 @@ function Invoke-Native([string]$FilePath, [string[]]$Arguments) {
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $runtimeTool = Join-Path $repoRoot 'scripts\rime_runtime.py'
+# Use the emulated x64 Rust toolchain on Windows ARM so host build scripts,
+# proc-macros, and the final binaries all use compatible libraries.
+$rustToolchain = 'stable-x86_64-pc-windows-msvc'
+$rustTarget = 'x86_64-pc-windows-msvc'
 $Runtime = Resolve-RepoPath $Runtime
 $Output = Resolve-RepoPath $Output
 
@@ -61,14 +65,17 @@ Invoke-Native 'python.exe' @(
     '--require-data'
 )
 
-Invoke-Native 'cargo.exe' @('build', '--locked', '--release', '--bins')
+Invoke-Native 'cargo.exe' @(
+    "+$rustToolchain", 'build', '--locked', '--release', '--bins',
+    '--target', $rustTarget
+)
 
 $cargoTarget = if ($env:CARGO_TARGET_DIR) {
     Resolve-RepoPath $env:CARGO_TARGET_DIR
 } else {
     Join-Path $repoRoot 'target'
 }
-$releaseDir = Join-Path $cargoTarget 'release'
+$releaseDir = Join-Path (Join-Path $cargoTarget $rustTarget) 'release'
 $nvimExecutable = Join-Path $releaseDir 'nvim-gpui.exe'
 $gpvimExecutable = Join-Path $releaseDir 'gpvim.exe'
 foreach ($executable in @($nvimExecutable, $gpvimExecutable)) {

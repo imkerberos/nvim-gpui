@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 pub mod app;
 mod clipboard;
 mod editor;

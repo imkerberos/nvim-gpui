@@ -30,9 +30,14 @@ just dev-windows         # install Windows prerequisites with winget
 must be run from an elevated PowerShell or Command Prompt with `winget`.
 It installs the x64 Visual Studio 2022 Build Tools with the C++ workload,
 CMake components, and Windows 10 SDK 20348, plus Rustup, Git, CMake, Python
-3.11, Neovim, `just`, `gh`, 7-Zip, and aria2. It then installs the stable Rust
-toolchain and the `x86_64-pc-windows-msvc` target. The task also finds the
-MSVC `Hostx64/x64/link.exe` and persists it in
+3.11, Neovim, `just`, `gh`, Inno Setup, 7-Zip, and aria2. It then installs the
+stable Rust toolchain and the `stable-x86_64-pc-windows-msvc` x64 host
+toolchain. Windows build tasks use the x64 host toolchain and the
+`x86_64-pc-windows-msvc` target.
+On an ARM64 Windows guest, rustup installs this non-host x64 toolchain with
+its explicit emulation override; Windows 11 on Arm runs the x64 Rust tools
+through its compatibility layer.
+The task also finds the MSVC `Hostx64/x64/link.exe` and persists it in
 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER`, so another `link.exe` cannot be
 selected accidentally. Restart the terminal after installation, then use an
 x64 Native Tools Command Prompt for VS 2022, or start PowerShell from that
@@ -107,7 +112,7 @@ terminal. It installs the required tools automatically through `winget`:
   MSVC v143 x64/x86 build tools, a Windows SDK, and CMake tools;
 - Rust through `rustup`;
 - Git for Windows (Git Bash is optional);
-- CMake, Python 3.11+, and `just`;
+- CMake, Python 3.11+, `just`, Inno Setup, 7-Zip, and aria2;
 - Neovim 0.10 or newer.
 
 The [Rustup MSVC prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html)
@@ -117,23 +122,23 @@ required. The `Justfile` uses PowerShell on Windows, so Git Bash is optional.
 
 Start an **x64 Native Tools Command Prompt for VS 2022**, then use PowerShell
 from that environment so `cl.exe` is available. The setup task installs the
-target and the task runner; if bootstrapping without `just`, run the PowerShell
-script directly as described above:
+x64 host toolchain and the task runner. For an ARM64 Windows guest, the
+Justfile automatically selects the x64 toolchain and target for Cargo tasks;
+do not set `CARGO_BUILD_TARGET` to the ARM64 host target.
 
-```sh
-rustup target add x86_64-pc-windows-msvc
-cargo install just
+If invoking Cargo manually, use the same explicit toolchain and target:
+
+```powershell
+cargo +stable-x86_64-pc-windows-msvc build --release --bins --target x86_64-pc-windows-msvc
 ```
 
-For an ARM64 Windows guest, select the x64 target explicitly. Only the
-application's development data is kept in the repository:
+Only the application's development data is kept in the repository:
 
-```sh
-export CARGO_BUILD_TARGET=x86_64-pc-windows-msvc
-export NVIM_GPUI_CACHE_DIR="$PWD/.cache"
-export NVIM_GPUI_CONFIG_DIR="$PWD/config"
-export SNACKS_KITTY=1
-mkdir -p "$NVIM_GPUI_CACHE_DIR"
+```powershell
+$env:NVIM_GPUI_CACHE_DIR = "$PWD\.cache"
+$env:NVIM_GPUI_CONFIG_DIR = "$PWD\config"
+$env:SNACKS_KITTY = "1"
+New-Item -ItemType Directory -Force $env:NVIM_GPUI_CACHE_DIR | Out-Null
 ```
 
 If Neovim is not on `PATH`, set `NVIM_GPUI_NVIM` to an absolute Windows path,
@@ -151,22 +156,25 @@ $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
 & $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER /?
 ```
 
-Run the platform-independent checks and an x64 build with:
+Run the checks and x64 build with:
 
-```sh
+```powershell
 just ci
-cargo build --release --bins --target x86_64-pc-windows-msvc
-cargo run --target x86_64-pc-windows-msvc --bin nvim-gpui
+just build-release
+just run
 ```
 
 For the Windows Rime runtime and directory bundle, switch to PowerShell in
 the same Visual Studio developer environment:
 
 ```powershell
-$env:NVIM_GPUI_RIME_STARTER_DATA = "C:\path\to\curated-data"
-.\packaging\rime\build-windows.ps1
-.\packaging\windows\bundle.ps1
+just rime-runtime-windows
+just bundle-windows
 ```
+
+When no `NVIM_GPUI_RIME_STARTER_DATA` is supplied, the Rime task downloads the
+pinned official starter data. It also locates the standard 7-Zip installation
+directory automatically, so 7-Zip does not need to be added to PATH manually.
 
 The resulting Windows bundle is described in the [packaging](#packaging)
 section. VMware Fusion is a development and smoke-test environment here; it
@@ -209,9 +217,10 @@ packages:    pack-linux-x86_64, pack-linux-aarch64
 rime:        rime-runtime, rime-runtime-check, rime-runtime-macos,
              rime-runtime-windows
 bundle:      current OS -> bundle-macos or bundle-windows
+installer:   installer-windows (Inno Setup)
 smoke:       current OS -> smoke-macos or smoke-windows
 macOS:       bundle-macos, smoke-macos, dmg, pack-macos
-Windows:     bundle-windows, smoke-windows, pack-windows
+Windows:     bundle-windows, installer-windows, smoke-windows, pack-windows
 release:     release-prepare, release-check, release-notes
 ```
 
@@ -224,10 +233,11 @@ just release              # compatibility alias for build-release
 just dev                  # select the current platform development setup
 just run
 just bundle               # select bundle-macos or bundle-windows automatically
+just installer-windows    # Windows only: build the Inno Setup installer
 just smoke                # select smoke-macos or smoke-windows automatically
 
 just pack-macos          # macOS only: checks, runtime, AppBundle, smoke test, DMG
-just pack-windows        # Windows only: checks, runtime, directory bundle, smoke test
+just pack-windows        # Windows only: checks, runtime, bundle, installer, smoke test
 just setup-ubuntu        # Ubuntu VM only: runtime libraries and IME support
 
 just docker-build x86_64
@@ -243,9 +253,10 @@ just release-notes v0.2.0
 The dependency flow is intentional: `ci` runs `check`, Clippy, and tests;
 `dmg` runs after `smoke-macos`, which runs after `bundle-macos` and
 `build-release`; `pack-macos` additionally builds the macOS Rime runtime;
-`smoke-windows` runs after `bundle-windows`; and `pack-windows` additionally
-builds the Windows Rime runtime and smoke-tests both bundled executables. The
-old `release` task remains a compatibility alias for `build-release`.
+`smoke-windows` runs after `bundle-windows`; `installer-windows` builds the
+Inno Setup installer from that bundle; and `pack-windows` additionally builds
+the Windows Rime runtime, installer, and smoke-tests both bundled executables.
+The old `release` task remains a compatibility alias for `build-release`.
 
 `Cargo.toml` is the canonical version source. Before creating a release, run
 `just release-prepare VERSION`, add the matching section to `CHANGELOG.md`,
@@ -834,13 +845,17 @@ artifact directory in CI:
 
 The `rime/` location is intentional: the runtime resolver searches beside the
 Windows executable, so this layout is also the clean-environment bundle
-contract. It is a directory bundle rather than an installer and still needs
-installer integration and code signing.
+contract. `just installer-windows` packages this directory bundle with Inno
+Setup and writes the installer to
+`dist/windows/nvim-gpui-<version>-setup.exe`. The installer targets the
+`x86_64-pc-windows-msvc` application and uses `x64compatible`, so it can run on
+x64 Windows and Windows 11 on Arm through x64 emulation. Code signing is not
+included yet.
 
 `just smoke-windows` runs both bundled executables with `--version` and checks
 that they start successfully. `just smoke` selects `smoke-macos` or
 `smoke-windows` for the current operating system. `pack-windows` includes this
-smoke test before the release workflow creates its zip archive.
+smoke test and creates both the directory bundle and Inno Setup installer.
 
 On macOS, run `just rime-runtime-macos` first. `just bundle-macos` validates the
 staged runtime and copies it into the AppBundle; it does not copy user data or
