@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=nvim-gpui
+GenericName=Neovim GUI
+Comment=A GPUI-based graphical frontend for Neovim
+Exec=nvim-gpui %F
+Icon=nvim-gpui
+Terminal=false
+Categories=Development;TextEditor;
+Keywords=neovim;vim;editor;
+StartupNotify=false
+StartupWMClass=nvim-gpui

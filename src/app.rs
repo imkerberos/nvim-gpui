@@ -16,7 +16,7 @@ use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Application, AssetSource, Bounds,
     Context, Entity, FocusHandle, Image, KeyDownEvent, MouseButton, Pixels, Point, Render,
     SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea,
-    WindowHandle, WindowKind, WindowOptions,
+    WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use nvim_gpui::rime::{RimeBackend, RimeContextSnapshot};
 use std::{
@@ -489,9 +489,13 @@ pub(crate) mod windows;
 mod workspace;
 
 pub(crate) use startup::run;
+#[cfg(target_os = "linux")]
+pub(crate) use windows::themed_resize_handles;
 use windows::DebugWindow;
 pub(crate) use windows::{
     initial_window_size_for_grid, is_monospace_family, line_height_from_metrics,
     parse_guifont_spec, parse_non_negative_float,
 };
-pub(crate) use windows::{themed_titlebar, themed_titlebar_enabled, themed_titlebar_options};
+pub(crate) use windows::{
+    themed_titlebar, themed_titlebar_enabled, themed_titlebar_options, themed_window_decorations,
+};

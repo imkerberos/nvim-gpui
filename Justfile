@@ -116,6 +116,47 @@ docker-build architecture:
 docker-build-linux-aarch64:
     just docker-build aarch64
 
+# Build a local Ubuntu package through Docker.
+[unix]
+_pack-linux platform deb_arch rust_target docker_platform volume_arch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v docker >/dev/null 2>&1 || { echo "docker is required; start Docker Desktop first" >&2; exit 1; }
+    docker info >/dev/null || { echo "Docker daemon is unavailable; start Docker Desktop first" >&2; exit 1; }
+    output_dir="$PWD/dist/ubuntu-{{platform}}"
+    docker volume create nvim-gpui-ubuntu-{{volume_arch}}-cargo >/dev/null
+    docker volume create nvim-gpui-ubuntu-{{volume_arch}}-rustup >/dev/null
+    docker volume create nvim-gpui-ubuntu-{{volume_arch}}-apt >/dev/null
+    docker volume create nvim-gpui-ubuntu-{{volume_arch}}-target >/dev/null
+    mkdir -p "$output_dir"
+    docker run --rm -i --pull=missing \
+      --platform {{docker_platform}} \
+      --mount "type=bind,src=$PWD,dst=/workspace" \
+      --mount "type=volume,src=nvim-gpui-ubuntu-{{volume_arch}}-cargo,dst=/root/.cargo" \
+      --mount "type=volume,src=nvim-gpui-ubuntu-{{volume_arch}}-rustup,dst=/root/.rustup" \
+      --mount "type=volume,src=nvim-gpui-ubuntu-{{volume_arch}}-apt,dst=/var/cache/apt" \
+      --mount "type=volume,src=nvim-gpui-ubuntu-{{volume_arch}}-target,dst=/workspace/target" \
+      --workdir /workspace \
+      --env NVIM_GPUI_DEB_OUTPUT=/workspace/dist/ubuntu-{{platform}} \
+      --env NVIM_GPUI_DEB_ARCH={{deb_arch}} \
+      --env NVIM_GPUI_RUST_TARGET={{rust_target}} \
+      --env NVIM_GPUI_PLATFORM={{platform}} \
+      --env CARGO_TARGET_DIR=/workspace/target \
+      --env "NVIM_GPUI_OUTPUT_UID=$(id -u)" \
+      --env "NVIM_GPUI_OUTPUT_GID=$(id -g)" \
+      "${NVIM_GPUI_UBUNTU_IMAGE:-ubuntu:24.04}" \
+      bash /workspace/packaging/linux/build-ubuntu-deb.sh
+
+# Build a local Ubuntu amd64 .deb through Docker.
+[unix]
+pack-linux-x86_64:
+    just _pack-linux x86_64 amd64 x86_64-unknown-linux-gnu linux/amd64 amd64
+
+# Build a local Ubuntu arm64 .deb through Docker.
+[unix]
+pack-linux-aarch64:
+    just _pack-linux aarch64 arm64 aarch64-unknown-linux-gnu linux/arm64 arm64
+
 # Copy and validate a platform-specific Rime runtime.
 rime-runtime source output=".cache/rime-runtime":
     {{python_command}} scripts/rime_runtime.py stage --source "{{source}}" --output "{{output}}"

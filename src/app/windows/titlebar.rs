@@ -4,6 +4,10 @@ use crate::{
     widgets::{logo_image, titlebar_button, IME_ACTIVE, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
 };
 use gpui::deferred;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use gpui::Window;
+#[cfg(target_os = "linux")]
+use gpui::{CursorStyle, Decorations, Div, ResizeEdge};
 
 #[derive(Clone)]
 pub(crate) struct RimeTitlebarState {
@@ -14,13 +18,34 @@ pub(crate) struct RimeTitlebarState {
 }
 
 pub(crate) fn themed_titlebar_enabled() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows"))
+    cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    ))
+}
+
+pub(crate) fn themed_window_decorations() -> Option<WindowDecorations> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(WindowDecorations::Client)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn themed_resize_handles(window: &Window) -> Option<impl IntoElement> {
+    matches!(window.window_decorations(), Decorations::Client { .. })
+        .then_some(window_resize_handles())
 }
 
 pub(crate) fn themed_titlebar_options(title: &'static str) -> TitlebarOptions {
     TitlebarOptions {
         title: Some(title.into()),
-        appears_transparent: themed_titlebar_enabled(),
+        appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
         ..Default::default()
     }
 }
@@ -32,7 +57,7 @@ pub(crate) fn themed_titlebar(
     source: Option<Entity<NvimGpui>>,
     rime_state: Option<RimeTitlebarState>,
 ) -> impl IntoElement {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let close_source = source.clone();
 
     let title_area = div()
@@ -56,6 +81,15 @@ pub(crate) fn themed_titlebar(
     let title_area = title_area.on_mouse_down(MouseButton::Left, |event, window, _cx| {
         if event.click_count == 2 {
             window.titlebar_double_click();
+        }
+    });
+
+    #[cfg(target_os = "linux")]
+    let title_area = title_area.on_mouse_down(MouseButton::Left, |event, window, _cx| {
+        if event.click_count == 2 {
+            window.zoom_window();
+        } else {
+            window.start_window_move();
         }
     });
 
@@ -100,7 +134,7 @@ pub(crate) fn themed_titlebar(
         titlebar = titlebar.child(actions);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let titlebar = titlebar
         .child(window_control_button(
             "—",
@@ -124,10 +158,7 @@ pub(crate) fn themed_titlebar(
             move |window, cx| {
                 let should_close = close_source
                     .as_ref()
-                    .map(|view| {
-                        view.update(cx, |view, cx| view.request_window_close(cx))
-                            .unwrap_or(true)
-                    })
+                    .map(|view| view.update(cx, |view, cx| view.request_window_close(cx)))
                     .unwrap_or(true);
                 if should_close {
                     if close_source.is_some() {
@@ -142,7 +173,7 @@ pub(crate) fn themed_titlebar(
     titlebar
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn window_control_button(
     label: &'static str,
     area: WindowControlArea,
@@ -164,7 +195,139 @@ fn window_control_button(
             window.prevent_default();
             action(window, cx);
         })
-        .child(label)
+        .child(
+            div()
+                .text_size(px(if label == "×" { 20.0 } else { 16.0 }))
+                .child(label),
+        )
+}
+
+#[cfg(target_os = "linux")]
+const WINDOW_RESIZE_EDGE_SIZE: f32 = 6.0;
+
+#[cfg(target_os = "linux")]
+const WINDOW_RESIZE_CORNER_SIZE: f32 = 12.0;
+
+#[cfg(target_os = "linux")]
+fn window_resize_handles() -> impl IntoElement {
+    div()
+        .absolute()
+        .left(px(0.0))
+        .top(px(0.0))
+        .right(px(0.0))
+        .bottom(px(0.0))
+        .child(window_resize_handle(
+            "window-resize-top",
+            ResizeEdge::Top,
+            |handle| {
+                handle
+                    .left(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .top(px(0.0))
+                    .right(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .h(px(WINDOW_RESIZE_EDGE_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-right",
+            ResizeEdge::Right,
+            |handle| {
+                handle
+                    .top(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .right(px(0.0))
+                    .bottom(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .w(px(WINDOW_RESIZE_EDGE_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-bottom",
+            ResizeEdge::Bottom,
+            |handle| {
+                handle
+                    .left(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .right(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .bottom(px(0.0))
+                    .h(px(WINDOW_RESIZE_EDGE_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-left",
+            ResizeEdge::Left,
+            |handle| {
+                handle
+                    .left(px(0.0))
+                    .top(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .bottom(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .w(px(WINDOW_RESIZE_EDGE_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-top-left",
+            ResizeEdge::TopLeft,
+            |handle| {
+                handle
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .h(px(WINDOW_RESIZE_CORNER_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-top-right",
+            ResizeEdge::TopRight,
+            |handle| {
+                handle
+                    .top(px(0.0))
+                    .right(px(0.0))
+                    .w(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .h(px(WINDOW_RESIZE_CORNER_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-bottom-right",
+            ResizeEdge::BottomRight,
+            |handle| {
+                handle
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .w(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .h(px(WINDOW_RESIZE_CORNER_SIZE))
+            },
+        ))
+        .child(window_resize_handle(
+            "window-resize-bottom-left",
+            ResizeEdge::BottomLeft,
+            |handle| {
+                handle
+                    .left(px(0.0))
+                    .bottom(px(0.0))
+                    .w(px(WINDOW_RESIZE_CORNER_SIZE))
+                    .h(px(WINDOW_RESIZE_CORNER_SIZE))
+            },
+        ))
+}
+
+#[cfg(target_os = "linux")]
+fn window_resize_handle(
+    id: &'static str,
+    edge: ResizeEdge,
+    place: impl FnOnce(Div) -> Div,
+) -> impl IntoElement {
+    place(div().absolute().cursor(resize_cursor(edge)))
+        .id(id)
+        .on_mouse_down(MouseButton::Left, move |_, window, _cx| {
+            window.prevent_default();
+            window.start_window_resize(edge);
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn resize_cursor(edge: ResizeEdge) -> CursorStyle {
+    match edge {
+        ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+        ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+        ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+        ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+    }
 }
 
 fn rime_indicator(

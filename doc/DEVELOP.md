@@ -205,6 +205,7 @@ build:       build, build-release, release, run, gpvim
 dev:         current OS -> dev-macos, dev-linux, or dev-windows
 ubuntu test: setup-ubuntu
 linux:       docker-build, docker-build-linux-aarch64
+packages:    pack-linux-x86_64, pack-linux-aarch64
 rime:        rime-runtime, rime-runtime-check, rime-runtime-macos,
              rime-runtime-windows
 bundle:      current OS -> bundle-macos or bundle-windows
@@ -231,6 +232,8 @@ just setup-ubuntu        # Ubuntu VM only: runtime libraries and IME support
 
 just docker-build x86_64
 just docker-build-linux-aarch64
+just pack-linux-x86_64  # local Ubuntu amd64 .deb through Docker
+just pack-linux-aarch64  # local Ubuntu arm64 .deb through Docker
 
 just release-prepare 0.2.0
 just release-check v0.2.0
@@ -330,6 +333,49 @@ development shell can leave dynamic references to Nix-provided libraries.
 The release workflow therefore builds Linux on native GitHub runners and uses
 that job as release validation. macOS and Windows packages still use their
 respective native build environments.
+
+### Local Ubuntu Linux packages
+
+These are local-only packaging tasks. They run Ubuntu 24.04 containers, install
+the Ubuntu build dependencies, compile the Rust application against Ubuntu's
+system libraries, and create Debian packages:
+
+```sh
+just pack-linux-x86_64
+just pack-linux-aarch64
+```
+
+The outputs are written to:
+
+```text
+dist/ubuntu-x86_64/nvim-gpui_VERSION_amd64.deb
+dist/ubuntu-aarch64/nvim-gpui_VERSION_arm64.deb
+```
+
+On an Apple Silicon Mac, the arm64 task runs natively and the amd64 task runs
+through Docker's `linux/amd64` emulation.
+
+The package contains `nvim-gpui`, `gpvim`, `gpvimdiff`, the desktop entry, and
+the application icon set in standard hicolor sizes. The desktop entry uses the
+`nvim-gpui` icon name, so desktop environments can resolve it without a
+hard-coded path. It declares the GUI libraries and system librime/Rime data as
+Debian dependencies. Neovim is listed as a suggestion because Ubuntu
+versions may provide an older Neovim; run `just setup-ubuntu` on the test VM
+to install a compatible Neovim and the separate IBus/libpinyin test path.
+
+The task uses persistent Docker volumes for Cargo downloads, the Rust toolchain,
+and Ubuntu's APT archive. Override the builder image only when intentionally
+testing another Ubuntu image:
+
+```sh
+NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-x86_64
+NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-aarch64
+```
+
+This task is intentionally not used by GitHub Actions or the release workflow.
+They are for local Ubuntu installation and runtime testing. The packages are
+linked against Ubuntu libraries rather than the Nix store, unlike
+`just docker-build x86_64`.
 
 ### CI/CD workflow
 

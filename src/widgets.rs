@@ -792,6 +792,7 @@ pub(crate) fn setting_combo_option(
         )
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn setting_checkbox(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,

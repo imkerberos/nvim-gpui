@@ -231,7 +231,11 @@ impl RimeToggleShortcut {
                 {
                     "ctrl-\\"
                 }
-                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                #[cfg(target_os = "linux")]
+                {
+                    "ctrl-\\"
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
                 {
                     "ctrl-space"
                 }
@@ -608,7 +612,9 @@ mod tests {
         assert_eq!(Settings::default().rime_toggle_shortcut.key(), "cmd-\\");
         #[cfg(target_os = "windows")]
         assert_eq!(Settings::default().rime_toggle_shortcut.key(), "ctrl-\\");
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        assert_eq!(Settings::default().rime_toggle_shortcut.key(), "ctrl-\\");
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         assert_eq!(Settings::default().rime_toggle_shortcut.key(), "ctrl-space");
         assert_eq!(NerdFontChoice::Symbols.family(), "Symbols Nerd Font");
         assert_eq!(

@@ -111,6 +111,7 @@ pub(crate) fn run(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(debug_bounds)),
                         titlebar: Some(themed_titlebar_options("nvim-gpui debug")),
+                        window_decorations: themed_window_decorations(),
                         kind: WindowKind::Floating,
                         focus: false,
                         is_resizable: false,
@@ -144,6 +145,9 @@ fn open_main_window(
                 WindowBounds::Windowed(bounds)
             }),
             titlebar: Some(themed_titlebar_options(DEFAULT_WINDOW_TITLE)),
+            window_decorations: themed_window_decorations(),
+            #[cfg(target_os = "linux")]
+            app_id: Some("nvim-gpui".to_owned()),
             is_resizable: true,
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             ..Default::default()

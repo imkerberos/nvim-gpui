@@ -1,11 +1,13 @@
+#[cfg(target_os = "macos")]
+use crate::widgets::setting_checkbox;
 use crate::{
     app::{themed_titlebar, themed_titlebar_enabled, NvimGpui},
     helper, settings,
     widgets::{
-        setting_checkbox, setting_combo_box, setting_combo_option, setting_option_button,
-        setting_row, setting_section, setting_text_input, SettingTextInputConfig,
-        SettingTextInputMouseEvent, SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE,
-        SURFACE_BRIGHT, TEXT, WARNING,
+        setting_combo_box, setting_combo_option, setting_option_button, setting_row,
+        setting_section, setting_text_input, SettingTextInputConfig, SettingTextInputMouseEvent,
+        SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
+        WARNING,
     },
 };
 use gpui::{
@@ -1110,6 +1112,7 @@ impl Render for SettingsWindow {
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::StartupMaximized, cx)),
         );
 
+        #[cfg(target_os = "macos")]
         let quit_on_window_close = setting_checkbox(
             "settings-quit-on-window-close",
             "Quit when the main window closes",
@@ -1124,6 +1127,7 @@ impl Render for SettingsWindow {
             }),
         );
 
+        #[cfg(target_os = "macos")]
         let allow_multiple_instances = setting_checkbox(
             "settings-allow-multiple-instances",
             "Allow multiple instances",
@@ -1251,6 +1255,35 @@ impl Render for SettingsWindow {
                 },
             ));
 
+        let application_behavior = div().w_full().child(setting_row(
+            "Startup maximized",
+            "Open the main editor window in its maximized state.",
+            startup_options,
+        ));
+        #[cfg(target_os = "macos")]
+        let application_behavior = application_behavior
+            .child(setting_row(
+                "Quit behavior",
+                "Choose whether closing the main editor window also exits nvim-gpui.",
+                quit_on_window_close,
+            ))
+            .child(setting_row(
+                "Instance behavior",
+                "Allow another nvim-gpui process to run at the same time.",
+                allow_multiple_instances,
+            ));
+        let application_behavior = application_behavior
+            .child(setting_row(
+                "Log level",
+                "Write runtime logs at the selected level. Logging is disabled by default.",
+                log_options,
+            ))
+            .child(setting_row(
+                "Log directory",
+                "Read-only location used for runtime log files.",
+                log_directory_control,
+            ));
+
         let mut content = div()
             .id("settings-scroll")
             .flex_1()
@@ -1262,33 +1295,7 @@ impl Render for SettingsWindow {
             .child(div().text_lg().child("Settings"))
             .child(setting_section(
                 "Application behavior",
-                div()
-                    .w_full()
-                    .child(setting_row(
-                        "Startup maximized",
-                        "Open the main editor window in its maximized state.",
-                        startup_options,
-                    ))
-                    .child(setting_row(
-                        "Quit behavior",
-                        "Choose whether closing the main editor window also exits nvim-gpui.",
-                        quit_on_window_close,
-                    ))
-                    .child(setting_row(
-                        "Instance behavior",
-                        "Allow another nvim-gpui process to run at the same time.",
-                        allow_multiple_instances,
-                    ))
-                    .child(setting_row(
-                        "Log level",
-                        "Write runtime logs at the selected level. Logging is disabled by default.",
-                        log_options,
-                    ))
-                    .child(setting_row(
-                        "Log directory",
-                        "Read-only location used for runtime log files.",
-                        log_directory_control,
-                    )),
+                application_behavior,
             ))
             .child(setting_section(
                 "Font and image",

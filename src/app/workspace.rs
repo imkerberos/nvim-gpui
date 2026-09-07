@@ -42,6 +42,11 @@ impl Render for NvimGpui {
 
         workspace = workspace.child(self.render_editor_surface(window, cx));
 
+        #[cfg(target_os = "linux")]
+        if let Some(resize_handles) = super::themed_resize_handles(window) {
+            workspace = workspace.child(resize_handles);
+        }
+
         if let Some(quit_dialog) = gui::quit_confirmation_dialog(&self.quit_dialog, cx) {
             workspace = workspace.child(quit_dialog);
         }

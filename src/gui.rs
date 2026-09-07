@@ -8,7 +8,7 @@ pub(crate) use quit_confirmation::quit_confirmation_dialog;
 pub(crate) use settings::SettingsWindow;
 pub(crate) use startup_error::startup_error_dialog;
 
-use crate::app::{themed_titlebar_options, NvimGpui};
+use crate::app::{themed_titlebar_options, themed_window_decorations, NvimGpui};
 use gpui::{
     prelude::*, size, App, Bounds, Entity, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
@@ -57,6 +57,7 @@ pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(themed_titlebar_options("nvim-gpui settings")),
+                window_decorations: themed_window_decorations(),
                 kind: WindowKind::Floating,
                 is_resizable: true,
                 window_min_size: Some(size(gpui::px(560.0), gpui::px(420.0))),
@@ -85,6 +86,7 @@ pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(themed_titlebar_options("About nvim-gpui")),
+                window_decorations: themed_window_decorations(),
                 kind: WindowKind::Floating,
                 is_resizable: false,
                 ..Default::default()
