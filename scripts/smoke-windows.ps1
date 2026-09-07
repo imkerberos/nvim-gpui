@@ -29,8 +29,12 @@ foreach ($name in @('nvim-gpui.exe', 'gpvim.exe')) {
         Fail "executable does not exist: $executable"
     }
 
-    & $executable --version
-    if ($LASTEXITCODE -ne 0) {
-        Fail "executable failed: $executable"
+    $process = Start-Process `
+        -FilePath $executable `
+        -ArgumentList @('--version') `
+        -Wait `
+        -PassThru
+    if ($process.ExitCode -ne 0) {
+        Fail "executable failed with exit code $($process.ExitCode): $executable"
     }
 }
