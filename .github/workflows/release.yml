@@ -187,8 +187,28 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: |
-          winget install --id JRSoftware.InnoSetup --exact --source winget `
-            --accept-source-agreements --accept-package-agreements
+          if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+            throw 'Chocolatey is not available on the Windows runner'
+          }
+          choco.exe install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chocolatey failed to install Inno Setup with exit code $LASTEXITCODE"
+          }
+
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $iscc = $candidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $iscc) {
+            throw 'Inno Setup was installed but ISCC.exe was not found'
+          }
+          "INNO_SETUP_COMPILER=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Output "using ISCC: $iscc"
 
       - name: Install pinned Neovim
         shell: pwsh
