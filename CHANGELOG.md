@@ -2,6 +2,32 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.6.0] - Unreleased
+
+### Added
+
+- Version-aware Neovim UI protocol handling for Neovim 0.10, 0.11, and 0.12+.
+- Connection startup handling with configurable remote TCP timeouts and clear
+  startup errors.
+- Ubuntu x86_64 and aarch64 package builds with desktop integration and
+  architecture-specific application icons.
+- Windows x86_64 development bootstrap, directory bundles, bundled Rime
+  runtime, and Inno Setup installers, including Windows 11 on Arm support.
+- Ubuntu test-environment setup with IBus/libpinyin, system librime, Rime
+  data, and a compatible Neovim test executable.
+
+### Improved
+
+- Reduced rendering work by clipping grid prepaint operations to visible
+  content.
+- Improved multigrid rendering, floating-window ordering, legacy redraw
+  payload handling, and startup/reconnection behavior.
+
+### Fixed
+
+- Fixed several platform-specific titlebar, close-button, Rime setup, and
+  package-generation issues.
+
 ## [0.5.0] - 2026-09-05
 
 ### Added

@@ -38,7 +38,9 @@ versioned multigrid UI payloads used by Neovim 0.10, 0.11, and 0.12+.
 
 ## Quick start
 
-Install Neovim and nvim-gpui with Homebrew:
+### macOS
+
+The easiest way to install both Neovim and nvim-gpui is Homebrew:
 
 ```sh
 brew install neovim
@@ -47,7 +49,66 @@ brew install --cask imkerberos/nvim-gpui/nvim-gpui
 gpvim
 ```
 
-Open a file or pass arguments to Neovim:
+You can also download the DMG for your Mac from the [latest
+release](https://github.com/imkerberos/nvim-gpui/releases/latest), open it,
+and drag `nvim-gpui.app` to `/Applications`. Neovim must be installed
+separately and must be version 0.10.0 or newer.
+
+Current macOS builds are unsigned. If macOS reports that the downloaded
+application is damaged or cannot be verified, only do the following for an
+application downloaded from a source you trust:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/nvim-gpui.app
+open /Applications/nvim-gpui.app
+```
+
+Replace the path if you installed the application elsewhere.
+
+### Debian/Ubuntu
+
+Download the `.deb` package matching your CPU architecture from the [latest
+release](https://github.com/imkerberos/nvim-gpui/releases/latest), then install
+Neovim and nvim-gpui:
+
+```sh
+sudo apt update
+sudo apt install neovim
+nvim --version                 # must be 0.10.0 or newer
+sudo apt install ./nvim-gpui-v<VERSION>-linux-x86_64.deb
+gpvim
+```
+
+Use `nvim-gpui-v<VERSION>-linux-aarch64.deb` on ARM64. If your distribution
+provides an older Neovim, install a newer version from the [official Neovim
+releases](https://github.com/neovim/neovim/releases) before launching
+nvim-gpui. The package installs the required Ubuntu/Debian GUI and system Rime
+dependencies automatically.
+
+### Windows
+
+Install Neovim 0.10.0 or newer from the [official Neovim
+releases](https://github.com/neovim/neovim/releases) first, and make sure
+`nvim.exe` is available on `PATH`. The nvim-gpui package does not include
+Neovim itself.
+
+Download and run
+`nvim-gpui-v<VERSION>-windows-x86_64-setup.exe` from the [latest
+release](https://github.com/imkerberos/nvim-gpui/releases/latest). The
+installer creates Start Menu and optional desktop shortcuts. You can also
+download the portable ZIP, extract it, and run `nvim-gpui.exe` directly.
+
+The Windows package targets x86_64 Windows and also works on Windows 11 on
+Arm through its x64 application compatibility layer.
+
+After installation, start nvim-gpui from the application launcher or use the
+command-line helper where it is available:
+
+```sh
+gpvim
+```
+
+Open a file or pass arguments to Neovim on macOS and Debian/Ubuntu:
 
 ```sh
 gpvim README.md
@@ -108,21 +169,6 @@ runtime is selected automatically when
 the application is launched from the macOS AppBundle or Windows bundle; do not set
 `NVIM_GPUI_RIME_LIBRARY` or `NVIM_GPUI_RIME_SHARED_DIR` when testing that
 path.
-
-## Temporary trust for unsigned builds
-
-Current macOS builds are unsigned. macOS may therefore report that a
-downloaded application is damaged or cannot be verified.
-
-Only do this for an application downloaded from a source you trust. After
-moving it to `/Applications`, run:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/nvim-gpui.app
-open /Applications/nvim-gpui.app
-```
-
-Replace the path if you installed the application elsewhere.
 
 ## Font configuration
 

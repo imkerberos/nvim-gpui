@@ -1,12 +1,12 @@
 cask "nvim-gpui" do
   arch arm: "aarch64", intel: "x86_64"
 
-  version "0.5.0"
+  version "0.6.0"
   # Replace :no_check with per-architecture SHA-256 values once the release
   # assets have been published and their checksums are recorded.
   sha256 :no_check
 
-  url "https://github.com/imkerberos/nvim-gpui/releases/download/v#{version}/nvim-gpui-#{arch}.dmg"
+  url "https://github.com/imkerberos/nvim-gpui/releases/download/v#{version}/nvim-gpui-v#{version}-darwin-#{arch}.dmg"
   name "nvim-gpui"
   desc "GPUI graphical frontend for Neovim"
   homepage "https://github.com/imkerberos/nvim-gpui"
