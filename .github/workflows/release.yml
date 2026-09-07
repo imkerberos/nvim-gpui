@@ -194,8 +194,10 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION"
+          $nvimBin = Join-Path $installDir 'bin'
+          $nvimExe = Join-Path $nvimBin 'nvim.exe'
           $archive = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION.zip"
-          if (-not (Test-Path (Join-Path $installDir 'nvim.exe'))) {
+          if (-not (Test-Path $nvimExe)) {
             Invoke-WebRequest `
               -Uri "https://github.com/neovim/neovim/releases/download/v$env:NEOVIM_VERSION/nvim-win64.zip" `
               -OutFile $archive
@@ -205,7 +207,11 @@ jobs:
             Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
             Rename-Item (Join-Path $env:RUNNER_TEMP 'nvim-win64') $installDir
           }
-          $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if (-not (Test-Path $nvimExe)) {
+            throw "Neovim executable was not found: $nvimExe"
+          }
+          $nvimBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $nvimExe --version
 
       - name: Build, test, package, and smoke-test Windows bundle
         shell: pwsh
