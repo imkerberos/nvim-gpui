@@ -65,6 +65,10 @@ open /Applications/nvim-gpui.app
 
 Replace the path if you installed the application elsewhere.
 
+The AppBundle is available in Finder's Open With menu for source and text
+files. Opening a file there sends it to the embedded Neovim session, including
+when nvim-gpui is already running.
+
 ### Debian/Ubuntu
 
 Download the `.deb` package matching your CPU architecture from the [latest
@@ -83,7 +87,9 @@ Use `nvim-gpui-v<VERSION>-linux-aarch64.deb` on ARM64. If your distribution
 provides an older Neovim, install a newer version from the [official Neovim
 releases](https://github.com/neovim/neovim/releases) before launching
 nvim-gpui. The package installs the required Ubuntu/Debian GUI and system Rime
-dependencies automatically.
+dependencies automatically. It also registers nvim-gpui as an Open With option
+for common source and text files; the desktop entry passes selected files to
+the embedded Neovim session.
 
 ### Windows
 
@@ -95,8 +101,11 @@ Neovim itself.
 Download and run
 `nvim-gpui-v<VERSION>-windows-x86_64-setup.exe` from the [latest
 release](https://github.com/imkerberos/nvim-gpui/releases/latest). The
-installer creates Start Menu and optional desktop shortcuts. You can also
-download the portable ZIP, extract it, and run `nvim-gpui.exe` directly.
+installer creates Start Menu and optional desktop shortcuts, and adds
+nvim-gpui to Explorer's Open With menu for files without changing existing
+default associations. It also offers to add the installed `nvim-gpui` and
+`gpvim` commands to the current user's PATH. You can also download the
+portable ZIP, extract it, and run `nvim-gpui.exe` directly.
 
 The Windows package targets x86_64 Windows and also works on Windows 11 on
 Arm through its x64 application compatibility layer.
@@ -122,6 +131,14 @@ directly:
 ```sh
 open -a nvim-gpui
 ```
+
+## Drag and drop
+
+In embedded mode, drag files or directories from Finder, a Linux file manager,
+or Windows Explorer into the nvim-gpui window to open them in Neovim. Remote
+sessions started with `--connect` accept the drop only to explain that opening
+local files and directories is not supported; local paths are never sent to
+the remote Neovim process.
 
 ## Release packages
 

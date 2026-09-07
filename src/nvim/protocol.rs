@@ -1,5 +1,6 @@
 use crate::grid::{CursorModeInfo, CursorShape, GridLineCell, HighlightAttrs, HighlightId};
 use rmpv::Value;
+use std::path::Path;
 
 use super::{NvimCapabilities, NvimEvent, CLIENT_NAME};
 
@@ -73,6 +74,19 @@ pub(super) fn resize_request_frame(id: u64, width: u32, height: u32) -> Value {
         Value::from(id),
         Value::from("nvim_ui_try_resize"),
         Value::Array(vec![Value::from(width), Value::from(height)]),
+    ])
+}
+
+pub(super) fn edit_file_command_params(path: &Path) -> Value {
+    Value::Array(vec![
+        Value::Map(vec![
+            (Value::from("cmd"), Value::from("edit")),
+            (
+                Value::from("args"),
+                Value::Array(vec![Value::from(path.to_string_lossy().into_owned())]),
+            ),
+        ]),
+        Value::Map(Vec::new()),
     ])
 }
 

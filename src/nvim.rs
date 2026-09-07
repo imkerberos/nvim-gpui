@@ -12,6 +12,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -34,8 +35,8 @@ mod tests;
 use environment::apply_nvim_environment;
 pub use environment::configured_nvim_command;
 use protocol::{
-    client_info_params, mouse_event_notification_frame, resize_request_frame,
-    term_event_notification_frame,
+    client_info_params, edit_file_command_params, mouse_event_notification_frame,
+    resize_request_frame, term_event_notification_frame,
 };
 use session::run_session;
 use transport::{write_shared_message, RemoteConnection, SharedWriter};
@@ -402,6 +403,13 @@ impl NvimProcess {
             })
             .map_err(|error| format!("failed to queue Neovim RPC request: {error}"))?;
         Ok(response_rx)
+    }
+
+    pub fn edit_file(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<Receiver<Result<Value, String>>, String> {
+        self.request("nvim_cmd", edit_file_command_params(path.as_ref()))
     }
 
     pub fn send_input(&self, input: impl Into<String>) -> Result<(), String> {

@@ -992,8 +992,13 @@ impl NvimGpui {
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        if cx.has_active_drag() {
+            window.prevent_default();
+            return;
+        }
+
         if let Some(focus_handle) = self.focus_handle.as_ref() {
             window.focus(focus_handle);
         }
@@ -1012,8 +1017,13 @@ impl NvimGpui {
         &mut self,
         event: &MouseUpEvent,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        if cx.has_active_drag() {
+            window.prevent_default();
+            return;
+        }
+
         let target = self
             .mouse_capture
             .take()
@@ -1032,8 +1042,13 @@ impl NvimGpui {
         &mut self,
         event: &MouseMoveEvent,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        if cx.has_active_drag() {
+            window.prevent_default();
+            return;
+        }
+
         let (button, action) = event
             .pressed_button
             .map(|button| (input::nvim_mouse_button(button), "drag"))

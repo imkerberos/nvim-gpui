@@ -46,6 +46,7 @@ pub(crate) fn run(
     let initial_theme = nvim.as_ref().ok().and_then(NvimProcess::startup_theme);
     let reopen_view = Rc::new(RefCell::new(None));
     let reopen_view_for_handler = reopen_view.clone();
+    let (open_urls_tx, open_urls_rx) = async_channel::unbounded();
 
     log::info!(target: "nvim_gpui::startup", "starting GPUI application");
     let application = Application::new().with_assets(AppAssets);
@@ -59,6 +60,18 @@ pub(crate) fn run(
         }
         log::info!(target: "nvim_gpui::startup", "main window reopened");
         cx.activate(true);
+    });
+    application.on_open_urls(move |urls| {
+        let count = urls.len();
+        if let Err(error) = open_urls_tx.try_send(urls) {
+            log::warn!(
+                target: "nvim_gpui::startup",
+                "could not queue {} file-open URL(s): {error}",
+                count
+            );
+        } else {
+            log::info!(target: "nvim_gpui::startup", "received {} file-open URL(s)", count);
+        }
     });
     application.run(move |cx: &mut App| {
             let nerd_font_registered = match platform::register_bundled_fonts(cx) {
@@ -84,6 +97,9 @@ pub(crate) fn run(
                     startup_maximized,
                     logger,
                 )
+            });
+            nvim_view.update(cx, |view, cx| {
+                view.start_open_urls_task(open_urls_rx, cx);
             });
             *reopen_view.borrow_mut() = Some(nvim_view.clone());
 

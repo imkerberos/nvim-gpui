@@ -10,3 +10,4 @@ Categories=Development;TextEditor;
 Keywords=neovim;vim;editor;
 StartupNotify=false
 StartupWMClass=nvim-gpui
+MimeType=text/plain;text/markdown;text/x-c;text/x-c++;text/x-chdr;text/x-csharp;text/x-go;text/x-haskell;text/x-java;text/x-kotlin;text/x-lua;text/x-perl;text/x-php;text/x-python;text/x-ruby;text/x-rust;text/x-scala;text/x-shellscript;application/javascript;application/json;application/xml;text/html;text/css;text/xml;text/x-sql;

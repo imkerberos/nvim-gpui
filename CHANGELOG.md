@@ -2,7 +2,18 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.6.0] - Unreleased
+## [0.6.1] - Unreleased
+
+### Improved
+
+- Files opened from Finder on macOS, common Linux file managers, or Explorer
+  on Windows now open in the embedded Neovim session.
+- Files and directories can be dragged into the nvim-gpui window in embedded
+  mode; remote sessions explain that opening local paths is unsupported.
+- The Windows installer can add `nvim-gpui` and `gpvim` to the current user's
+  PATH.
+
+## [0.6.0] - 2026-09-07
 
 ### Added
 

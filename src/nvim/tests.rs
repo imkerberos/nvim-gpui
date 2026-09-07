@@ -5,8 +5,8 @@ use super::environment::{
     NVIM_GPUI_ENV_VALUE,
 };
 use super::protocol::{
-    mouse_event_notification_frame, resize_request_frame, term_event_notification_frame,
-    ui_attach_params, ui_attach_params_for,
+    edit_file_command_params, mouse_event_notification_frame, resize_request_frame,
+    term_event_notification_frame, ui_attach_params, ui_attach_params_for,
 };
 use super::session::{handle_notification, observe_startup_theme};
 use super::transport::{read_message, write_message};
@@ -564,6 +564,27 @@ fn resize_request_frame_uses_the_nvim_ui_resize_method() {
     assert_eq!(frame[2].as_str(), Some("nvim_ui_try_resize"));
     assert_eq!(frame[3][0].as_u64(), Some(120));
     assert_eq!(frame[3][1].as_u64(), Some(40));
+}
+
+#[test]
+fn edit_file_command_uses_structured_path_arguments() {
+    let params = edit_file_command_params(Path::new("/tmp/project notes.md"));
+    let command = params[0].as_map().expect("command should be a map");
+    let args = command
+        .iter()
+        .find(|(key, _)| key.as_str() == Some("args"))
+        .and_then(|(_, value)| value.as_array())
+        .expect("command should contain args");
+
+    assert_eq!(
+        command
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("cmd"))
+            .and_then(|(_, value)| value.as_str()),
+        Some("edit")
+    );
+    assert_eq!(args[0].as_str(), Some("/tmp/project notes.md"));
+    assert!(params[1].as_map().is_some_and(|options| options.is_empty()));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use super::{themed_titlebar, themed_titlebar_enabled, NvimGpui};
 use crate::{app::windows::RimeTitlebarState, gui, input::InputTarget, settings};
-use gpui::{div, prelude::*, rgb, Context, Render, Window};
+use gpui::{div, prelude::*, px, rgb, Context, Render, Window};
 
 impl Render for NvimGpui {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -17,7 +17,9 @@ impl Render for NvimGpui {
             .bg(rgb(theme_background))
             .text_color(rgb(theme_foreground))
             .capture_key_down(cx.listener(Self::on_key_down))
-            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed));
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
+            .on_drag_move::<gpui::ExternalPaths>(cx.listener(Self::on_file_drag_move))
+            .on_drop::<gpui::ExternalPaths>(cx.listener(Self::on_file_drop));
 
         if let Some(focus_handle) = self.focus_handle.as_ref() {
             workspace = workspace.track_focus(focus_handle);
@@ -41,6 +43,30 @@ impl Render for NvimGpui {
         }
 
         workspace = workspace.child(self.render_editor_surface(window, cx));
+
+        if let Some(message) = self.file_drop_notice.as_ref() {
+            workspace = workspace.child(
+                div()
+                    .absolute()
+                    .top(px(12.0))
+                    .left(px(12.0))
+                    .right(px(12.0))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(rgb(crate::widgets::WARNING))
+                            .bg(rgb(crate::widgets::SURFACE))
+                            .text_color(rgb(crate::widgets::WARNING))
+                            .text_sm()
+                            .px_3()
+                            .py_2()
+                            .child(message.clone()),
+                    ),
+            );
+        }
 
         #[cfg(target_os = "linux")]
         if let Some(resize_handles) = super::themed_resize_handles(window) {

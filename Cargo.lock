@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "nvim-gpui"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-channel 2.5.0",
  "base64",
@@ -3491,6 +3491,7 @@ dependencies = [
  "rmpv",
  "unicode-segmentation",
  "unicode-width",
+ "url",
  "windows 0.61.3",
 ]
 

@@ -132,7 +132,10 @@ elif [[ ! -d "$source_dir/.git" ]]; then
   fail "source path exists but is not a git checkout: $source_dir"
 fi
 
-git -C "$source_dir" fetch --tags origin
+# The runtime manifest pins an immutable commit, so tags are not needed.
+# Avoid fetching mutable upstream tags such as `latest`, which can move and
+# cause Git to reject an otherwise harmless cache refresh.
+git -C "$source_dir" fetch --no-tags origin
 git -C "$source_dir" checkout --detach "$source_revision"
 git -C "$source_dir" submodule sync --recursive
 git -C "$source_dir" submodule update --init --recursive

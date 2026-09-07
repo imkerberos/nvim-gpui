@@ -374,6 +374,9 @@ hard-coded path. It declares the GUI libraries and system librime/Rime data as
 Debian dependencies. Neovim is listed as a suggestion because Ubuntu
 versions may provide an older Neovim; run `just setup-ubuntu` on the test VM
 to install a compatible Neovim and the separate IBus/libpinyin test path.
+The desktop entry's `MimeType` field makes nvim-gpui available in common Linux
+file managers' Open With menus for source and text files; its `%F` argument
+forwards the selected paths to the embedded Neovim session.
 
 The task uses persistent Docker volumes for Cargo downloads, the Rust toolchain,
 and Ubuntu's APT archive. Override the builder image only when intentionally
@@ -898,7 +901,25 @@ places the AppBundle and an
 
 The AppBundle declares source and text document types with
 `LSHandlerRank=Alternate`, so it can appear in Finder's Open With menu
-without taking ownership of existing source-file icons or defaults.
+without taking ownership of existing source-file icons or defaults. GPUI's
+platform open-URL callback converts those file URLs into Neovim `:edit`
+requests, including files opened while the application is already running.
+
+GPUI also normalizes native file drops from macOS, Windows, X11, and Wayland
+into `ExternalPaths`. nvim-gpui handles those drops at the workspace boundary:
+embedded sessions pass files and directories to Neovim's structured `:edit`
+request, while remote sessions show a local-path warning and do not forward
+the paths over RPC. The editor suppresses the synthetic mouse events GPUI uses
+while dispatching an external drop, so a drop cannot become an accidental
+Neovim mouse press, release, or movement.
+
+The Windows installer registers the `nvim-gpui` ProgID under the wildcard
+`OpenWithProgids` key. This adds nvim-gpui to Explorer's Open With menu for any
+file without replacing an existing default association; the portable ZIP does
+not install that registry entry. The installer also offers to add its install
+directory to the current user's PATH, which makes both `nvim-gpui` and `gpvim`
+available from new terminals. Because the installer is per-user, it does not
+modify the machine-wide PATH.
 
 ## Debugging
 

@@ -168,7 +168,10 @@ if (-not (Test-Path -LiteralPath $sourceDir)) {
 
 Push-Location $sourceDir
 try {
-    Invoke-Native 'git.exe' @('fetch', '--tags', 'origin')
+    # The runtime manifest pins an immutable commit, so tags are not needed.
+    # Avoid fetching mutable upstream tags such as `latest`, which can move
+    # and cause Git to reject an otherwise harmless cache refresh.
+    Invoke-Native 'git.exe' @('fetch', '--no-tags', 'origin')
     Invoke-Native 'git.exe' @('checkout', '--detach', $sourceRevision)
     Invoke-Native 'git.exe' @('submodule', 'sync', '--recursive')
     Invoke-Native 'git.exe' @('submodule', 'update', '--init', '--recursive')
