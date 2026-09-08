@@ -251,6 +251,9 @@ jobs:
           $env:NVIM_GPUI_WINDOWS_INSTALLER_OUTPUT = $installerDir
 
           just pack-windows
+          if ($LASTEXITCODE -ne 0) {
+            throw "just pack-windows failed with exit code $LASTEXITCODE"
+          }
 
           $zip = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64.zip"
           if (Test-Path $zip) {

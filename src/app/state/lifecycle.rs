@@ -167,7 +167,7 @@ impl NvimGpui {
             return;
         }
 
-        let _ = cx.spawn(async move |_weak, _cx| {
+        drop(cx.spawn(async move |_weak, _cx| {
             for request in requests {
                 match request.recv().await {
                     Ok(Ok(_)) => {}
@@ -185,7 +185,7 @@ impl NvimGpui {
                     }
                 }
             }
-        });
+        }));
     }
 
     fn show_remote_file_drop_notice(&mut self, cx: &mut Context<Self>) {
