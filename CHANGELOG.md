@@ -2,6 +2,13 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.6.2] - 2026-09-08
+
+### Fixed
+
+- Inline IME preedit text now shifts buffer and virtual text to the right
+  instead of covering it.
+
 ## [0.6.1] - 2026-09-08
 
 ### Added

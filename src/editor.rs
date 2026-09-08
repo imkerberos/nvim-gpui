@@ -219,12 +219,16 @@ impl NvimGpui {
     fn system_ime_composition(&self) -> Option<grid::ImeComposition> {
         let marked_range = self.system_ime.marked_range_utf8()?;
         let cursor = self.ime_cursor_position()?;
-        (!self.system_ime.is_empty()).then(|| grid::ImeComposition {
-            row: cursor.row,
-            col: cursor.col,
-            text: self.system_ime.text().to_owned().into(),
-            marked_range,
-            selected_range: self.system_ime.selected_range_utf8(),
+        (!self.system_ime.is_empty()).then(|| {
+            let text = self.system_ime.text().to_owned();
+            grid::ImeComposition {
+                row: cursor.row,
+                col: cursor.col,
+                grid_width: self.display_options.text_cell_width(&text).max(1),
+                text: text.into(),
+                marked_range,
+                selected_range: self.system_ime.selected_range_utf8(),
+            }
         })
     }
 
@@ -240,6 +244,7 @@ impl NvimGpui {
         Some(grid::ImeComposition {
             row: cursor.row,
             col: cursor.col,
+            grid_width: self.display_options.text_cell_width(&text).max(1),
             text: text.into(),
             marked_range: 0..text_len,
             selected_range: cursor_pos..cursor_pos,
@@ -936,8 +941,10 @@ impl NvimGpui {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.linespace);
-        self.compositor_frame()
-            .hit_test(position, cell_width, line_height)
+        let target = self
+            .compositor_frame()
+            .hit_test(position, cell_width, line_height);
+        self.map_mouse_target_through_ime(target)
     }
 
     fn mouse_target_for_grid(
@@ -949,8 +956,39 @@ impl NvimGpui {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.linespace);
-        self.compositor_frame()
-            .target_for_grid(grid_id, position, cell_width, line_height)
+        let target =
+            self.compositor_frame()
+                .target_for_grid(grid_id, position, cell_width, line_height);
+        self.map_mouse_target_through_ime(target)
+    }
+
+    fn map_mouse_target_through_ime(
+        &self,
+        target: Option<compositor::MouseTarget>,
+    ) -> Option<compositor::MouseTarget> {
+        let mut target = target?;
+        let Some(composition_grid) = self.composition_grid() else {
+            return Some(target);
+        };
+        let Some(composition) = self.active_ime_composition() else {
+            return Some(target);
+        };
+        let composition_row = u64::try_from(composition.row).unwrap_or(u64::MAX);
+        if target.grid_id != composition_grid || target.row != composition_row {
+            return Some(target);
+        }
+
+        let composition_col = u64::try_from(composition.col).unwrap_or(u64::MAX);
+        let composition_width = u64::try_from(composition.grid_width).unwrap_or(u64::MAX);
+        let gap_end = composition_col.saturating_add(composition_width);
+        if target.col >= gap_end {
+            target.col = target.col.saturating_sub(composition_width);
+        } else if target.col >= composition_col {
+            // A click inside the visual gap still means the Neovim cursor
+            // position at which the composition is anchored.
+            target.col = composition_col;
+        }
+        Some(target)
     }
 
     fn send_mouse(

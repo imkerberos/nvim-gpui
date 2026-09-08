@@ -3,8 +3,8 @@ use super::*;
 
 struct PendingText {
     row: usize,
-    grid_start: usize,
-    grid_end: usize,
+    render_start: usize,
+    render_end: usize,
     text: String,
     runs: Vec<StyledTextRun>,
     // A Nerd/wide cell must remain a shaping boundary on both sides. Its
@@ -23,9 +23,30 @@ struct PaintedText {
 struct ImePaintedText {
     row: usize,
     col: usize,
-    cell_end: usize,
+    grid_width: usize,
     line: ShapedLine,
     in_viewport: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImeGap {
+    row: usize,
+    col: usize,
+    width: usize,
+}
+
+impl ImeGap {
+    fn shifted_column(self, row: usize, column: usize) -> usize {
+        if row == self.row && column >= self.col {
+            column.saturating_add(self.width)
+        } else {
+            column
+        }
+    }
+
+    fn end(self) -> usize {
+        self.col.saturating_add(self.width)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,6 +452,7 @@ impl Element for GridElement {
         let mut resolved_highlights = HashMap::new();
         let mut has_blinking_text = false;
         let mut backgrounds = Vec::new();
+        let mut ime_gap_backgrounds = Vec::new();
         let mut overlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
@@ -498,26 +520,29 @@ impl Element for GridElement {
                 .shaping_cache
                 .borrow_mut()
                 .shape_line(window, text, runs);
-            let cell_len = ((f32::from(line.width) / f32::from(cell_width)).ceil() as usize).max(1);
-
             Some(ImePaintedText {
                 row: composition.row,
                 col: composition.col,
-                cell_end: composition.col.saturating_add(cell_len),
+                grid_width: composition.grid_width.max(1),
                 line,
                 in_viewport: composition.col < model.width()
                     && self.cell_is_in_viewport(composition.row, composition.col),
             })
         });
-        let ime_span = ime_paint
-            .as_ref()
-            .map(|ime| (ime.row, ime.col, ime.cell_end));
+        let ime_gap = ime_paint.as_ref().map(|ime| ImeGap {
+            row: ime.row,
+            col: ime.col,
+            width: ime.grid_width,
+        });
+        let mut ime_gap_background_covered = ime_gap
+            .map(|gap| vec![false; gap.width])
+            .unwrap_or_default();
 
         let mut paint_cell = |cell: VisualCell| {
-            let ime_overlaps = ime_span.is_some_and(|(row, start, end)| {
-                cell.row == row && cell.grid_start < end && start < cell.grid_start + cell.grid_len
-            });
-            let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
+            let render_start = ime_gap
+                .map(|gap| gap.shifted_column(cell.row, cell.grid_start))
+                .unwrap_or(cell.grid_start);
+            let in_viewport = self.cell_is_in_viewport(cell.row, render_start);
             let resolved = resolved_highlights
                 .entry(cell.highlight)
                 .or_insert_with(|| {
@@ -529,8 +554,7 @@ impl Element for GridElement {
             if attrs.blink {
                 has_blinking_text = true;
             }
-            let style = if ime_overlaps
-                || cell.text.is_empty()
+            let style = if cell.text.is_empty()
                 || is_kitty_placeholder(&cell.text)
                 || attrs.conceal
                 || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
@@ -572,9 +596,9 @@ impl Element for GridElement {
                 })
             };
             let origin = point(
-                bounds.origin.x + cell_width * cell.grid_start,
+                bounds.origin.x + cell_width * render_start,
                 bounds.origin.y + self.line_height * cell.row,
-            ) + self.offset_for_cell(cell.row, cell.grid_start);
+            ) + self.offset_for_cell(cell.row, render_start);
             let cell_bounds =
                 Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
             let overline = attrs.overline.then(|| {
@@ -598,14 +622,14 @@ impl Element for GridElement {
                         pending.mergeable
                             && pending.in_viewport == in_viewport
                             && pending.row == cell.row
-                            && pending.grid_end == cell.grid_start
+                            && pending.render_end == render_start
                     });
                 if can_merge {
                     let pending = pending_text
                         .as_mut()
                         .expect("a mergeable cell must have pending text");
                     pending.text.push_str(&cell.text);
-                    pending.grid_end = cell.grid_start + cell.grid_len;
+                    pending.render_end = render_start + cell.grid_len;
                     let text_len = cell.text.len();
                     match pending.runs.last_mut() {
                         Some(last) if last.style == style => last.len += text_len,
@@ -620,8 +644,8 @@ impl Element for GridElement {
                     }
                     pending_text = Some(PendingText {
                         row: cell.row,
-                        grid_start: cell.grid_start,
-                        grid_end: cell.grid_start + cell.grid_len,
+                        render_start,
+                        render_end: render_start + cell.grid_len,
                         text: cell.text.to_string(),
                         runs: vec![StyledTextRun {
                             len: cell.text.len(),
@@ -642,11 +666,38 @@ impl Element for GridElement {
             // advance.
             if let Some(background) = background {
                 push_background(&mut backgrounds, cell_bounds, background, in_viewport);
-            }
-            if !ime_overlaps {
-                if let Some(overline) = overline {
-                    overlines.push((overline.0, overline.1, in_viewport));
+                if let Some(gap) = ime_gap {
+                    let cell_end = cell.grid_start.saturating_add(cell.grid_len);
+                    let gap_start = cell.grid_start.max(gap.col);
+                    let gap_end = cell_end.min(gap.end());
+                    if cell.row == gap.row && gap_start < gap_end {
+                        let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
+                        let gap_origin = point(
+                            bounds.origin.x + cell_width * gap_start,
+                            bounds.origin.y + self.line_height * cell.row,
+                        ) + self.offset_for_cell(cell.row, gap_start);
+                        let gap_bounds = Bounds::new(
+                            gap_origin,
+                            size(cell_width * (gap_end - gap_start), self.line_height),
+                        );
+                        push_background(
+                            &mut ime_gap_backgrounds,
+                            gap_bounds,
+                            background,
+                            gap_in_viewport,
+                        );
+                        for column in gap_start..gap_end {
+                            if let Some(covered) =
+                                ime_gap_background_covered.get_mut(column.saturating_sub(gap.col))
+                            {
+                                *covered = true;
+                            }
+                        }
+                    }
                 }
+            }
+            if let Some(overline) = overline {
+                overlines.push((overline.0, overline.1, in_viewport));
             }
         };
         builder.for_each_cell_in_range(
@@ -656,6 +707,33 @@ impl Element for GridElement {
             &mut paint_cell,
         );
 
+        if let Some(gap) = ime_gap {
+            // Usually every gap cell gets its background from the original
+            // grid cell that was moved to the right. At the end of a line, or
+            // while a clipped render range is active, there may be no source
+            // cell; use the normal grid background for that uncovered part.
+            let fallback_background = ime_style
+                .background
+                .unwrap_or_else(|| rgb(DEFAULT_BACKGROUND).into());
+            for (offset, covered) in ime_gap_background_covered.iter().enumerate() {
+                if *covered {
+                    continue;
+                }
+                let column = gap.col.saturating_add(offset);
+                let in_viewport = self.cell_is_in_viewport(gap.row, column);
+                let origin = point(
+                    bounds.origin.x + cell_width * column,
+                    bounds.origin.y + self.line_height * gap.row,
+                ) + self.offset_for_cell(gap.row, column);
+                ime_gap_backgrounds.push((
+                    Bounds::new(origin, size(cell_width, self.line_height)),
+                    fallback_background,
+                    in_viewport,
+                ));
+            }
+        }
+        backgrounds.extend(ime_gap_backgrounds);
+
         if let Some(pending) = pending_text {
             text_groups.push(pending);
         }
@@ -664,9 +742,9 @@ impl Element for GridElement {
             .into_iter()
             .map(|pending| {
                 let origin = point(
-                    bounds.origin.x + cell_width * pending.grid_start,
+                    bounds.origin.x + cell_width * pending.render_start,
                     bounds.origin.y + self.line_height * pending.row,
-                ) + self.offset_for_cell(pending.row, pending.grid_start);
+                ) + self.offset_for_cell(pending.row, pending.render_start);
                 let text: SharedString = pending.text.into();
                 let line = self
                     .shaping_cache
@@ -764,6 +842,32 @@ impl Element for GridElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ime_gap_shifts_only_the_composition_row_after_its_anchor() {
+        let gap = ImeGap {
+            row: 2,
+            col: 4,
+            width: 3,
+        };
+
+        assert_eq!(gap.shifted_column(1, 7), 7);
+        assert_eq!(gap.shifted_column(2, 3), 3);
+        assert_eq!(gap.shifted_column(2, 4), 7);
+        assert_eq!(gap.shifted_column(2, 9), 12);
+    }
+
+    #[test]
+    fn ime_gap_end_saturates_for_large_compositions() {
+        let gap = ImeGap {
+            row: 0,
+            col: usize::MAX - 1,
+            width: 4,
+        };
+
+        assert_eq!(gap.end(), usize::MAX);
+        assert_eq!(gap.shifted_column(0, usize::MAX), usize::MAX);
+    }
 
     #[test]
     fn viewport_margins_keep_outer_cells_fixed() {

@@ -46,6 +46,12 @@ pub struct ImeComposition {
     pub row: usize,
     pub col: usize,
     pub text: SharedString,
+    /// Number of logical grid cells reserved for the composition.
+    ///
+    /// This is deliberately measured with Neovim-compatible display rules,
+    /// rather than from the shaped pixel width. The renderer uses it to
+    /// create a visual gap without changing Neovim's logical grid.
+    pub grid_width: usize,
     /// Byte range in `text` that is still marked by the IME.
     pub marked_range: Range<usize>,
     /// Byte range in `text` containing the IME caret/selection.
