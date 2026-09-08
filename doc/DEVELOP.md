@@ -911,7 +911,9 @@ embedded sessions pass files and directories to Neovim's structured `:edit`
 request, while remote sessions show a local-path warning and do not forward
 the paths over RPC. The editor suppresses the synthetic mouse events GPUI uses
 while dispatching an external drop, so a drop cannot become an accidental
-Neovim mouse press, release, or movement.
+Neovim mouse press, release, or movement. On Windows, the native drag feedback
+may show `+copy`; that is the platform's default drop effect and does not mean
+that nvim-gpui copies file contents.
 
 The Windows installer registers the `nvim-gpui` ProgID under the wildcard
 `OpenWithProgids` key. This adds nvim-gpui to Explorer's Open With menu for any

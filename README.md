@@ -117,7 +117,7 @@ command-line helper where it is available:
 gpvim
 ```
 
-Open a file or pass arguments to Neovim on macOS and Debian/Ubuntu:
+Open a file or pass arguments to Neovim from a terminal:
 
 ```sh
 gpvim README.md
@@ -125,8 +125,8 @@ gpvim --clean README.md
 gpvimdiff file1 file2
 ```
 
-`gpvimdiff` opens Neovim in diff mode. To open the installed application
-directly:
+`gpvimdiff` opens Neovim in diff mode. On macOS, open the installed application
+directly with:
 
 ```sh
 open -a nvim-gpui
