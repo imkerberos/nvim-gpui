@@ -143,6 +143,14 @@ pub enum NvimEvent {
         left: u64,
         right: u64,
     },
+    WinExtmark {
+        grid: u64,
+        win: Vec<u8>,
+        ns_id: u64,
+        mark_id: u64,
+        row: i64,
+        col: i64,
+    },
     MsgSetPos {
         grid: u64,
         row: u64,

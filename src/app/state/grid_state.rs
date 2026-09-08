@@ -1,6 +1,48 @@
 use super::*;
 
 impl NvimGpui {
+    pub(crate) fn visible_multicursor_positions(&self) -> Vec<MultiCursorPosition> {
+        let tracking_ns = self
+            .multicursor_namespace_ids
+            .get("nvim.multicursor")
+            .copied();
+        let display_ns = self
+            .multicursor_namespace_ids
+            .get("nvim.multicursor.cursor")
+            .copied();
+        let display_grids = display_ns
+            .into_iter()
+            .flat_map(|ns_id| {
+                self.multicursor_positions
+                    .values()
+                    .filter(move |position| position.key.ns_id == ns_id)
+                    .map(|position| position.key.grid)
+            })
+            .collect::<HashSet<_>>();
+
+        self.multicursor_positions
+            .values()
+            .copied()
+            .filter(|position| {
+                self.grid_is_visible(position.key.grid)
+                    && match (tracking_ns, display_ns) {
+                        (_, Some(ns_id)) if position.key.ns_id == ns_id => true,
+                        (Some(ns_id), _) if position.key.ns_id == ns_id => {
+                            !display_grids.contains(&position.key.grid)
+                        }
+                        _ => false,
+                    }
+            })
+            .collect()
+    }
+
+    pub(crate) fn pending_multicursor_positions_mut(
+        &mut self,
+    ) -> &mut HashMap<MultiCursorKey, MultiCursorPosition> {
+        self.pending_multicursor_positions
+            .get_or_insert_with(|| self.multicursor_positions.clone())
+    }
+
     pub(crate) fn pending_grid_mut(&mut self) -> &mut grid::GridModel {
         let pending = self
             .pending_grid
@@ -81,6 +123,7 @@ impl NvimGpui {
     pub(crate) fn discard_pending_redraw(&mut self) {
         self.pending_grid = None;
         self.pending_other_grids.clear();
+        self.pending_multicursor_positions = None;
         self.pending_grid_placements.clear();
         self.pending_destroyed_grids.clear();
         self.pending_cursor_grid = None;
@@ -218,6 +261,11 @@ impl NvimGpui {
             self.other_grids.remove(&grid);
             self.grid_placements.remove(&grid);
             self.viewport_animations.remove(&grid);
+            self.multicursor_positions.retain(|key, _| key.grid != grid);
+        }
+
+        if let Some(positions) = self.pending_multicursor_positions.take() {
+            self.multicursor_positions = positions;
         }
 
         if let Some(grid) = self.pending_cursor_grid.take() {

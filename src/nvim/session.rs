@@ -473,6 +473,7 @@ fn is_known_redraw_event(name: &str) -> bool {
             | "win_float_pos"
             | "win_viewport"
             | "win_viewport_margins"
+            | "win_extmark"
             | "msg_set_pos"
             | "win_external_pos"
             | "win_hide"
@@ -624,6 +625,7 @@ fn parse_redraw_payload(
             expect_arg_count(args, 6, 6, name)?;
             parse_win_viewport_margins(args)
         }
+        "win_extmark" => parse_win_extmark(args),
         "msg_set_pos" => protocol.parse_msg_set_pos(args),
         "win_external_pos" => {
             expect_arg_count(args, 2, 2, name)?;

@@ -264,6 +264,23 @@ impl ViewportAnimation {
     }
 }
 
+/// Identity of a Neovim extmark that is being presented as a multicursor.
+/// The namespace and mark identifiers are session-local; the grid keeps the
+/// screen coordinate local to the window that emitted the event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct MultiCursorKey {
+    pub(crate) grid: u64,
+    pub(crate) ns_id: u64,
+    pub(crate) mark_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MultiCursorPosition {
+    pub(crate) key: MultiCursorKey,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+}
+
 impl Default for GridPlacement {
     fn default() -> Self {
         Self {
@@ -333,6 +350,13 @@ pub(crate) struct NvimGpui {
     pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
     pub(crate) cursor_animation: Option<grid::CursorAnimation>,
+    pub(crate) multicursor_positions: HashMap<MultiCursorKey, MultiCursorPosition>,
+    pub(crate) pending_multicursor_positions: Option<HashMap<MultiCursorKey, MultiCursorPosition>>,
+    pub(crate) unresolved_multicursor_positions: HashMap<MultiCursorKey, MultiCursorPosition>,
+    pub(crate) multicursor_namespace_ids: HashMap<String, u64>,
+    pub(crate) multicursor_namespace_task: Option<Task<()>>,
+    pub(crate) multicursor_reconcile_task: Option<Task<()>>,
+    pub(crate) multicursor_reconcile_dirty: bool,
     pub(crate) other_grids: HashMap<u64, Rc<grid::GridModel>>,
     pub(crate) pending_other_grids: HashMap<u64, Rc<grid::GridModel>>,
     pub(crate) grid_placements: HashMap<u64, GridPlacement>,
@@ -456,6 +480,13 @@ impl Default for NvimGpui {
             resolved_grid_wide_font: None,
             shaping_cache: grid::ShapedLineCache::shared(),
             cursor_animation: None,
+            multicursor_positions: HashMap::new(),
+            pending_multicursor_positions: None,
+            unresolved_multicursor_positions: HashMap::new(),
+            multicursor_namespace_ids: HashMap::new(),
+            multicursor_namespace_task: None,
+            multicursor_reconcile_task: None,
+            multicursor_reconcile_dirty: false,
             other_grids: HashMap::new(),
             pending_other_grids: HashMap::new(),
             grid_placements: HashMap::new(),

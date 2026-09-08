@@ -33,6 +33,10 @@ impl NvimGpui {
             return;
         }
 
+        if self.pending_multicursor_positions.is_none() {
+            self.pending_multicursor_positions = Some(self.multicursor_positions.clone());
+        }
+
         self.pending_redraw = Some(PendingRedrawState {
             ui_options: self.ui_options.clone(),
             display_options: self.display_options,

@@ -394,6 +394,23 @@ pub(super) fn parse_win_viewport_margins(args: &[Value]) -> Result<NvimEvent, St
     })
 }
 
+pub(super) fn parse_win_extmark(args: &[Value]) -> Result<NvimEvent, String> {
+    if args.len() != 6 {
+        return Err(format!(
+            "win_extmark expects 6 arguments, got {}",
+            args.len()
+        ));
+    }
+    Ok(NvimEvent::WinExtmark {
+        grid: parse_u64_value(&args[0], "win_extmark grid")?,
+        win: parse_window_id(&args[1])?,
+        ns_id: parse_u64_value(&args[2], "win_extmark namespace")?,
+        mark_id: parse_u64_value(&args[3], "win_extmark mark")?,
+        row: parse_i64_value(&args[4], "win_extmark row")?,
+        col: parse_i64_value(&args[5], "win_extmark column")?,
+    })
+}
+
 pub(super) fn parse_u64_value(value: &Value, name: &str) -> Result<u64, String> {
     value.as_u64().ok_or_else(|| format!("{name} is invalid"))
 }

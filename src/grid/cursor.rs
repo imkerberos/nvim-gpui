@@ -24,6 +24,7 @@ pub struct CursorElement {
     height: usize,
     cursor_mode: CursorModeInfo,
     blink_started_at: Instant,
+    rounded_corners: bool,
 }
 
 impl CursorElement {
@@ -45,6 +46,7 @@ impl CursorElement {
             height: 0,
             cursor_mode,
             blink_started_at: Instant::now(),
+            rounded_corners: true,
         }
     }
 
@@ -82,6 +84,11 @@ impl CursorElement {
 
     pub(crate) fn with_blink_started_at(mut self, started_at: Instant) -> Self {
         self.blink_started_at = started_at;
+        self
+    }
+
+    pub(crate) fn with_rounded_corners(mut self, rounded: bool) -> Self {
+        self.rounded_corners = rounded;
         self
     }
 }
@@ -227,6 +234,11 @@ impl Element for CursorElement {
                     .min(f32::from(trail.bounds.size.height))
                     .mul_add(0.18, 0.0))
                 .clamp(2.0, 6.0));
+                let radius = if self.rounded_corners {
+                    radius
+                } else {
+                    px(0.0)
+                };
                 window.paint_quad(
                     fill(trail.bounds, self.color.opacity(trail.opacity))
                         .corner_radii(Corners::all(radius)),
@@ -303,6 +315,24 @@ pub(crate) fn cursor_colors_with_context(
         }
         None => (default_background, rgb(BLUE_FOREGROUND).into()),
     }
+}
+
+pub(crate) fn multicursor_colors_with_context(
+    model: &GridModel,
+    position: CursorVisualPosition,
+    context: HighlightContext,
+) -> (Hsla, Hsla) {
+    let highlight = model
+        .rows()
+        .get(position.row)
+        .and_then(|row| row.cells().get(position.col))
+        .map(|cell| cell.highlight)
+        .unwrap_or(DEFAULT_HIGHLIGHT);
+    let style = resolve_highlight(model, highlight, context);
+    let background = style
+        .background
+        .unwrap_or_else(|| rgb(DEFAULT_BACKGROUND).into());
+    (style.foreground, background)
 }
 
 fn animated_cursor_bounds(

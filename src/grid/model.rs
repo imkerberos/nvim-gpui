@@ -524,13 +524,13 @@ impl GridModel {
 
     pub fn cursor_visual_position(&self) -> Option<CursorVisualPosition> {
         let cursor = self.cursor?;
-        let row = self.rows.get(cursor.row)?;
-        let (col, width) = cursor_geometry(row, cursor.col);
-        Some(CursorVisualPosition {
-            row: cursor.row,
-            col,
-            width,
-        })
+        self.visual_position_at(cursor.row, cursor.col)
+    }
+
+    pub fn visual_position_at(&self, row: usize, col: usize) -> Option<CursorVisualPosition> {
+        let grid_row = self.rows.get(row)?;
+        let (col, width) = cursor_geometry(grid_row, col);
+        Some(CursorVisualPosition { row, col, width })
     }
 
     pub fn set_highlight(&mut self, id: HighlightId, attrs: HighlightAttrs) {

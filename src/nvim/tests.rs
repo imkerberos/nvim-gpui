@@ -1356,6 +1356,38 @@ fn redraw_viewport_events_are_decoded() {
 }
 
 #[test]
+fn redraw_win_extmark_is_decoded() {
+    let (sender, receiver) = unbounded();
+    let params = Value::Array(vec![Value::Array(vec![
+        Value::from("win_extmark"),
+        Value::Array(vec![
+            Value::from(2),
+            Value::Ext(1, vec![205, 3, 232]),
+            Value::from(3),
+            Value::from(17),
+            Value::from(5),
+            Value::from(9),
+        ]),
+    ])]);
+
+    handle_notification("redraw", &params, &sender).expect("redraw should decode");
+
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("win_extmark should be available"),
+        NvimEvent::WinExtmark {
+            grid: 2,
+            win: vec![205, 3, 232],
+            ns_id: 3,
+            mark_id: 17,
+            row: 5,
+            col: 9,
+        }
+    );
+}
+
+#[test]
 fn redraw_msg_set_pos_is_decoded() {
     let (sender, receiver) = unbounded();
     let params = Value::Array(vec![Value::Array(vec![

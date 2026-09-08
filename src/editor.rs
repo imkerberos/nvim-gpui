@@ -587,6 +587,80 @@ impl NvimGpui {
             .child(element)
     }
 
+    fn multicursor_elements(
+        &self,
+        cell_width: Pixels,
+        line_height: Pixels,
+        gui_font: &GuiFontSpec,
+        gui_wide_font: &GuiFontSpec,
+        cursor_blink_started_at: Instant,
+    ) -> Vec<grid::CursorElement> {
+        let mut positions = self.visible_multicursor_positions();
+        positions.sort_by_key(|position| {
+            (
+                position.key.grid,
+                position.row,
+                position.col,
+                position.key.ns_id,
+                position.key.mark_id,
+            )
+        });
+
+        positions
+            .into_iter()
+            .filter_map(|position| {
+                let model = if position.key.grid == 1 {
+                    Rc::clone(&self.grid)
+                } else {
+                    self.other_grids.get(&position.key.grid).cloned()?
+                };
+                let local_position = model.visual_position_at(position.row, position.col)?;
+                let placement = self.grid_placement(position.key.grid);
+                let row = placement.row.checked_add(local_position.row as i64)?;
+                let col = placement.col.checked_add(local_position.col as i64)?;
+                if row < 0 || col < 0 {
+                    return None;
+                }
+                let screen_position = grid::CursorVisualPosition {
+                    row: row as usize,
+                    col: col as usize,
+                    width: local_position.width,
+                };
+                let context = self.highlight_context_for_layer(placement.kind);
+                let (foreground, background) =
+                    grid::multicursor_colors_with_context(&model, local_position, context);
+                let glyph_source = self.grid_element(
+                    Rc::clone(&model),
+                    GridRenderOptions {
+                        placement,
+                        width: model.width(),
+                        height: model.height(),
+                        cell_width,
+                        line_height,
+                        gui_font,
+                        gui_wide_font,
+                        cursor_blink_started_at,
+                        viewport_offset: px(0.0),
+                    },
+                );
+                Some(
+                    grid::CursorElement::new(
+                        screen_position,
+                        background,
+                        grid::CursorModeInfo::default(),
+                    )
+                    .with_local_position(local_position)
+                    .with_glyph_foreground(foreground)
+                    .with_glyph_source(Some(glyph_source))
+                    .with_metrics(cell_width, line_height)
+                    .with_grid_size(model.width(), model.height())
+                    .with_blink_started_at(cursor_blink_started_at)
+                    .with_rounded_corners(false),
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn viewport_rect(
         placement: GridPlacement,
         width: usize,
@@ -753,6 +827,17 @@ impl NvimGpui {
             )
         });
         let cursor_element = cursor_element.flatten();
+        let multicursor_elements = if grid_ready {
+            self.multicursor_elements(
+                cell_width,
+                line_height,
+                &gui_font,
+                &gui_wide_font,
+                cursor_blink_started_at,
+            )
+        } else {
+            Vec::new()
+        };
         let mut editor = div()
             .flex_1()
             .relative()
@@ -881,16 +966,20 @@ impl NvimGpui {
                 editor = editor.child(layer);
             }
 
-            if let Some(cursor_element) = cursor_element {
-                editor = editor.child(
-                    div()
-                        .absolute()
-                        .left(px(0.0))
-                        .top(px(0.0))
-                        .w_full()
-                        .h_full()
-                        .child(cursor_element),
-                );
+            if cursor_element.is_some() || !multicursor_elements.is_empty() {
+                let mut cursor_layer = div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w_full()
+                    .h_full();
+                for multicursor_element in multicursor_elements {
+                    cursor_layer = cursor_layer.child(multicursor_element);
+                }
+                if let Some(cursor_element) = cursor_element {
+                    cursor_layer = cursor_layer.child(cursor_element);
+                }
+                editor = editor.child(cursor_layer);
             }
 
             if let Some(rime_popup) =

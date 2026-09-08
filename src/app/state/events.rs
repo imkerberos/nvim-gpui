@@ -89,6 +89,7 @@ impl NvimGpui {
             }
             NvimEvent::GridDestroy { grid } => {
                 log::debug!(target: "nvim_gpui::state", "grid destroyed: grid={grid}");
+                self.clear_pending_multicursors_for_grid(grid);
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.grid_size = None;
@@ -233,6 +234,43 @@ impl NvimGpui {
                 });
                 self.set_grid_placement(grid, placement);
             }
+            NvimEvent::WinExtmark {
+                grid,
+                win: _,
+                ns_id,
+                mark_id,
+                row,
+                col,
+            } => {
+                let key = MultiCursorKey {
+                    grid,
+                    ns_id,
+                    mark_id,
+                };
+                let positions = &mut self.unresolved_multicursor_positions;
+                positions.remove(&key);
+
+                if row < 0 || col < 0 {
+                    self.pending_multicursor_positions_mut().remove(&key);
+                    return;
+                }
+
+                let position = MultiCursorPosition {
+                    key,
+                    row: row as usize,
+                    col: col as usize,
+                };
+                if self
+                    .multicursor_namespace_ids
+                    .values()
+                    .any(|known_ns_id| *known_ns_id == ns_id)
+                {
+                    self.pending_multicursor_positions_mut()
+                        .insert(key, position);
+                } else {
+                    self.unresolved_multicursor_positions.insert(key, position);
+                }
+            }
             NvimEvent::MsgSetPos {
                 grid,
                 row,
@@ -269,12 +307,14 @@ impl NvimGpui {
             }
             NvimEvent::WinHide { grid } => {
                 self.ime_coordinates_dirty = true;
+                self.clear_pending_multicursors_for_grid(grid);
                 let mut placement = self.grid_placement(grid);
                 placement.visible = false;
                 self.set_grid_placement(grid, placement);
             }
             NvimEvent::WinClose { grid } => {
                 self.ime_coordinates_dirty = true;
+                self.clear_pending_multicursors_for_grid(grid);
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.grid_size = None;
@@ -406,5 +446,12 @@ impl NvimGpui {
                 }
             }
         }
+    }
+
+    fn clear_pending_multicursors_for_grid(&mut self, grid: u64) {
+        self.pending_multicursor_positions_mut()
+            .retain(|key, _| key.grid != grid);
+        self.unresolved_multicursor_positions
+            .retain(|key, _| key.grid != grid);
     }
 }

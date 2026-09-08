@@ -2,6 +2,10 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.7.0] - Unreleased
+
+Changes for the next release will be documented here.
+
 ## [0.6.2] - 2026-09-08
 
 ### Fixed

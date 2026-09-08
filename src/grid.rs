@@ -26,6 +26,7 @@ mod visual;
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };
+pub(crate) use cursor::multicursor_colors_with_context;
 pub use cursor::CursorElement;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
