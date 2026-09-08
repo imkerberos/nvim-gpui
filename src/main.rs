@@ -12,6 +12,7 @@ mod logging;
 pub mod nvim;
 pub mod platform;
 pub mod settings;
+mod startup_diagnostics;
 pub(crate) mod widgets;
 
 use std::{env, ffi::OsString, path::PathBuf, time::Duration};

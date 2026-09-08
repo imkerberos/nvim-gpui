@@ -49,7 +49,9 @@ pub(crate) fn run(
     let (open_urls_tx, open_urls_rx) = async_channel::unbounded();
 
     log::info!(target: "nvim_gpui::startup", "starting GPUI application");
-    let application = Application::new().with_assets(AppAssets);
+    let application = crate::startup_diagnostics::run_with_diagnostics(|| {
+        Application::new().with_assets(AppAssets)
+    });
     application.on_reopen(move |cx| {
         let Some(view) = reopen_view_for_handler.borrow().clone() else {
             return;
@@ -73,7 +75,8 @@ pub(crate) fn run(
             log::info!(target: "nvim_gpui::startup", "received {} file-open URL(s)", count);
         }
     });
-    application.run(move |cx: &mut App| {
+    crate::startup_diagnostics::run_with_diagnostics(|| {
+        application.run(move |cx: &mut App| {
             let nerd_font_registered = match platform::register_bundled_fonts(cx) {
                 Ok(()) => true,
                 Err(error) => {
@@ -139,6 +142,7 @@ pub(crate) fn run(
             }
 
         cx.activate(true);
+        });
     });
 }
 
