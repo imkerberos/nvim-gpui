@@ -46,6 +46,8 @@ jobs:
 
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
 
       - name: Cache Cargo and Rime build data
         uses: actions/cache@v4
@@ -123,6 +125,8 @@ jobs:
 
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
 
       - name: Cache Cargo downloads
         uses: actions/cache@v4
