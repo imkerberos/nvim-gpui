@@ -2,9 +2,28 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2026-09-09
 
-Changes for the next release will be documented here.
+### Added
+
+- Neovim 0.13.x multicursor overlay support through `win_extmark`, including
+  namespace discovery and stale cursor cleanup.
+- A `--health-check` command that reports operating-system, display, graphics,
+  and GPUI renderer information.
+- Windows custom titlebar icons for minimize, maximize, restore, and close.
+
+### Improved
+
+- Startup diagnostics now provide clearer graphics-backend and display errors,
+  including Vulkan, OpenGL, and platform GPU probes.
+- Invalid nvim-gpui options are rejected before Neovim starts. Neovim options
+  can be passed explicitly after `--`.
+
+### Fixed
+
+- Windows custom decoration maximize/restore behavior and titlebar button
+  hover states.
+- Neovim startup failures no longer leave an unusable empty GPUI window open.
 
 ## [0.6.2] - 2026-09-08
 
