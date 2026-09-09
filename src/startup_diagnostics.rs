@@ -48,7 +48,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
         .unwrap_or("non-string panic payload")
 }
 
-fn report_panic(payload: &(dyn Any + Send)) {
+pub(crate) fn report_panic(payload: &(dyn Any + Send)) {
     let message = panic_message(payload);
     let failure_kind = classify_failure(message);
 

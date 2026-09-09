@@ -1,8 +1,5 @@
-use gpui::App;
+use gpui::{App, Window};
 use std::borrow::Cow;
-
-#[cfg(target_os = "windows")]
-use gpui::Window;
 
 pub const SYMBOLS_NERD_FONT_FAMILY: &str = "Symbols Nerd Font";
 pub const SYMBOLS_NERD_FONT_MONO_FAMILY: &str = "Symbols Nerd Font Mono";
@@ -110,6 +107,35 @@ pub fn activate_existing_instance() -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn install_dock_icon() -> Result<(), String> {
     Ok(())
+}
+
+pub fn toggle_window_zoom(window: &Window) {
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::RawWindowHandle;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindowAsync, SW_MAXIMIZE, SW_RESTORE};
+
+        let Ok(window_handle) = raw_window_handle::HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::Win32(window_handle) = window_handle.as_raw() else {
+            return;
+        };
+
+        let hwnd = HWND(window_handle.hwnd.get() as _);
+        let command = if window.is_maximized() {
+            SW_RESTORE
+        } else {
+            SW_MAXIMIZE
+        };
+        unsafe {
+            let _ = ShowWindowAsync(hwnd, command);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    window.zoom_window();
 }
 
 #[cfg(target_os = "windows")]

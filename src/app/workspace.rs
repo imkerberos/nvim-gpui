@@ -39,6 +39,7 @@ impl Render for NvimGpui {
                     menu_open: self.rime_menu_open,
                     menu_message: self.rime_menu_message.clone(),
                 }),
+                window.is_maximized(),
             ));
         }
 

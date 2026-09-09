@@ -5,7 +5,7 @@ pub(crate) fn run(
     options: CliOptions,
     app_settings: settings::Settings,
     logger: Option<flexi_logger::LoggerHandle>,
-) {
+) -> bool {
     let startup_maximized = app_settings.startup_maximized;
     log::debug!(
         target: "nvim_gpui::startup",
@@ -41,6 +41,7 @@ pub(crate) fn run(
     if let Err(error) = &nvim {
         log::error!(target: "nvim_gpui::startup", "Neovim initialization failed: {error}");
         eprintln!("[nvim-gpui] Neovim initialization failed: {error}");
+        return false;
     }
     let show_debug_window = options.debug_window;
     let initial_theme = nvim.as_ref().ok().and_then(NvimProcess::startup_theme);
@@ -144,6 +145,7 @@ pub(crate) fn run(
         cx.activate(true);
         });
     });
+    true
 }
 
 fn open_main_window(

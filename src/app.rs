@@ -49,6 +49,10 @@ pub(crate) const MIN_WINDOW_HEIGHT: f32 = 44.0;
 pub(crate) const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;
 pub(crate) const DEFAULT_WINDOW_TITLE: &str = "gpvim";
 pub(crate) const LOGO_ASSET: &str = "neovim-gpui.png";
+pub(crate) const WINDOW_CONTROL_MINIMIZE_ASSET: &str = "window-controls/minimize.svg";
+pub(crate) const WINDOW_CONTROL_MAXIMIZE_ASSET: &str = "window-controls/maximize.svg";
+pub(crate) const WINDOW_CONTROL_RESTORE_ASSET: &str = "window-controls/restore.svg";
+pub(crate) const WINDOW_CONTROL_CLOSE_ASSET: &str = "window-controls/close.svg";
 pub(crate) const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
 pub(crate) const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
 pub(crate) const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
@@ -57,12 +61,23 @@ struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        if path == LOGO_ASSET {
-            return Ok(Some(Cow::Borrowed(include_bytes!(
-                "../assets/icons/neovim-gpui.png"
-            ))));
-        }
-        Ok(None)
+        let asset: &'static [u8] = match path {
+            LOGO_ASSET => include_bytes!("../assets/icons/neovim-gpui.png"),
+            WINDOW_CONTROL_MINIMIZE_ASSET => {
+                include_bytes!("../assets/icons/window-controls/minimize.svg")
+            }
+            WINDOW_CONTROL_MAXIMIZE_ASSET => {
+                include_bytes!("../assets/icons/window-controls/maximize.svg")
+            }
+            WINDOW_CONTROL_RESTORE_ASSET => {
+                include_bytes!("../assets/icons/window-controls/restore.svg")
+            }
+            WINDOW_CONTROL_CLOSE_ASSET => {
+                include_bytes!("../assets/icons/window-controls/close.svg")
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Cow::Borrowed(asset)))
     }
 
     fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {

@@ -5,6 +5,8 @@ use crate::{
 };
 use gpui::deferred;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+use gpui::svg;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use gpui::Window;
 #[cfg(target_os = "linux")]
 use gpui::{CursorStyle, Decorations, Div, ResizeEdge};
@@ -56,6 +58,7 @@ pub(crate) fn themed_titlebar(
     foreground: u32,
     source: Option<Entity<NvimGpui>>,
     rime_state: Option<RimeTitlebarState>,
+    _is_maximized: bool,
 ) -> impl IntoElement {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     let close_source = source.clone();
@@ -151,6 +154,7 @@ pub(crate) fn themed_titlebar(
             WindowControlArea::Min,
             background,
             foreground,
+            _is_maximized,
             |window, _cx| window.minimize_window(),
         ))
         .child(window_control_button(
@@ -158,13 +162,15 @@ pub(crate) fn themed_titlebar(
             WindowControlArea::Max,
             background,
             foreground,
-            |window, _cx| window.zoom_window(),
+            _is_maximized,
+            |window, _cx| crate::platform::toggle_window_zoom(window),
         ))
         .child(window_control_button(
             "×",
             WindowControlArea::Close,
             background,
             foreground,
+            _is_maximized,
             move |window, cx| {
                 let should_close = close_source
                     .as_ref()
@@ -186,12 +192,13 @@ pub(crate) fn themed_titlebar(
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn window_control_button(
     label: &'static str,
-    area: WindowControlArea,
+    _area: WindowControlArea,
     background: u32,
     foreground: u32,
+    is_maximized: bool,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
+    let button = div()
         .id(label)
         .w(px(46.0))
         .h_full()
@@ -200,16 +207,43 @@ fn window_control_button(
         .justify_center()
         .bg(rgb(background))
         .text_color(rgb(foreground))
-        .window_control_area(area)
+        .hover(|style| {
+            let background = if cfg!(target_os = "windows") && label == "×" {
+                0xc42b1c
+            } else {
+                SURFACE_BRIGHT
+            };
+            style.bg(rgb(background)).text_color(rgb(foreground))
+        })
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             window.prevent_default();
             action(window, cx);
-        })
-        .child(
-            div()
-                .text_size(px(if label == "×" { 20.0 } else { 16.0 }))
-                .child(label),
-        )
+        });
+
+    // On Windows these are ordinary client-side controls. Marking the
+    // maximize button as HTMAXBUTTON lets Windows show Snap Layouts and
+    // bypasses the custom GPUI hover/click behavior.
+    #[cfg(target_os = "linux")]
+    let button = button.window_control_area(_area);
+
+    button.child(
+        svg()
+            .path(window_control_asset(label, is_maximized))
+            .w(px(16.0))
+            .h(px(16.0))
+            .text_color(rgb(foreground)),
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn window_control_asset(label: &'static str, is_maximized: bool) -> &'static str {
+    match label {
+        "—" => WINDOW_CONTROL_MINIMIZE_ASSET,
+        "□" if is_maximized => WINDOW_CONTROL_RESTORE_ASSET,
+        "□" => WINDOW_CONTROL_MAXIMIZE_ASSET,
+        "×" => WINDOW_CONTROL_CLOSE_ASSET,
+        _ => WINDOW_CONTROL_CLOSE_ASSET,
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -16,7 +16,7 @@ impl DebugWindow {
 }
 
 impl Render for DebugWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.source.read(cx);
         let guifont = view
             .resolved_grid_font
@@ -96,6 +96,7 @@ impl Render for DebugWindow {
                 TEXT,
                 None,
                 None,
+                window.is_maximized(),
             ));
         }
         root.child(debug_content)

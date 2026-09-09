@@ -162,7 +162,7 @@ fn is_information_request(arguments: &[OsString]) -> bool {
     arguments.len() == 1
         && matches!(
             arguments[0].to_str(),
-            Some("--help") | Some("-h") | Some("--version") | Some("-V")
+            Some("--help") | Some("-h") | Some("--version") | Some("-V") | Some("--health-check")
         )
 }
 

@@ -1372,6 +1372,7 @@ impl Render for SettingsWindow {
                 TEXT,
                 None,
                 None,
+                window.is_maximized(),
             ));
         }
         root.child(content)

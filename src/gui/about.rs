@@ -9,7 +9,7 @@ const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 pub(crate) struct AboutWindow;
 
 impl Render for AboutWindow {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
             .size_full()
             .flex()
@@ -31,6 +31,7 @@ impl Render for AboutWindow {
                     TEXT,
                     None,
                     None,
+                    window.is_maximized(),
                 ))
                 .child(
                     div()
