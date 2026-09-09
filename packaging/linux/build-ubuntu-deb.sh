@@ -121,8 +121,9 @@ install -m 644 "$repo_root/CHANGELOG.md" "$package_root/usr/share/doc/nvim-gpui/
 
 desktop-file-validate "$package_root/usr/share/applications/nvim-gpui.desktop"
 
-# librime is loaded with libloading, so dpkg-shlibdeps cannot discover it from
-# the ELF files. Keep it, its data, and the ordinary Rime schema explicit.
+# GPUI can load parts of its Linux platform stack dynamically, so
+# dpkg-shlibdeps cannot discover every runtime library from the ELF files.
+# Keep the GUI, font, librime, and ordinary Rime schema packages explicit.
 mkdir -p "$temporary_dir/debian"
 cat > "$temporary_dir/debian/control" <<EOF
 Source: nvim-gpui
@@ -151,7 +152,19 @@ Section: editors
 Priority: optional
 Architecture: $deb_arch
 Maintainer: nvim-gpui contributors
-Depends: $shlib_depends, librime1t64 | librime1, librime-data, rime-data-luna-pinyin
+Depends: $shlib_depends,
+ libegl1,
+ libfontconfig1,
+ libfreetype6,
+ libgl1,
+ libwayland-client0,
+ libx11-6,
+ libxcursor1,
+ libxi6,
+ libxrandr2,
+ librime1t64 | librime1,
+ librime-data,
+ rime-data-luna-pinyin
 Suggests: neovim (>= 0.10.0), ibus, ibus-libpinyin
 Description: GPUI-based graphical frontend for Neovim
  nvim-gpui is a native graphical frontend for Neovim.
