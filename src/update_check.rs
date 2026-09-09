@@ -1,6 +1,7 @@
 use futures::future::BoxFuture;
 use gpui::http_client::{
-    anyhow, http::HeaderValue, AsyncBody, HttpClient, Request, Response, Result as HttpResult, Url,
+    anyhow, http::HeaderValue, AsyncBody, HttpClient, Request, Response, Result as HttpResult, Uri,
+    Url,
 };
 use std::{
     any::type_name,
@@ -9,6 +10,7 @@ use std::{
 };
 
 pub(crate) const REPOSITORY: &str = "imkerberos/nvim-gpui";
+const UPDATE_CHECK_ENDPOINT_ENV: &str = "NVIM_GPUI_UPDATE_CHECK_ENDPOINT";
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -37,11 +39,72 @@ pub(crate) fn is_due(last_checked: u64) -> bool {
 }
 
 pub(crate) async fn check_latest(http: Arc<dyn HttpClient>) -> Result<Status, String> {
+    let endpoint = configured_endpoint();
+    check_latest_with_endpoint(http, endpoint.as_deref()).await
+}
+
+async fn check_latest_with_endpoint(
+    http: Arc<dyn HttpClient>,
+    endpoint: Option<&str>,
+) -> Result<Status, String> {
+    let http = match endpoint {
+        Some(endpoint) => endpoint_http_client(http, endpoint)?,
+        None => http,
+    };
+
     let release = gpui::http_client::github::latest_github_release(REPOSITORY, true, false, http)
         .await
         .map_err(|error| error.to_string())?;
 
     status_for_tag(&release.tag_name)
+}
+
+fn configured_endpoint() -> Option<String> {
+    std::env::var(UPDATE_CHECK_ENDPOINT_ENV)
+        .ok()
+        .map(|endpoint| endpoint.trim().to_owned())
+        .filter(|endpoint| !endpoint.is_empty())
+}
+
+fn endpoint_http_client(
+    inner: Arc<dyn HttpClient>,
+    endpoint: &str,
+) -> Result<Arc<dyn HttpClient>, String> {
+    let endpoint = endpoint.parse::<Uri>().map_err(|error| {
+        format!("invalid {UPDATE_CHECK_ENDPOINT_ENV} value {endpoint:?}: {error}")
+    })?;
+    log::debug!(
+        target: "nvim_gpui::update_check",
+        "using update-check endpoint override"
+    );
+    Ok(Arc::new(EndpointHttpClient { inner, endpoint }))
+}
+
+struct EndpointHttpClient {
+    inner: Arc<dyn HttpClient>,
+    endpoint: Uri,
+}
+
+impl HttpClient for EndpointHttpClient {
+    fn type_name(&self) -> &'static str {
+        type_name::<Self>()
+    }
+
+    fn user_agent(&self) -> Option<&HeaderValue> {
+        self.inner.user_agent()
+    }
+
+    fn send(
+        &self,
+        mut request: Request<AsyncBody>,
+    ) -> BoxFuture<'static, HttpResult<Response<AsyncBody>>> {
+        *request.uri_mut() = self.endpoint.clone();
+        self.inner.send(request)
+    }
+
+    fn proxy(&self) -> Option<&Url> {
+        self.inner.proxy()
+    }
 }
 
 fn status_for_tag(tag: &str) -> Result<Status, String> {
@@ -146,7 +209,9 @@ impl HttpClient for ReqwestHttpClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_client, is_due, release_url, status_for_tag, Status};
+    use super::{
+        check_latest_with_endpoint, http_client, is_due, release_url, status_for_tag, Status,
+    };
     use gpui::http_client::{AsyncBody, Request};
     use std::{
         io::{Read, Write},
@@ -216,6 +281,48 @@ mod tests {
         let response = futures_lite::future::block_on(http_client().send(request))
             .expect("blocking HTTP client should return a response");
         assert_eq!(response.status().as_u16(), 200);
+        server.join().expect("test server should finish");
+    }
+
+    #[test]
+    fn endpoint_override_detects_newer_release() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test listener should have an address");
+        let body = r#"[{"tag_name":"v0.7.2","prerelease":false,"assets":[{"name":"test","browser_download_url":"https://example.com/test","digest":null}],"tarball_url":"https://example.com/tarball","zipball_url":"https://example.com/zip"}]"#;
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test server should accept");
+            let mut request = [0; 1024];
+            let bytes_read = stream
+                .read(&mut request)
+                .expect("test server should read the request");
+            let request = String::from_utf8_lossy(&request[..bytes_read]);
+            assert!(request.starts_with("GET /fake/releases HTTP/1.1"));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test server should write the response");
+        });
+        let endpoint = format!("http://localhost:{}/fake/releases", address.port());
+
+        let status = futures_lite::future::block_on(check_latest_with_endpoint(
+            http_client(),
+            Some(&endpoint),
+        ))
+        .expect("endpoint override should return a status");
+
+        assert_eq!(
+            status,
+            Status::Available {
+                version: "0.7.2".to_owned(),
+                url: "https://github.com/imkerberos/nvim-gpui/releases/tag/v0.7.2".to_owned(),
+            }
+        );
         server.join().expect("test server should finish");
     }
 }
