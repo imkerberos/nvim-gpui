@@ -459,6 +459,7 @@ GUI windows, and platform packaging:
 | `src/input.rs` | System IME, Rime, and Neovim input routing. |
 | `src/rime.rs` | GPUI-independent native librime loading, session handling, context, and runtime discovery. |
 | `src/clipboard.rs`, `src/image_store.rs`, `src/logging.rs` | Clipboard bridge, Kitty image storage, and asynchronous application logging. |
+| `src/update_check.rs` | GitHub stable-release lookup and HTTP client adapter used by Settings. |
 | `src/settings.rs`, `src/platform.rs`, `src/helper.rs`, `src/widgets.rs` | Persistent settings, platform integration, CLI helper installation, and shared GUI widgets. |
 | `config/nvim-gpui/` | Isolated Neovim configuration used by the development shell. |
 | `packaging/rime/` | librime source-build manifests/builders and curated starter-data selection. |

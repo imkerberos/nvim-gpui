@@ -51,7 +51,9 @@ pub(crate) fn run(
 
     log::info!(target: "nvim_gpui::startup", "starting GPUI application");
     let application = crate::startup_diagnostics::run_with_diagnostics(|| {
-        Application::new().with_assets(AppAssets)
+        Application::new()
+            .with_assets(AppAssets)
+            .with_http_client(update_check::http_client())
     });
     application.on_reopen(move |cx| {
         let Some(view) = reopen_view_for_handler.borrow().clone() else {
@@ -91,6 +93,7 @@ pub(crate) fn run(
                 eprintln!("[platform] {error}");
             }
 
+            let update_http_client = cx.http_client();
             let nvim_view = cx.new(|cx| {
                 NvimGpui::new(
                     nvim,
@@ -100,10 +103,12 @@ pub(crate) fn run(
                     initial_theme,
                     startup_maximized,
                     logger,
+                    update_http_client,
                 )
             });
             nvim_view.update(cx, |view, cx| {
                 view.start_open_urls_task(open_urls_rx, cx);
+                view.start_update_check_if_due(cx);
             });
             *reopen_view.borrow_mut() = Some(nvim_view.clone());
 

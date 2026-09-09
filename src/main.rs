@@ -14,6 +14,7 @@ pub mod nvim;
 pub mod platform;
 pub mod settings;
 mod startup_diagnostics;
+mod update_check;
 pub(crate) mod widgets;
 
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode, time::Duration};

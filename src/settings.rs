@@ -401,6 +401,8 @@ pub struct Settings {
     pub rime_library_dir: String,
     pub rime_library_auto_detect: bool,
     pub rime_data_dir: String,
+    pub check_for_updates: bool,
+    pub last_update_check: u64,
 }
 
 impl Default for Settings {
@@ -420,6 +422,8 @@ impl Default for Settings {
             rime_library_dir: String::new(),
             rime_library_auto_detect: false,
             rime_data_dir: String::new(),
+            check_for_updates: true,
+            last_update_check: 0,
         }
     }
 }
@@ -449,7 +453,7 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\n",
+            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\ncheck_for_updates={}\nlast_update_check={}\n",
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
@@ -463,7 +467,9 @@ impl Settings {
             self.rime_toggle_shortcut.key(),
             self.rime_library_dir,
             self.rime_library_auto_detect,
-            self.rime_data_dir
+            self.rime_data_dir,
+            self.check_for_updates,
+            self.last_update_check
         )
     }
 }
@@ -539,6 +545,16 @@ fn parse_settings(contents: &str) -> Settings {
                 }
             }
             "rime_data_dir" => settings.rime_data_dir = value.trim().to_owned(),
+            "check_for_updates" => {
+                if let Ok(value) = value.trim().parse() {
+                    settings.check_for_updates = value;
+                }
+            }
+            "last_update_check" => {
+                if let Ok(value) = value.trim().parse() {
+                    settings.last_update_check = value;
+                }
+            }
             _ => {}
         }
     }
@@ -626,7 +642,7 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
+            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\ncheck_for_updates=false\nlast_update_check=123\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
@@ -647,6 +663,8 @@ mod tests {
             settings.rime_toggle_shortcut,
             RimeToggleShortcut::Custom("ctrl-shift-space".to_owned())
         );
+        assert!(!settings.check_for_updates);
+        assert_eq!(settings.last_update_check, 123);
     }
 
     #[test]
@@ -683,6 +701,8 @@ mod tests {
         assert!(contents.contains("ime_backend=system\n"));
         assert!(contents.contains("rime_candidate_layout=vertical\n"));
         assert!(contents.contains("rime_library_auto_detect=false\n"));
+        assert!(contents.contains("check_for_updates=true\n"));
+        assert!(contents.contains("last_update_check=0\n"));
         assert!(!contents.contains("rime_user_data_dir="));
         assert!(!contents.contains("rime_staging_data_dir="));
     }

@@ -3479,6 +3479,7 @@ dependencies = [
  "embed-resource",
  "flexi_logger",
  "foreign-types",
+ "futures",
  "futures-lite 2.6.1",
  "gpui",
  "image",
@@ -3489,10 +3490,12 @@ dependencies = [
  "objc2-foundation",
  "raw-window-handle",
  "rmpv",
+ "semver",
  "unicode-segmentation",
  "unicode-width",
  "url",
  "windows 0.61.3",
+ "zed-reqwest",
 ]
 
 [[package]]
@@ -7050,6 +7053,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

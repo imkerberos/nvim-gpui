@@ -2,7 +2,7 @@
 use crate::widgets::setting_checkbox;
 use crate::{
     app::{themed_titlebar, themed_titlebar_enabled, NvimGpui},
-    helper, settings,
+    helper, settings, update_check,
     widgets::{
         setting_combo_box, setting_combo_option, setting_option_button, setting_row,
         setting_section, setting_text_input, SettingTextInputConfig, SettingTextInputMouseEvent,
@@ -38,6 +38,7 @@ enum SettingsCombo {
     NerdFont,
     FallbackMode,
     StartupMaximized,
+    UpdateChecks,
     LogLevel,
     ImageCacheSize,
     ImeBackend,
@@ -1112,6 +1113,100 @@ impl Render for SettingsWindow {
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::StartupMaximized, cx)),
         );
 
+        let mut update_check_options = div().w_full().flex().flex_col();
+        update_check_options = update_check_options.child(setting_combo_option(
+            "settings-update-checks-on",
+            "On",
+            current.check_for_updates,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.check_for_updates = true, cx);
+            }),
+        ));
+        update_check_options = update_check_options.child(setting_combo_option(
+            "settings-update-checks-off",
+            "Off",
+            !current.check_for_updates,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.check_for_updates = false, cx);
+            }),
+        ));
+        let update_check_options = setting_combo_box(
+            "settings-update-checks-combo",
+            if current.check_for_updates {
+                "On"
+            } else {
+                "Off"
+            },
+            self.open_combo == Some(SettingsCombo::UpdateChecks),
+            update_check_options,
+            paste_shortcut_icon_font.clone(),
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::UpdateChecks, cx)),
+        );
+
+        let update_status = self.source.read(cx).update_status();
+        let update_status_label = match &update_status {
+            update_check::Status::NeverChecked => "Not checked yet.".to_owned(),
+            update_check::Status::Checking => "Checking for updates…".to_owned(),
+            update_check::Status::UpToDate => "You are using the latest version.".to_owned(),
+            update_check::Status::Available { version, .. } => {
+                format!("Version {version} is available.")
+            }
+            update_check::Status::Failed(error) => format!("Could not check for updates: {error}"),
+        };
+        let update_status_color = match &update_status {
+            update_check::Status::Failed(_) => WARNING,
+            update_check::Status::Available { .. } => ACCENT,
+            _ => MUTED_TEXT,
+        };
+        let update_is_checking = matches!(&update_status, update_check::Status::Checking);
+        let update_source = self.source.clone();
+        let check_updates_button = setting_option_button(
+            "settings-check-for-updates",
+            if update_is_checking {
+                "Checking…"
+            } else {
+                "Check now"
+            },
+            update_is_checking,
+            move |cx| {
+                update_source.update(cx, |view, cx| view.start_update_check(cx));
+            },
+        );
+        let mut update_actions = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(check_updates_button);
+        if let update_check::Status::Available { url, .. } = update_status {
+            update_actions = update_actions.child(
+                div()
+                    .id("settings-open-update")
+                    .px_3()
+                    .py_2()
+                    .rounded_sm()
+                    .text_sm()
+                    .bg(rgb(SURFACE_BRIGHT))
+                    .text_color(rgb(TEXT))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(0x45475a)))
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+                    .child("Open release"),
+            );
+        }
+        let update_status_control = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(update_status_color))
+                    .child(update_status_label),
+            )
+            .child(update_actions);
+
         #[cfg(target_os = "macos")]
         let quit_on_window_close = setting_checkbox(
             "settings-quit-on-window-close",
@@ -1260,6 +1355,17 @@ impl Render for SettingsWindow {
             "Open the main editor window in its maximized state.",
             startup_options,
         ));
+        let application_behavior = application_behavior
+            .child(setting_row(
+                "Automatic update checks",
+                "Check for new stable nvim-gpui releases once per day in the background.",
+                update_check_options,
+            ))
+            .child(setting_row(
+                "Updates",
+                "Check for updates manually and open the release page when a newer version is available.",
+                update_status_control,
+            ));
         #[cfg(target_os = "macos")]
         let application_behavior = application_behavior
             .child(setting_row(

@@ -8,7 +8,7 @@ use crate::{
         self, DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimProcess,
         NvimTheme, NvimVersion,
     },
-    platform, settings,
+    platform, settings, update_check,
     widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
     CliOptions, NvimConnection,
 };
@@ -391,6 +391,9 @@ pub(crate) struct NvimGpui {
     pub(crate) nerd_font_family: Option<String>,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
     pub(crate) settings: settings::Settings,
+    pub(crate) update_http_client: Option<Arc<dyn gpui::http_client::HttpClient>>,
+    pub(crate) update_status: update_check::Status,
+    pub(crate) update_check_task: Option<Task<()>>,
     pub(crate) logger: Option<flexi_logger::LoggerHandle>,
     pub(crate) bundled_nerd_font_registered: bool,
     pub(crate) settings_save_error: Option<String>,
@@ -415,6 +418,10 @@ impl NvimGpui {
             self.settings_save_error.clone(),
             self.cli_install_error.clone(),
         )
+    }
+
+    pub(crate) fn update_status(&self) -> update_check::Status {
+        self.update_status.clone()
     }
 
     pub(crate) fn settings_value(&self) -> settings::Settings {
@@ -517,6 +524,9 @@ impl Default for NvimGpui {
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
             settings: settings::Settings::default(),
+            update_http_client: None,
+            update_status: update_check::Status::default(),
+            update_check_task: None,
             logger: None,
             bundled_nerd_font_registered: false,
             settings_save_error: None,

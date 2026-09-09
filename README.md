@@ -29,6 +29,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 - Image support for plugins such as `snacks.nvim`.
 - Built-in Rime input method with a private runtime on macOS and Windows, and
   system librime support on Linux.
+- Background and manual checks for new stable releases in Settings.
 
 ## Neovim requirement
 
@@ -317,6 +318,13 @@ RUST_LOG=nvim_gpui=debug gpvim
 ```
 
 Log files rotate at 10 MiB, with five rotated files retained.
+
+## Update checks
+
+Open Settings → `Application behavior` → `Updates` to check for a newer stable
+release or open its download page. Automatic checks are enabled by default and
+run at most once per day after startup. They do not block the editor, download
+files, or send application data.
 
 ## Current limitations
 

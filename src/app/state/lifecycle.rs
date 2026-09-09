@@ -33,6 +33,7 @@ impl NvimGpui {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         nvim: Result<NvimProcess, String>,
         cx: &mut Context<Self>,
@@ -41,6 +42,7 @@ impl NvimGpui {
         initial_theme: Option<NvimTheme>,
         startup_maximized: bool,
         logger: Option<flexi_logger::LoggerHandle>,
+        update_http_client: Arc<dyn gpui::http_client::HttpClient>,
     ) -> Self {
         let nvim_available = nvim.is_ok();
         match &nvim {
@@ -63,6 +65,7 @@ impl NvimGpui {
             },
             nvim: nvim.ok(),
             settings: app_settings,
+            update_http_client: Some(update_http_client),
             logger,
             theme: initial_theme.unwrap_or_default(),
             ..Self::default()
@@ -90,6 +93,48 @@ impl NvimGpui {
         }
 
         this
+    }
+
+    pub(crate) fn start_update_check_if_due(&mut self, cx: &mut Context<Self>) {
+        if self.settings.check_for_updates && update_check::is_due(self.settings.last_update_check)
+        {
+            self.start_update_check(cx);
+        }
+    }
+
+    pub(crate) fn start_update_check(&mut self, cx: &mut Context<Self>) {
+        if self.update_check_task.is_some() {
+            return;
+        }
+
+        self.settings.last_update_check = update_check::unix_timestamp();
+        self.settings_save_error = self.settings.save().err();
+        self.update_status = update_check::Status::Checking;
+        cx.notify();
+
+        let Some(http) = self.update_http_client.clone() else {
+            self.update_status = update_check::Status::Failed(
+                "update checks are unavailable in this application context".to_owned(),
+            );
+            cx.notify();
+            return;
+        };
+
+        log::debug!(target: "nvim_gpui::update_check", "checking for updates");
+        let request = cx.background_spawn(async move { update_check::check_latest(http).await });
+        self.update_check_task = Some(cx.spawn(async move |weak, cx| {
+            let status = request
+                .await
+                .unwrap_or_else(update_check::Status::Failed);
+            let _ = weak.update(cx, |view, cx| {
+                if matches!(&status, update_check::Status::Available { .. }) {
+                    log::info!(target: "nvim_gpui::update_check", "a newer nvim-gpui release is available");
+                }
+                view.update_status = status;
+                view.update_check_task = None;
+                cx.notify();
+            });
+        }));
     }
 
     pub(crate) fn start_open_urls_task(
