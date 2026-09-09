@@ -229,7 +229,10 @@ fn can_probe_window() -> bool {
                 || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()));
     }
 
-    true
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 fn probe_gpui_window() -> Result<Option<GpuSpecs>, String> {
