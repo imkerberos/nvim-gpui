@@ -221,18 +221,16 @@ fn print_probe_output(output: &str) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn can_probe_window() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        env::var_os("ZED_HEADLESS").is_none()
-            && (env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
-                || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()));
-    }
+    env::var_os("ZED_HEADLESS").is_none()
+        && (env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
+            || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()))
+}
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        true
-    }
+#[cfg(not(target_os = "linux"))]
+fn can_probe_window() -> bool {
+    true
 }
 
 fn probe_gpui_window() -> Result<Option<GpuSpecs>, String> {
