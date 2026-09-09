@@ -224,7 +224,7 @@ fn print_probe_output(output: &str) {
 fn can_probe_window() -> bool {
     #[cfg(target_os = "linux")]
     {
-        return env::var_os("ZED_HEADLESS").is_none()
+        env::var_os("ZED_HEADLESS").is_none()
             && (env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
                 || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty()));
     }
