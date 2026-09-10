@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn direct_data_directory_is_preserved() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         assert_eq!(resolve_shared_data(&path).unwrap(), path);
     }
 

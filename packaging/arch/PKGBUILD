@@ -1,0 +1,83 @@
+# Maintainer: nvim-gpui contributors
+pkgname=nvim-gpui
+pkgver=0.7.1
+pkgrel=1
+pkgdesc='Another GPU-rendered Neovim client'
+arch=('x86_64')
+url='https://github.com/imkerberos/nvim-gpui'
+license=('MIT')
+options=('!debug' '!lto')
+depends=(
+  'fontconfig'
+  'freetype2'
+  'libglvnd'
+  'libx11'
+  'libxcb'
+  'libxcursor'
+  'libxi'
+  'libxkbcommon'
+  'libxkbcommon-x11'
+  'libxrandr'
+  'librime'
+  'librime-data'
+  'wayland'
+)
+makedepends=(
+  'cmake'
+  'desktop-file-utils'
+  'git'
+  'neovim'
+  'pkgconf'
+  'rust'
+)
+optdepends=(
+  'neovim: required for local embedded sessions; remote sessions can use a separate Neovim'
+)
+_cargo_target_dir="${CARGO_TARGET_DIR:-target}"
+
+# The local Docker build sets this to a tarball made from the current
+# worktree. For an AUR upload, leave it unset so the tagged GitHub archive is
+# used. Replace SKIP with the v0.7.1 archive checksum before publishing.
+if [[ -n "${NVIM_GPUI_ARCH_SOURCE_TARBALL:-}" ]]; then
+  source=("nvim-gpui-${pkgver}.tar.gz")
+else
+  source=("nvim-gpui-${pkgver}.tar.gz::https://github.com/imkerberos/nvim-gpui/archive/refs/tags/v${pkgver}.tar.gz")
+fi
+sha256sums=('SKIP')
+
+_source_dir() {
+  if [[ -d "$srcdir/nvim-gpui-$pkgver" ]]; then
+    cd "$srcdir/nvim-gpui-$pkgver"
+  else
+    cd "$srcdir"
+  fi
+}
+
+build() {
+  _source_dir
+  cargo build --release --locked --bins
+}
+
+check() {
+  _source_dir
+  desktop-file-validate packaging/debian/nvim-gpui.desktop
+  cargo test --locked --all-targets
+}
+
+package() {
+  _source_dir
+  install -D -m 0755 "$_cargo_target_dir/release/nvim-gpui" "$pkgdir/usr/bin/nvim-gpui"
+  install -D -m 0755 "$_cargo_target_dir/release/gpvim" "$pkgdir/usr/bin/gpvim"
+  ln -s gpvim "$pkgdir/usr/bin/gpvimdiff"
+
+  install -D -m 0644 packaging/debian/nvim-gpui.desktop \
+    "$pkgdir/usr/share/applications/nvim-gpui.desktop"
+  for icon in packaging/debian/icons/hicolor/*/apps/nvim-gpui.png; do
+    install -D -m 0644 "$icon" \
+      "$pkgdir/usr/share/icons/hicolor/${icon#packaging/debian/icons/hicolor/}"
+  done
+
+  install -D -m 0644 README.md "$pkgdir/usr/share/doc/nvim-gpui/README.md"
+  install -D -m 0644 CHANGELOG.md "$pkgdir/usr/share/doc/nvim-gpui/CHANGELOG.md"
+  install -D -m 0644 LICENSE "$pkgdir/usr/share/licenses/nvim-gpui/LICENSE"
+}

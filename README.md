@@ -4,15 +4,23 @@
 
 <h1 align="center">nvim-gpui</h1>
 
-A native macOS graphical frontend for Neovim.
+Another GPU-rendered Neovim client for a native, cross-platform desktop
+experience.
 
-`nvim-gpui` is experimental software. It is suitable for trying a native
-Neovim editing experience, but it is not yet a complete replacement for
-Neovide or a terminal UI.
+`nvim-gpui` brings Neovim's editing engine, configuration, and plugin ecosystem
+to a focused desktop application. Built with GPUI, it renders Neovim's linegrid
+and multigrid UI directly instead of embedding a terminal, while integrating
+with the host platform for input methods, clipboard, file opening, drag and
+drop, and images.
 
-macOS is currently the primary supported platform. Release packages are also
-built for Linux and Windows, but support on those platforms remains
-experimental.
+The core editing workflow is ready for everyday use. Neovim remains the
+editor engine; nvim-gpui focuses on rendering, native input, and desktop
+integration. Advanced protocol and plugin-specific integrations continue to
+evolve as the project grows.
+
+macOS is currently the most mature platform. Release packages are also
+available for Linux and Windows, with platform-specific validation and
+integration continuing across all three targets.
 
 <p align="center">
   <img src="assets/screenshots/editor-cjk.png" alt="CJK text editing in nvim-gpui" width="32%">
@@ -24,12 +32,19 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Features
 
-- Unicode and CJK text support.
-- Bundled Nerd Font support.
-- Image support for plugins such as `snacks.nvim`.
-- Built-in Rime input method with a private runtime on macOS and Windows, and
-  system librime support on Linux.
-- Background and manual checks for new stable releases in Settings.
+- Native linegrid and multigrid rendering, including floating windows.
+- Embedded Neovim sessions and connections to an already-running Neovim.
+- Compatibility with the versioned UI payloads used by Neovim 0.10, 0.11, and
+  0.12+.
+- Unicode, CJK, wide-character, and grapheme-aware text rendering.
+- Bundled Nerd Font support and configurable `guifont`/`guifontwide` handling.
+- Kitty image support for plugins such as `snacks.nvim`.
+- System IME support and a built-in Rime input method with a private runtime on
+  macOS and Windows, plus system librime support on Linux.
+- Local and remote clipboard integration through Neovim's paste and provider
+  APIs.
+- Native file opening, Open With integration, and drag and drop across desktop
+  platforms.
 
 ## Neovim requirement
 
@@ -70,27 +85,68 @@ The AppBundle is available in Finder's Open With menu for source and text
 files. Opening a file there sends it to the embedded Neovim session, including
 when nvim-gpui is already running.
 
+To launch the installed application directly from a terminal:
+
+```sh
+open -a nvim-gpui
+```
+
 ### Debian/Ubuntu
 
-Download the `.deb` package matching your CPU architecture from the [latest
-release](https://github.com/imkerberos/nvim-gpui/releases/latest), then install
-Neovim and nvim-gpui:
+Download the `.deb` package matching your CPU architecture, install Neovim,
+then install nvim-gpui:
+
+- [ARM64 `.deb`](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-debian-aarch64.deb)
+- [X86_64 `.deb`](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-debian-x86_64.deb)
 
 ```sh
 sudo apt update
 sudo apt install neovim
 nvim --version                 # must be 0.10.0 or newer
-sudo apt install ./nvim-gpui-v<VERSION>-linux-x86_64.deb
+sudo apt install ./nvim-gpui-latest-debian-x86_64.deb
 gpvim
 ```
 
-Use `nvim-gpui-v<VERSION>-linux-aarch64.deb` on ARM64. If your distribution
-provides an older Neovim, install a newer version from the [official Neovim
+Use the ARM64 filename for ARM64 systems. If your distribution provides an
+older Neovim, install a newer version from the [official Neovim
 releases](https://github.com/neovim/neovim/releases) before launching
-nvim-gpui. The package installs the required Ubuntu/Debian GUI and system Rime
-dependencies automatically. It also registers nvim-gpui as an Open With option
-for common source and text files; the desktop entry passes selected files to
-the embedded Neovim session.
+nvim-gpui. The package installs the required Ubuntu/Debian GUI dependencies and
+recommends the system Rime dependencies for the built-in Rime backend. It also
+registers nvim-gpui as an Open With option for common source and text files;
+the desktop entry passes selected files to the embedded Neovim session.
+
+### Fedora
+
+Download the RPM matching your CPU architecture, install Neovim, then install
+nvim-gpui:
+
+- [ARM64 RPM](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-fedora-aarch64.rpm)
+- [X86_64 RPM](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-fedora-x86_64.rpm)
+
+```sh
+sudo dnf install neovim
+nvim --version                 # must be 0.10.0 or newer
+sudo dnf install ./nvim-gpui-latest-fedora-x86_64.rpm
+gpvim
+```
+
+Use the ARM64 filename on ARM64 systems. The RPM declares the Fedora GUI,
+font, graphics, and Rime runtime dependencies.
+
+### Arch Linux
+
+Download the x86_64 package from the [latest
+release](https://github.com/imkerberos/nvim-gpui/releases/latest), install
+Neovim, then install nvim-gpui:
+
+```sh
+sudo pacman -S neovim
+sudo pacman -U ./nvim-gpui-latest-arch-x86_64.pkg.tar.zst
+gpvim
+```
+
+The current release provides an x86_64 package. ARM64 Arch packages are not
+currently provided.
 
 ### Windows
 
@@ -99,14 +155,14 @@ releases](https://github.com/neovim/neovim/releases) first, and make sure
 `nvim.exe` is available on `PATH`. The nvim-gpui package does not include
 Neovim itself.
 
-Download and run
-`nvim-gpui-v<VERSION>-windows-x86_64-setup.exe` from the [latest
-release](https://github.com/imkerberos/nvim-gpui/releases/latest). The
+Download and run the [latest Windows
+installer](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-windows-x86_64-setup.exe). The
 installer creates Start Menu and optional desktop shortcuts, and adds
 nvim-gpui to Explorer's Open With menu for files without changing existing
 default associations. It also offers to add the installed `nvim-gpui` and
-`gpvim` commands to the current user's PATH. You can also download the
-portable ZIP, extract it, and run `nvim-gpui.exe` directly.
+`gpvim` commands to the current user's PATH. You can also download the [latest
+portable ZIP](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-windows-x86_64.zip),
+extract it, and run `nvim-gpui.exe` directly.
 
 The Windows package targets x86_64 Windows and also works on Windows 11 on
 Arm through its x64 application compatibility layer.
@@ -126,12 +182,7 @@ gpvim --clean README.md
 gpvimdiff file1 file2
 ```
 
-`gpvimdiff` opens Neovim in diff mode. On macOS, open the installed application
-directly with:
-
-```sh
-open -a nvim-gpui
-```
+`gpvimdiff` opens Neovim in diff mode.
 
 ## Drag and drop
 
@@ -146,19 +197,19 @@ the remote Neovim process.
 Download the package matching your operating system and CPU architecture from
 the [latest release](https://github.com/imkerberos/nvim-gpui/releases/latest):
 
-| Target | Package | Installation |
+| Target | ARM64 | X86_64 |
 | --- | --- | --- |
-| `darwin-aarch64` | `nvim-gpui-v<VERSION>-darwin-aarch64.dmg` | Open the disk image and copy the app to `/Applications`. |
-| `darwin-x86_64` | `nvim-gpui-v<VERSION>-darwin-x86_64.dmg` | Open the disk image and copy the app to `/Applications`. |
-| `linux-aarch64` | `nvim-gpui-v<VERSION>-linux-aarch64.deb` | Install with `sudo apt install ./nvim-gpui-*.deb`. |
-| `linux-x86_64` | `nvim-gpui-v<VERSION>-linux-x86_64.deb` | Install with `sudo apt install ./nvim-gpui-*.deb`. |
-| `windows-x86_64` | `nvim-gpui-v<VERSION>-windows-x86_64-setup.exe` | Run the installer on x64 Windows or Windows 11 on Arm. |
+| <img src="https://cdn.simpleicons.org/apple" alt="macOS" width="18" height="18"> macOS | [DMG](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-macos-aarch64.dmg)<br>[App ZIP](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-macos-aarch64.app.zip) | [DMG](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-macos-x86_64.dmg)<br>[App ZIP](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-macos-x86_64.app.zip) |
+| <img src="https://cdn.simpleicons.org/ubuntu/E95420" alt="Ubuntu / Debian" width="18" height="18"> Ubuntu / Debian | [DEB](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-debian-aarch64.deb) | [DEB](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-debian-x86_64.deb) |
+| <img src="https://cdn.simpleicons.org/fedora/51A2DA" alt="Fedora" width="18" height="18"> Fedora | [RPM](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-fedora-aarch64.rpm) | [RPM](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-fedora-x86_64.rpm) |
+| <img src="https://cdn.simpleicons.org/archlinux/1793D1" alt="Arch Linux" width="18" height="18"> Arch Linux | — | [Package](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-arch-x86_64.pkg.tar.zst) |
+| <img src="https://cdn.simpleicons.org/windows/0078D4" alt="Windows" width="18" height="18"> Windows | — | [Installer](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-windows-x86_64-setup.exe)<br>[Portable ZIP](https://github.com/imkerberos/nvim-gpui/releases/latest/download/nvim-gpui-latest-windows-x86_64.zip) |
 
-The release also includes App ZIP archives for macOS and a portable ZIP for
-Windows. The Linux packages target Ubuntu/Debian and use the system GUI and
-librime packages; install a compatible Neovim version separately. The Windows
-release is an x86_64 build and relies on Windows 11 on Arm's x64 application
-compatibility layer when used on ARM64 hardware.
+All links point to the latest GitHub Release. Ubuntu/Debian, Fedora, and Arch
+Linux packages use the system GUI and input-method libraries; install a
+compatible Neovim version separately. The Windows release is an x86_64 build
+and relies on Windows 11 on Arm's x64 application compatibility layer when
+used on ARM64 hardware.
 
 ## Built-in Rime input
 
@@ -286,6 +337,7 @@ For a Nix-wrapped Neovim, pass the wrapper's absolute path with
 --connect-timeout SECONDS  Set the remote TCP connection timeout (default: 3)
 --nvim-command PATH  Select the Neovim executable for embed mode
 --cwd PATH           Set Neovim's working directory
+--health-check       Report OS and graphics capabilities, then exit
 --                   Pass all following arguments to Neovim
 ```
 
@@ -328,10 +380,11 @@ files, or send application data.
 
 ## Current limitations
 
-The project is still experimental. Some advanced Neovim UI and third-party
-plugin features may not yet behave exactly like they do in a terminal or in
-other Neovim GUI clients.
+The core editing and desktop integration paths are usable today. Some advanced
+Neovim UI protocol details and third-party plugin features may not yet behave
+exactly like they do in a terminal or in other Neovim GUI clients; these areas
+continue to be developed and validated across platforms.
 
 ## License
 
-MIT.
+nvim-gpui is distributed under the [MIT License](LICENSE).

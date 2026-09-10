@@ -22,11 +22,11 @@ entering the development environment:
 ```sh
 just dev                 # select the current platform automatically
 just dev-macos           # enter the macOS Nix development shell
-just dev-linux           # enter the Linux Nix development shell
+just dev-nixos           # enter the Linux Nix development shell
 just dev-windows         # install Windows prerequisites with winget
 ```
 
-`dev-macos` and `dev-linux` enter this repository's Nix flake. `dev-windows`
+`dev-macos` and `dev-nixos` enter this repository's Nix flake. `dev-windows`
 must be run from an elevated PowerShell or Command Prompt with `winget`.
 It installs the x64 Visual Studio 2022 Build Tools with the C++ workload,
 CMake components, and Windows 10 SDK 20348, plus Rustup, Git, CMake, Python
@@ -210,10 +210,11 @@ the `ci` and `pack-*` tasks compose them:
 ```text
 validation:  fmt, fmt-check, check, clippy, test, ci
 build:       build, build-release, release, run, gpvim
-dev:         current OS -> dev-macos, dev-linux, or dev-windows
+dev:         current OS -> dev-macos, dev-nixos, or dev-windows
 ubuntu test: setup-ubuntu
-linux:       docker-build, docker-build-linux-aarch64
-packages:    pack-linux-x86_64, pack-linux-aarch64
+linux:       docker-build, docker-build-nixos-aarch64
+packages:    pack-debian-x86_64, pack-debian-aarch64,
+             pack-fedora-x86_64, pack-fedora-aarch64, pack-arch-x86_64
 rime:        rime-runtime, rime-runtime-check, rime-runtime-macos,
              rime-runtime-windows
 bundle:      current OS -> bundle-macos or bundle-windows
@@ -241,9 +242,9 @@ just pack-windows        # Windows only: checks, runtime, bundle, installer, smo
 just setup-ubuntu        # Ubuntu VM only: runtime libraries and IME support
 
 just docker-build x86_64
-just docker-build-linux-aarch64
-just pack-linux-x86_64  # local Ubuntu amd64 .deb through Docker
-just pack-linux-aarch64  # local Ubuntu arm64 .deb through Docker
+just docker-build-nixos-aarch64
+just pack-debian-x86_64  # local Debian amd64 .deb through an Ubuntu container
+just pack-debian-aarch64  # local Debian arm64 .deb through an Ubuntu container
 
 just release-prepare 0.2.0
 just release-check v0.2.0
@@ -304,7 +305,7 @@ in a separate architecture-specific output directory:
 
 ```sh
 just docker-build x86_64
-just docker-build-linux-aarch64
+just docker-build-nixos-aarch64
 ```
 
 The resulting binaries are stored at:
@@ -345,7 +346,7 @@ The release workflow therefore builds Linux on native GitHub runners and uses
 that job as release validation. macOS and Windows packages still use their
 respective native build environments.
 
-### Ubuntu Linux packages
+### Debian packages built on Ubuntu
 
 These tasks run Ubuntu 24.04 containers, install the Ubuntu build dependencies,
 compile the Rust application against Ubuntu's system libraries, and create
@@ -353,8 +354,8 @@ Debian packages. They are suitable for local testing and are also used by the
 Linux release jobs on native GitHub ARM64 and x86_64 runners:
 
 ```sh
-just pack-linux-x86_64
-just pack-linux-aarch64
+just pack-debian-x86_64
+just pack-debian-aarch64
 ```
 
 The outputs are written to:
@@ -370,9 +371,10 @@ through Docker's `linux/amd64` emulation.
 The package contains `nvim-gpui`, `gpvim`, `gpvimdiff`, the desktop entry, and
 the application icon set in standard hicolor sizes. The desktop entry uses the
 `nvim-gpui` icon name, so desktop environments can resolve it without a
-hard-coded path. It declares the GUI libraries and system librime/Rime data as
-Debian dependencies. Neovim is listed as a suggestion because Ubuntu
-versions may provide an older Neovim; run `just setup-ubuntu` on the test VM
+hard-coded path. It declares the GUI libraries as Debian dependencies and the
+system librime/Rime data as Debian recommendations. Neovim is listed as a
+suggestion because Ubuntu versions may provide an older Neovim; run
+`just setup-ubuntu` on the test VM
 to install a compatible Neovim and the separate IBus/libpinyin test path.
 The desktop entry's `MimeType` field makes nvim-gpui available in common Linux
 file managers' Open With menus for source and text files; its `%F` argument
@@ -383,8 +385,8 @@ and Ubuntu's APT archive. Override the builder image only when intentionally
 testing another Ubuntu image:
 
 ```sh
-NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-x86_64
-NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-linux-aarch64
+NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-debian-x86_64
+NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-debian-aarch64
 ```
 
 The packages are linked against Ubuntu libraries rather than the Nix store,
@@ -392,6 +394,23 @@ unlike the binaries produced by `just docker-build x86_64`. The release
 workflow runs these tasks on native Linux runners, so Docker is used only for
 the reproducible Ubuntu packaging environment and not for cross-architecture
 emulation.
+
+### Fedora RPM packages
+
+These tasks build Fedora 44 RPMs in Docker. The architecture is explicit, so
+the aarch64 task runs natively on an ARM64 host and the x86_64 task uses
+Docker's amd64 platform when necessary:
+
+```sh
+just pack-fedora-x86_64
+just pack-fedora-aarch64
+```
+
+The outputs are written to `dist/fedora-x86_64/` and
+`dist/fedora-aarch64/`. The release workflow also publishes both Fedora RPM
+architectures. The Fedora RPM uses Fedora's
+`librime` and `brise` packages as weak recommendations; Fedora's Rime data
+package is named `brise`, not `librime-data`.
 
 ### CI/CD workflow
 
@@ -401,7 +420,7 @@ an optional local helper:
 | Event | Jobs | Result |
 | --- | --- | --- |
 | Pull request or push to `develop`, `master`, or `main` | macOS arm64, Linux x86_64, Linux arm64, Windows x86_64 | Formatting, Clippy, and tests; macOS also builds and smoke-tests its AppBundle and DMG. |
-| Push of a `v*` tag | macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Ubuntu `.deb` packages, and Windows ZIP/installer packages. |
+| Push of a `v*` tag | macOS arm64/x86_64, Ubuntu/Debian x86_64/arm64, Fedora x86_64/arm64, Arch Linux x86_64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Debian `.deb` packages, Fedora RPM packages, an Arch Linux package, and Windows ZIP/installer packages. |
 | Successful completion of every release job | Publish job | Creates or updates the GitHub Release, attaches packages, and uploads `SHA256SUMS`. |
 
 The release workflow is gated: a package is not published when any platform
@@ -429,20 +448,45 @@ nvim-gpui-vVERSION-darwin-aarch64.dmg
 nvim-gpui-vVERSION-darwin-x86_64.dmg
 nvim-gpui-vVERSION-linux-aarch64.deb
 nvim-gpui-vVERSION-linux-x86_64.deb
+nvim-gpui-vVERSION-fedora-aarch64.rpm
+nvim-gpui-vVERSION-fedora-x86_64.rpm
+nvim-gpui-vVERSION-arch-x86_64.pkg.tar.zst
 nvim-gpui-vVERSION-windows-x86_64-setup.exe
 ```
 
-The release also attaches App ZIP archives for macOS and a portable ZIP for
-Windows. Linux release packages are Ubuntu/Debian `.deb` files and use system
-librime, Rime data, and GUI libraries; Flatpak and a self-contained Linux Rime
-runtime remain future packaging work. Windows ARM64 is not a separate release
-target yet; the Windows x86_64 package can run on Windows 11 on Arm through
-x64 emulation.
+The release also attaches App ZIP archives for macOS, a portable ZIP for
+Windows, and stable `nvim-gpui-latest-*` aliases for direct latest-release
+downloads. Debian packages are built in Ubuntu containers; Fedora RPMs are
+built in Fedora containers for x86_64 and aarch64; the Arch Linux package is
+built in an Arch container for x86_64. These packages use system GUI and input
+libraries. Windows ARM64 is not a separate release target yet; the Windows
+x86_64 package can run on Windows 11 on Arm through x64 emulation.
 
 The development Neovim profile is at
 `config/nvim-gpui/init.lua`. It loads the Nix-provided plugins without cloning
 or downloading them. Its current test profile enables `snacks.image`, the
 Markdown parser, and the Kitty capability fallback used by the GUI.
+
+### Testing update checks
+
+Set `NVIM_GPUI_UPDATE_CHECK_ENDPOINT` to a local HTTP endpoint that returns a
+GitHub-compatible releases array. This lets the Settings update flow be
+tested without creating a real release:
+
+```sh
+python3 scripts/mock_update_check.py
+```
+
+In another terminal, start nvim-gpui with the mock endpoint:
+
+```sh
+NVIM_GPUI_UPDATE_CHECK_ENDPOINT=http://127.0.0.1:8787/fake/releases just run
+```
+
+The server returns stable release `v0.7.2` with a test asset by default. Use
+`--version v0.7.1` to test the up-to-date state, or `--port` and `--path` to
+change the listening endpoint. When the variable is unset, update checks use
+the real GitHub API.
 
 ## Repository layout
 
@@ -463,6 +507,9 @@ GUI windows, and platform packaging:
 | `src/settings.rs`, `src/platform.rs`, `src/helper.rs`, `src/widgets.rs` | Persistent settings, platform integration, CLI helper installation, and shared GUI widgets. |
 | `config/nvim-gpui/` | Isolated Neovim configuration used by the development shell. |
 | `packaging/rime/` | librime source-build manifests/builders and curated starter-data selection. |
+| `packaging/debian/` | Ubuntu-based Debian package builder and shared desktop/icon resources. |
+| `packaging/fedora/` | Fedora RPM spec and Docker build helper. |
+| `packaging/arch/` | Arch Linux PKGBUILD and Docker build helper. |
 | `packaging/macos/`, `packaging/windows/` | AppBundle validation and platform bundle scripts. |
 | `scripts/` | Release metadata, runtime staging/validation, and starter-data tooling. |
 | `.github/workflows/` | Native cross-platform CI and gated release automation. |
@@ -949,11 +996,12 @@ native runners rather than the local Docker/QEMU path.
 metadata and changelog entries, builds both macOS targets on Apple Silicon
 runners (the Intel target uses the `x86_64-darwin` Nix shell under Rosetta),
 validates and packages native Linux x86_64/arm64 `.deb` files through the
-Ubuntu Docker task, and builds/tests the Windows x86_64 bundle and installer.
-The publish job runs only after every platform job has succeeded, attaches all
-five platform packages plus the optional portable archives, and uploads a
-`SHA256SUMS` file. Re-running the workflow is idempotent for an existing
-GitHub Release.
+Ubuntu Docker task, builds Fedora x86_64/aarch64 RPMs and an Arch Linux
+x86_64 package through Docker, and builds/tests the Windows x86_64 bundle and
+installer. The publish job runs only after every platform job has succeeded,
+attaches all five platform package families plus the optional portable
+archives and latest aliases, and uploads a `SHA256SUMS` file. Re-running the
+workflow is idempotent for an existing GitHub Release.
 
 Release signing and notarization are intentionally not configured because
 they require project-specific platform credentials. The release contract is

@@ -2,11 +2,20 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.7.1] - Unreleased
+## [0.7.1] - 2026-09-10
 
 ### Added
 
 - Background and manual stable-release update checks in Settings.
+- Fedora RPM packaging for x86_64 and aarch64, plus an Arch Linux x86_64
+  package build.
+- Direct latest-release download assets for Debian/Ubuntu, Fedora, Arch Linux,
+  macOS, and Windows.
+
+### Fixed
+
+- Debian package metadata now declares the required GUI, font, graphics, and
+  input-method runtime dependencies.
 
 ## [0.7.0] - 2026-09-09
 

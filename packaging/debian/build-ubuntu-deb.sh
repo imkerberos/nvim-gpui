@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build an Ubuntu-linked binary and package it as a .deb.
 # This script is run as root inside the Ubuntu Docker container started by
-# `just pack-linux-x86_64` or `just pack-linux-aarch64`; it deliberately does
+# `just pack-debian-x86_64` or `just pack-debian-aarch64`; it deliberately does
 # not use the Nix toolchain.
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,9 +25,9 @@ fail() {
 [[ "${ID:-}" == 'ubuntu' ]] || fail "this package task requires Ubuntu (detected: ${ID:-unknown})"
 
 [[ -f "$repo_root/Cargo.toml" ]] || fail "Cargo.toml not found below $repo_root"
-[[ -f "$repo_root/packaging/linux/nvim-gpui.desktop" ]] \
+[[ -f "$repo_root/packaging/debian/nvim-gpui.desktop" ]] \
   || fail 'Linux desktop entry is missing'
-icon_source_dir="$repo_root/packaging/linux/icons/hicolor"
+icon_source_dir="$repo_root/packaging/debian/icons/hicolor"
 [[ -d "$icon_source_dir" ]] || fail 'Linux application icon set is missing'
 case "$deb_arch" in
   amd64|arm64) ;;
@@ -107,7 +107,7 @@ mkdir -p \
 install -m 755 "$release_dir/nvim-gpui" "$package_root/usr/bin/nvim-gpui"
 install -m 755 "$release_dir/gpvim" "$package_root/usr/bin/gpvim"
 ln -s gpvim "$package_root/usr/bin/gpvimdiff"
-install -m 644 "$repo_root/packaging/linux/nvim-gpui.desktop" \
+install -m 644 "$repo_root/packaging/debian/nvim-gpui.desktop" \
   "$package_root/usr/share/applications/nvim-gpui.desktop"
 mapfile -t icon_files < <(find "$icon_source_dir" -type f -name 'nvim-gpui.png' -print | sort)
 ((${#icon_files[@]} > 0)) || fail 'Linux application icon set is empty'
@@ -161,8 +161,8 @@ Depends: $shlib_depends,
  libx11-6,
  libxcursor1,
  libxi6,
- libxrandr2,
- librime1t64 | librime1,
+ libxrandr2
+Recommends: librime1t64 | librime1,
  librime-data,
  rime-data-luna-pinyin
 Suggests: neovim (>= 0.10.0), ibus, ibus-libpinyin

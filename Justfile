@@ -57,9 +57,9 @@ gpvim *args:
 dev-macos:
     {{if os() == "macos" { "nix develop --accept-flake-config" } else { error("dev-macos is only supported on macOS") }}}
 
-# Enter the Linux Nix development environment.
-dev-linux:
-    {{if os() == "linux" { "nix develop --accept-flake-config" } else { error("dev-linux is only supported on Linux") }}}
+# Enter the NixOS-based Linux development environment.
+dev-nixos:
+    {{if os() == "linux" { "nix develop --accept-flake-config" } else { error("dev-nixos is only supported on Linux") }}}
 
 # Install Windows prerequisites; use dev-windows.cmd first when Just is not installed.
 dev-windows:
@@ -67,7 +67,7 @@ dev-windows:
 
 # Select the development environment task for the current operating system.
 dev:
-    just {{if os() == "macos" { "dev-macos" } else if os() == "linux" { "dev-linux" } else if os() == "windows" { "dev-windows" } else { error("unsupported operating system for dev") }}}
+    just {{if os() == "macos" { "dev-macos" } else if os() == "linux" { "dev-nixos" } else if os() == "windows" { "dev-windows" } else { error("unsupported operating system for dev") }}}
 
 # Prepare an Ubuntu VM for runtime and input-method testing.
 [linux]
@@ -115,14 +115,14 @@ docker-build architecture:
     done
     echo "created Linux artifacts in $artifact_release_dir"
 
-# Build Linux aarch64 locally through Docker.
+# Build NixOS-container Linux aarch64 locally through Docker.
 [unix]
-docker-build-linux-aarch64:
+docker-build-nixos-aarch64:
     just docker-build aarch64
 
-# Build an Ubuntu package through Docker.
+# Build a Debian package through an Ubuntu container.
 [unix]
-_pack-linux platform deb_arch rust_target docker_platform volume_arch:
+_pack-debian platform deb_arch rust_target docker_platform volume_arch:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v docker >/dev/null 2>&1 || { echo "docker is required; start Docker Desktop first" >&2; exit 1; }
@@ -149,17 +149,32 @@ _pack-linux platform deb_arch rust_target docker_platform volume_arch:
       --env "NVIM_GPUI_OUTPUT_UID=$(id -u)" \
       --env "NVIM_GPUI_OUTPUT_GID=$(id -g)" \
       "${NVIM_GPUI_UBUNTU_IMAGE:-ubuntu:24.04}" \
-      bash /workspace/packaging/linux/build-ubuntu-deb.sh
+      bash /workspace/packaging/debian/build-ubuntu-deb.sh
 
-# Build a local Ubuntu amd64 .deb through Docker.
+# Build a local Debian amd64 .deb through an Ubuntu container.
 [unix]
-pack-linux-x86_64:
-    just _pack-linux x86_64 amd64 x86_64-unknown-linux-gnu linux/amd64 amd64
+pack-debian-x86_64:
+    just _pack-debian x86_64 amd64 x86_64-unknown-linux-gnu linux/amd64 amd64
 
-# Build a local Ubuntu arm64 .deb through Docker.
+# Build a local Debian arm64 .deb through an Ubuntu container.
 [unix]
-pack-linux-aarch64:
-    just _pack-linux aarch64 arm64 aarch64-unknown-linux-gnu linux/arm64 arm64
+pack-debian-aarch64:
+    just _pack-debian aarch64 arm64 aarch64-unknown-linux-gnu linux/arm64 arm64
+
+# Build a local Fedora x86_64 RPM through Docker.
+[unix]
+pack-fedora-x86_64:
+    bash scripts/build-fedora-rpm.sh x86_64
+
+# Build a local Fedora aarch64 RPM through Docker.
+[unix]
+pack-fedora-aarch64:
+    bash scripts/build-fedora-rpm.sh aarch64
+
+# Build a local Arch Linux x86_64 package through Docker.
+[unix]
+pack-arch-x86_64:
+    bash scripts/build-arch-package.sh
 
 # Copy and validate a platform-specific Rime runtime.
 rime-runtime source output=".cache/rime-runtime":
