@@ -39,7 +39,7 @@ Requires:       libglvnd-glx
 Requires:       libglvnd-opengl
 Requires:       libxkbcommon
 Requires:       libxkbcommon-x11
-Requires:       wayland-libs-client
+Requires:       libwayland-client
 Recommends:     brise librime
 Recommends:     neovim >= 0.10.0
 
