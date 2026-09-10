@@ -149,11 +149,22 @@ impl NvimGpui {
     pub(crate) fn apply_ime_backend_setting(&mut self) {
         let rime_enabled =
             self.settings.ime_backend == settings::ImeBackend::Rime && self.rime_backend.is_some();
-        let mut config = self.input_router.config();
-        config.rime_enabled = rime_enabled;
-        self.input_router.set_config(config);
+        if rime_enabled {
+            // Selecting Rime enables the Insert-mode route. Other text
+            // contexts intentionally remain English until toggled there.
+            self.input_router
+                .set_rime_enabled_for(crate::input::InputContext::Insert, true);
+        } else {
+            self.input_router.disable_rime();
+        }
         if let Some(pending) = self.pending_redraw.as_mut() {
-            pending.input_router.set_config(config);
+            if rime_enabled {
+                pending
+                    .input_router
+                    .set_rime_enabled_for(crate::input::InputContext::Insert, true);
+            } else {
+                pending.input_router.disable_rime();
+            }
         }
         if !rime_enabled {
             self.reset_rime_composition();
@@ -403,9 +414,10 @@ impl NvimGpui {
         self.rime_backend = None;
         self.rime_menu_open = false;
         self.rime_menu_message = None;
-        let mut config = self.input_router.config();
-        config.rime_enabled = false;
-        self.input_router.set_config(config);
+        self.input_router.disable_rime();
+        if let Some(pending) = self.pending_redraw.as_mut() {
+            pending.input_router.disable_rime();
+        }
         log::warn!(target: "nvim_gpui::rime", "Rime disabled: {reason}");
     }
 
@@ -417,12 +429,11 @@ impl NvimGpui {
 
         self.rime_menu_open = false;
         self.rime_menu_message = None;
-        let enabled = !self.input_router.config().rime_enabled;
-        let mut config = self.input_router.config();
-        config.rime_enabled = enabled;
-        self.input_router.set_config(config);
+        let context = self.input_router.rime_toggle_context();
+        let enabled = !self.input_router.rime_enabled_for(context);
+        self.input_router.set_rime_enabled_for(context, enabled);
         if let Some(pending) = self.pending_redraw.as_mut() {
-            pending.input_router.set_config(config);
+            pending.input_router.set_rime_enabled_for(context, enabled);
         }
         self.reset_rime_composition();
         self.system_ime.clear();
@@ -560,7 +571,10 @@ impl NvimGpui {
         let previous = self.last_modifiers;
         self.last_modifiers = event.modifiers;
 
-        if self.input_router.target() != InputTarget::Rime || self.rime_backend.is_none() {
+        if self.input_router.target() != InputTarget::Rime
+            || self.rime_backend.is_none()
+            || self.rime_deploy_task.is_some()
+        {
             return;
         }
 
@@ -637,6 +651,11 @@ impl NvimGpui {
         }
 
         let mut target = self.input_router.target();
+        // The deployer uses librime's process-global data APIs. Keep the live
+        // session out of that API while a background redeploy is in progress.
+        if target == InputTarget::Rime && self.rime_deploy_task.is_some() {
+            target = InputTarget::Neovim;
+        }
         log::debug!(
             target: "nvim_gpui::input",
             "key down: key={:?}, key_char={:?}, modifiers={:?}, target={target:?}",

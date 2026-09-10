@@ -76,14 +76,9 @@ impl NvimGpui {
         this.startup_redraw_pending = nvim_available;
         this.startup_maximize_pending = nvim_available && startup_maximized;
         this.apply_runtime_settings();
-        this.rime_backend = initialize_rime_backend(&this.settings);
-        if this.rime_backend.is_some() {
-            // Keep the runtime toggle off for every fresh process. Selecting
-            // Rime in Settings or using the activation shortcut enables it
-            // explicitly; the first Insert mode therefore remains on the
-            // system IME.
-            log::info!(target: "nvim_gpui::rime", "Rime backend available");
-        }
+        // librime deployment can rebuild a large data set. Start the backend
+        // away from the UI thread so the first window remains responsive.
+        this.start_rime_initialization(cx);
 
         if this.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
             this.start_remote_clipboard_bridge(cx);
@@ -93,6 +88,57 @@ impl NvimGpui {
         }
 
         this
+    }
+
+    fn start_rime_initialization(&mut self, cx: &mut Context<Self>) {
+        if self.rime_init_task.is_some() {
+            return;
+        }
+
+        let app_settings = self.settings.clone();
+        let config = match rime_config_from_settings(&app_settings, None) {
+            Ok(config) => config,
+            Err(error) => {
+                log::warn!(target: "nvim_gpui::rime", "Rime backend unavailable: {error}");
+                return;
+            }
+        };
+        let deploy_config = config.clone();
+        let mut backend_config = config;
+        backend_config.deploy = false;
+        let task = cx.background_spawn(async move {
+            if deploy_config.deploy {
+                RimeBackend::deploy(deploy_config)
+            } else {
+                Ok(())
+            }
+        });
+        self.rime_init_task = Some(cx.spawn(async move |weak, cx| {
+            let deploy_result = task.await;
+            let _ = weak.update(cx, |view, cx| {
+                view.rime_init_task = None;
+                view.rime_backend = match deploy_result {
+                    Ok(()) => match RimeBackend::new(backend_config) {
+                        Ok(backend) => {
+                            log::info!(target: "nvim_gpui::rime", "Rime backend available");
+                            Some(backend)
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                target: "nvim_gpui::rime",
+                                "Rime backend unavailable after deploy: {error}"
+                            );
+                            None
+                        }
+                    },
+                    Err(error) => {
+                        log::warn!(target: "nvim_gpui::rime", "Rime deploy failed: {error}");
+                        None
+                    }
+                };
+                cx.notify();
+            });
+        }));
     }
 
     pub(crate) fn start_update_check_if_due(&mut self, cx: &mut Context<Self>) {
@@ -741,28 +787,71 @@ impl NvimGpui {
     }
 
     pub(crate) fn redeploy_rime(&mut self, cx: &mut Context<Self>) {
+        if self.rime_deploy_task.is_some() {
+            return;
+        }
         self.reset_rime_composition();
-        let result = self
-            .rime_backend
-            .as_mut()
-            .ok_or_else(|| "Rime backend is unavailable".to_owned())
-            .and_then(RimeBackend::redeploy);
+        if self.rime_backend.is_none() {
+            self.rime_menu_message = Some("Rime backend is unavailable".to_owned());
+            self.rime_menu_open = true;
+            cx.notify();
+            return;
+        }
 
-        self.rime_menu_message = Some(match result {
-            Ok(()) => {
-                log::info!(
-                    target: "nvim_gpui::rime",
-                    "Rime data redeployed from titlebar menu"
-                );
-                "Rime data redeployed successfully.".to_owned()
-            }
+        let config = match rime_config_from_settings(&self.settings, Some(true)) {
+            Ok(config) => config,
             Err(error) => {
-                log::error!(target: "nvim_gpui::rime", "Rime data redeploy failed: {error}");
-                format!("Rime redeploy failed: {error}")
+                self.rime_menu_message = Some(format!("Rime redeploy failed: {error}"));
+                self.rime_menu_open = true;
+                cx.notify();
+                return;
             }
-        });
+        };
+        let mut backend_config = config.clone();
+        backend_config.deploy = false;
+        // librime's deployer and live sessions share process-global service
+        // state. Release the session before the worker starts and recreate it
+        // on this thread after deployment completes.
+        drop(self.rime_backend.take());
+        self.rime_menu_message = Some("Deploying Rime data…".to_owned());
         self.rime_menu_open = true;
         cx.notify();
+
+        let task = cx.background_spawn(async move { RimeBackend::deploy(config) });
+        self.rime_deploy_task = Some(cx.spawn(async move |weak, cx| {
+            let deploy_result = task.await;
+            let _ = weak.update(cx, |view, cx| {
+                view.rime_deploy_task = None;
+                view.rime_backend = match RimeBackend::new(backend_config) {
+                    Ok(backend) => Some(backend),
+                    Err(error) => {
+                        log::error!(
+                            target: "nvim_gpui::rime",
+                            "Rime backend could not be recreated after redeploy: {error}"
+                        );
+                        None
+                    }
+                };
+                view.rime_menu_message = Some(match deploy_result {
+                    Ok(()) => {
+                        log::info!(
+                            target: "nvim_gpui::rime",
+                            "Rime data redeployed from titlebar menu"
+                        );
+                        "Rime data redeployed successfully.".to_owned()
+                    }
+                    Err(error) => {
+                        log::error!(
+                            target: "nvim_gpui::rime",
+                            "Rime data redeploy failed: {error}"
+                        );
+                        format!("Rime redeploy failed: {error}")
+                    }
+                });
+                view.rime_menu_open = true;
+                cx.notify();
+            });
+        }));
     }
 
     pub(crate) fn open_rime_user_data_directory(&mut self, cx: &mut Context<Self>) {
@@ -1023,17 +1112,6 @@ fn path_from_open_url(raw_url: &str) -> Option<PathBuf> {
                 target: "nvim_gpui::startup",
                 "could not convert platform file URL to a path: {raw_url}"
             );
-            None
-        }
-    }
-}
-
-fn initialize_rime_backend(app_settings: &settings::Settings) -> Option<RimeBackend> {
-    let config = rime_config_from_settings(app_settings, None).ok()?;
-    match RimeBackend::new(config) {
-        Ok(backend) => Some(backend),
-        Err(error) => {
-            log::warn!(target: "nvim_gpui::rime", "Rime backend unavailable: {error}");
             None
         }
     }

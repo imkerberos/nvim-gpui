@@ -165,6 +165,7 @@ struct RimeApi {
 }
 
 /// Paths and initialization policy for one librime instance.
+#[derive(Debug, Clone)]
 pub struct RimeConfig {
     pub library: Option<PathBuf>,
     pub shared_data: PathBuf,
@@ -570,6 +571,49 @@ pub struct RimeBackend {
 }
 
 impl RimeBackend {
+    /// Deploy Rime data without creating a long-lived session.
+    ///
+    /// This is intentionally a standalone operation so callers can run the
+    /// potentially slow deployer on a worker thread while keeping the live
+    /// session on its owning thread.
+    pub fn deploy(config: RimeConfig) -> Result<(), String> {
+        let shared_data = resolve_shared_data(&config.shared_data)?;
+        ensure_directory(&config.user_data, "user data")?;
+        if let Some(path) = &config.staging_data {
+            ensure_directory(path, "staging data")?;
+        }
+
+        let mut traits = RimeTraitsStorage::new(&config, &shared_data)?;
+        let library = LoadedRime::load(config.library.as_deref())?;
+        let api = library.api()?;
+        let setup = required(api.setup, "setup")?;
+        let deployer_initialize = required(api.deployer_initialize, "deployer_initialize")?;
+        let prebuild = required(api.prebuild, "prebuild")?;
+        let deploy = required(api.deploy, "deploy")?;
+
+        // The standalone deployer does not create a session, but setup still
+        // needs to run before the deployer API is entered.
+        unsafe {
+            setup(&mut traits.traits);
+            deployer_initialize(&mut traits.traits);
+        }
+        let result = unsafe {
+            if prebuild() == 0 {
+                Err("librime could not prebuild data".to_owned())
+            } else if deploy() == 0 {
+                Err("librime could not deploy data".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+
+        if let Some(finalize) = library.api()?.finalize {
+            // SAFETY: setup completed before the deployer was invoked.
+            unsafe { finalize() };
+        }
+        result
+    }
+
     pub fn new(config: RimeConfig) -> Result<Self, String> {
         let shared_data = resolve_shared_data(&config.shared_data)?;
         ensure_directory(&config.user_data, "user data")?;
@@ -1025,12 +1069,17 @@ mod tests {
         let staging_data = root.join("staging");
 
         let result = (|| {
-            let backend = RimeBackend::new(RimeConfig {
+            let config = RimeConfig {
                 library,
                 shared_data,
                 user_data,
                 staging_data: Some(staging_data),
                 deploy: true,
+            };
+            RimeBackend::deploy(config.clone())?;
+            let backend = RimeBackend::new(RimeConfig {
+                deploy: false,
+                ..config
             })?;
 
             // F35 is intentionally outside the default Rime bindings. Both
