@@ -41,8 +41,11 @@ pub struct InputRouterConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputRouter {
-    config: InputRouterConfig,
     context: InputContext,
+    // Rime is intentionally a per-Neovim-context choice. Insert mode keeps
+    // the existing runtime setting, while command-line, prompt, and terminal
+    // mode start in the plain Neovim path and can opt into Rime independently.
+    rime_enabled: [bool; 4],
 }
 
 impl Default for InputRouter {
@@ -54,8 +57,10 @@ impl Default for InputRouter {
 impl InputRouter {
     pub fn new(config: InputRouterConfig) -> Self {
         Self {
-            config,
             context: InputContext::Normal,
+            // The configuration value describes the initial Insert-mode
+            // state. Text-entry contexts must not inherit it.
+            rime_enabled: [config.rime_enabled, false, false, false],
         }
     }
 
@@ -68,31 +73,90 @@ impl InputRouter {
     }
 
     pub fn config(&self) -> InputRouterConfig {
-        self.config
+        InputRouterConfig {
+            rime_enabled: self.rime_enabled(),
+        }
     }
 
     pub fn set_config(&mut self, config: InputRouterConfig) {
-        self.config = config;
+        self.set_rime_enabled(config.rime_enabled);
     }
 
     pub fn set_nvim_mode(&mut self, mode: &str) {
         self.context = context_for_nvim_mode(mode);
     }
 
+    pub fn rime_enabled(&self) -> bool {
+        self.rime_enabled_for(self.context)
+    }
+
+    pub fn rime_enabled_for(&self, context: InputContext) -> bool {
+        rime_context_index(context)
+            .map(|index| self.rime_enabled[index])
+            .unwrap_or(false)
+    }
+
+    /// Return the context affected by the activation shortcut or titlebar
+    /// toggle. Normal mode has no text-input backend, so toggling there
+    /// prepares Insert mode for the next `i` command.
+    pub fn rime_toggle_context(&self) -> InputContext {
+        match self.context {
+            InputContext::Normal => InputContext::Insert,
+            context => context,
+        }
+    }
+
+    pub fn rime_enabled_for_toggle_context(&self) -> bool {
+        self.rime_enabled_for(self.rime_toggle_context())
+    }
+
+    pub fn set_rime_enabled(&mut self, enabled: bool) {
+        let context = self.rime_toggle_context();
+        self.set_rime_enabled_for(context, enabled);
+    }
+
+    pub fn set_rime_enabled_for(&mut self, context: InputContext, enabled: bool) {
+        if let Some(index) = rime_context_index(context) {
+            self.rime_enabled[index] = enabled;
+        }
+    }
+
+    /// Disable every per-context Rime route when the selected IME backend is
+    /// no longer Rime or when the backend has failed.
+    pub fn disable_rime(&mut self) {
+        self.rime_enabled.fill(false);
+    }
+
     pub fn target(&self) -> InputTarget {
         match self.context {
             InputContext::Normal => InputTarget::Neovim,
-            InputContext::Insert
-            | InputContext::CommandLine
-            | InputContext::Prompt
-            | InputContext::Terminal => {
-                if self.config.rime_enabled {
+            InputContext::Insert => {
+                if self.rime_enabled() {
                     InputTarget::Rime
                 } else {
                     InputTarget::SystemIme
                 }
             }
+            // Command-line, prompt, and terminal input must remain English
+            // by default. They enter Rime only after an explicit toggle.
+            InputContext::CommandLine | InputContext::Prompt | InputContext::Terminal => {
+                if self.rime_enabled() {
+                    InputTarget::Rime
+                } else {
+                    InputTarget::Neovim
+                }
+            }
         }
+    }
+}
+
+fn rime_context_index(context: InputContext) -> Option<usize> {
+    match context {
+        InputContext::Normal => None,
+        InputContext::Insert => Some(0),
+        InputContext::CommandLine => Some(1),
+        InputContext::Prompt => Some(2),
+        InputContext::Terminal => Some(3),
     }
 }
 
@@ -582,15 +646,35 @@ mod tests {
     }
 
     #[test]
-    fn text_input_contexts_use_rime_when_enabled() {
+    fn command_and_terminal_contexts_default_to_neovim_english_input() {
         let mut router = InputRouter::new(InputRouterConfig { rime_enabled: true });
         router.set_context(InputContext::CommandLine);
-        assert_eq!(router.target(), InputTarget::Rime);
+        assert_eq!(router.target(), InputTarget::Neovim);
 
         for context in [InputContext::Prompt, InputContext::Terminal] {
             router.set_context(context);
-            assert_eq!(router.target(), InputTarget::Rime);
+            assert_eq!(router.target(), InputTarget::Neovim);
         }
+    }
+
+    #[test]
+    fn command_and_terminal_contexts_can_enable_rime_independently() {
+        let mut router = InputRouter::new(InputRouterConfig { rime_enabled: true });
+        assert!(router.rime_enabled_for(InputContext::Insert));
+
+        router.set_context(InputContext::CommandLine);
+        assert!(!router.rime_enabled());
+        router.set_rime_enabled(true);
+        assert_eq!(router.target(), InputTarget::Rime);
+        assert!(router.rime_enabled_for(InputContext::Insert));
+
+        router.set_context(InputContext::Terminal);
+        assert!(!router.rime_enabled());
+        router.set_rime_enabled(true);
+        assert_eq!(router.target(), InputTarget::Rime);
+
+        router.set_context(InputContext::CommandLine);
+        assert_eq!(router.target(), InputTarget::Rime);
     }
 
     #[test]
