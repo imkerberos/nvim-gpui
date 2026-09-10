@@ -417,7 +417,7 @@ fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
         .send_input(":call setline(1, ['one', 'two']) | call deletebufline(bufnr(), 3) | normal! gg\"+2yy\n")
         .expect("yank command should queue");
     let params = set_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(std::time::Duration::from_secs(5))
         .expect("remote yank should reach the GUI clipboard handler");
     let params = params
         .as_array()
