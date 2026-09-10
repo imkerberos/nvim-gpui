@@ -344,7 +344,9 @@ fn embedded_nvim_replies_to_a_nvim_rpc_request() {
         )
         .expect("Neovim input should queue");
 
-    for _ in 0..200 {
+    // Allow slower CI runners enough time for the RPC worker to dispatch the
+    // request while the full test suite is running in parallel.
+    for _ in 0..2_000 {
         if called.load(Ordering::Acquire) {
             break;
         }
