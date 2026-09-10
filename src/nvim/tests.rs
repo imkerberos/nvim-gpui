@@ -478,7 +478,9 @@ fn embedded_nvim_can_be_reconnected_after_a_clean_exit() {
         .expect("Neovim quit command should queue");
 
     let mut disconnected = None;
-    for _ in 0..400 {
+    // Allow slower CI runners enough time for the RPC worker to observe the
+    // child exit and publish the disconnect event.
+    for _ in 0..2_000 {
         while let Ok(event) = events.try_recv() {
             if let NvimEvent::Disconnected { reason } = event {
                 disconnected = Some(reason);
