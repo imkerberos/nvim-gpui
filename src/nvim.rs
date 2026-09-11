@@ -280,12 +280,12 @@ impl NvimProcess {
                     &worker_request_handlers,
                 );
                 let shutdown_requested = worker_shutdown_requested.load(Ordering::Acquire);
-                let clean_exit = if !shutdown_requested
+                let embedded_clean_exit = !shutdown_requested
                     && result
                         .as_ref()
                         .err()
-                        .is_some_and(|error| error == NVIM_EXITED)
-                {
+                        .is_some_and(|error| error == NVIM_EXITED);
+                let clean_exit = if embedded_clean_exit {
                     wait_for_child_exit(&worker_child).map(|status| status.success())
                 } else {
                     child_exit_status(&worker_child).map(|status| status.success())
@@ -303,9 +303,11 @@ impl NvimProcess {
                 fail_pending_requests(&worker_pending_requests, "RPC connection closed");
                 let _ = rpc_shutdown_commands.send_blocking(NvimCommand::Shutdown);
 
-                if let Some(child) = worker_child.as_ref() {
-                    if let Ok(mut child) = child.lock() {
-                        let _ = child.wait();
+                if !embedded_clean_exit {
+                    if let Some(child) = worker_child.as_ref() {
+                        if let Ok(mut child) = child.lock() {
+                            let _ = child.wait();
+                        }
                     }
                 }
                 let reason = disconnect_reason(
@@ -522,13 +524,10 @@ fn child_exit_status(child: &Option<Arc<Mutex<Child>>>) -> Option<ExitStatus> {
 }
 
 fn wait_for_child_exit(child: &Option<Arc<Mutex<Child>>>) -> Option<ExitStatus> {
-    for _ in 0..50 {
-        if let Some(status) = child_exit_status(child) {
-            return Some(status);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    child_exit_status(child)
+    child
+        .as_ref()
+        .and_then(|child| child.lock().ok())
+        .and_then(|mut child| child.wait().ok())
 }
 
 fn disconnect_reason(
