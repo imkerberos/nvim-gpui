@@ -1,5 +1,5 @@
 Name:           nvim-gpui
-Version:        0.7.1
+Version:        0.7.2
 Release:        1%{?dist}
 Summary:        Another GPU-rendered graphical client for Neovim
 
@@ -97,5 +97,8 @@ install -D -m 0644 LICENSE \
 %{_datadir}/icons/hicolor/*/apps/nvim-gpui.png
 
 %changelog
+* Fri Sep 11 2026 nvim-gpui contributors - 0.7.2-1
+- Improve Rime context isolation and asynchronous initial deployment.
+
 * Thu Sep 10 2026 nvim-gpui contributors - 0.7.1-1
 - Add the initial Fedora RPM packaging.

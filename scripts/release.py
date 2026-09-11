@@ -91,6 +91,9 @@ def metadata_files(root: Path) -> dict[Path, str]:
         root / "Cargo.toml": read(root / "Cargo.toml"),
         root / "Cargo.lock": read(root / "Cargo.lock"),
         root / "Casks" / "nvim-gpui.rb": read(root / "Casks" / "nvim-gpui.rb"),
+        root / "packaging" / "fedora" / "nvim-gpui.spec": read(
+            root / "packaging" / "fedora" / "nvim-gpui.spec"
+        ),
         root / "packaging" / "macos" / "Info.plist": read(
             root / "packaging" / "macos" / "Info.plist"
         ),
@@ -115,6 +118,12 @@ def synchronized_versions(root: Path) -> dict[Path, str]:
     if cask_match is None:
         fail("Casks/nvim-gpui.rb has no version field")
     versions[root / "Casks" / "nvim-gpui.rb"] = cask_match.group(1)
+
+    spec = files[root / "packaging" / "fedora" / "nvim-gpui.spec"]
+    spec_match = re.search(r"(?m)^Version:\s*([^\s]+)\s*$", spec)
+    if spec_match is None:
+        fail("packaging/fedora/nvim-gpui.spec has no Version field")
+    versions[root / "packaging" / "fedora" / "nvim-gpui.spec"] = spec_match.group(1)
 
     plist = files[root / "packaging" / "macos" / "Info.plist"]
     for key in ("CFBundleShortVersionString", "CFBundleVersion"):
@@ -159,6 +168,12 @@ def prepare(root: Path, raw_version: str) -> None:
             root / "Casks" / "nvim-gpui.rb",
             files[root / "Casks" / "nvim-gpui.rb"],
             r'(?m)^(\s+version\s+")[^"]+("\s*)$',
+            version,
+        ),
+        root / "packaging" / "fedora" / "nvim-gpui.spec": replace_one(
+            root / "packaging" / "fedora" / "nvim-gpui.spec",
+            files[root / "packaging" / "fedora" / "nvim-gpui.spec"],
+            r"(?m)^(Version:\s+)[^\s]+(\s*)$",
             version,
         ),
         root / "packaging" / "macos" / "Info.plist": files[
