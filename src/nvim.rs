@@ -286,7 +286,7 @@ impl NvimProcess {
                         .err()
                         .is_some_and(|error| error == NVIM_EXITED);
                 let clean_exit = if embedded_clean_exit {
-                    wait_for_child_exit(&worker_child).map(|status| status.success())
+                    Some(true)
                 } else {
                     child_exit_status(&worker_child).map(|status| status.success())
                 };
@@ -303,11 +303,9 @@ impl NvimProcess {
                 fail_pending_requests(&worker_pending_requests, "RPC connection closed");
                 let _ = rpc_shutdown_commands.send_blocking(NvimCommand::Shutdown);
 
-                if !embedded_clean_exit {
-                    if let Some(child) = worker_child.as_ref() {
-                        if let Ok(mut child) = child.lock() {
-                            let _ = child.wait();
-                        }
+                if let Some(child) = worker_child.as_ref() {
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.wait();
                     }
                 }
                 let reason = disconnect_reason(
@@ -521,13 +519,6 @@ fn child_exit_status(child: &Option<Arc<Mutex<Child>>>) -> Option<ExitStatus> {
         .as_ref()
         .and_then(|child| child.lock().ok())
         .and_then(|mut child| child.try_wait().ok().flatten())
-}
-
-fn wait_for_child_exit(child: &Option<Arc<Mutex<Child>>>) -> Option<ExitStatus> {
-    child
-        .as_ref()
-        .and_then(|child| child.lock().ok())
-        .and_then(|mut child| child.wait().ok())
 }
 
 fn disconnect_reason(
