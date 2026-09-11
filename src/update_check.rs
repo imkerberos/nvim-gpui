@@ -219,13 +219,24 @@ mod tests {
         thread,
     };
 
+    fn newer_release_tag() -> String {
+        let mut version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+            .expect("package version should be valid SemVer");
+        version.patch += 1;
+        format!("v{version}")
+    }
+
     #[test]
     fn detects_newer_stable_release() {
+        let tag = newer_release_tag();
+        let version = tag
+            .strip_prefix('v')
+            .expect("test tag should have a v prefix");
         assert_eq!(
-            status_for_tag("v0.7.2").expect("version should parse"),
+            status_for_tag(&tag).expect("version should parse"),
             Status::Available {
-                version: "0.7.2".to_owned(),
-                url: "https://github.com/imkerberos/nvim-gpui/releases/tag/v0.7.2".to_owned(),
+                version: version.to_owned(),
+                url: format!("https://github.com/imkerberos/nvim-gpui/releases/tag/{tag}"),
             }
         );
     }
@@ -290,7 +301,13 @@ mod tests {
         let address = listener
             .local_addr()
             .expect("test listener should have an address");
-        let body = r#"[{"tag_name":"v0.7.2","prerelease":false,"assets":[{"name":"test","browser_download_url":"https://example.com/test","digest":null}],"tarball_url":"https://example.com/tarball","zipball_url":"https://example.com/zip"}]"#;
+        let tag = newer_release_tag();
+        let version = tag
+            .strip_prefix('v')
+            .expect("test tag should have a v prefix");
+        let body = format!(
+            r#"[{{"tag_name":"{tag}","prerelease":false,"assets":[{{"name":"test","browser_download_url":"https://example.com/test","digest":null}}],"tarball_url":"https://example.com/tarball","zipball_url":"https://example.com/zip"}}]"#
+        );
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("test server should accept");
             let mut request = [0; 1024];
@@ -319,8 +336,8 @@ mod tests {
         assert_eq!(
             status,
             Status::Available {
-                version: "0.7.2".to_owned(),
-                url: "https://github.com/imkerberos/nvim-gpui/releases/tag/v0.7.2".to_owned(),
+                version: version.to_owned(),
+                url: format!("https://github.com/imkerberos/nvim-gpui/releases/tag/{tag}"),
             }
         );
         server.join().expect("test server should finish");

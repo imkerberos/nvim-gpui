@@ -2,6 +2,16 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.7.2] - 2026-09-11
+
+### Fixed
+
+- Command-line and terminal input contexts now default to English and keep
+  their Rime state independent from Insert mode while still allowing an
+  explicit switch to Chinese.
+- Rime's first deployment no longer blocks application startup; deployment
+  runs asynchronously in the background.
+
 ## [0.7.1] - 2026-09-10
 
 ### Added
