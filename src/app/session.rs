@@ -434,6 +434,10 @@ impl NvimGpui {
         self.editor.protocol.presentation.image_store.clear();
         self.editor.presentation.image_sources.clear();
         self.editor.protocol.presentation.pending_ui_data.clear();
+        self.editor.resolved_grid_font = None;
+        self.editor.resolved_grid_wide_font = None;
+        self.editor.shaping_cache.borrow_mut().clear();
+        self.editor.glyph_coverage_cache.borrow_mut().clear();
         self.invalidate_presentation_snapshot();
         self.editor.input.mouse_option = "nvi".to_owned();
         self.editor.input.mouse_enabled = true;

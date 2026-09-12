@@ -250,8 +250,14 @@ vim.opt.guifont = "Iosevka Term Slab:h16"
 vim.opt.guifontwide = "LXGW WenKai:h16"
 ```
 
-If these options are not set, nvim-gpui uses a system monospace font as a
-fallback.
+If these options are not set, nvim-gpui selects an installed platform font at
+runtime. The regular grid font prefers Menlo on macOS, Cascadia Mono or
+Consolas on Windows, and Ubuntu Mono, Noto Sans Mono, or DejaVu Sans Mono on
+Linux. Wide CJK cells
+prefer PingFang SC on macOS, Microsoft YaHei UI on Windows, and an installed
+Noto CJK font on Linux. If a preferred font is unavailable, the next installed
+candidate is used; explicit `guifont` and `guifontwide` values always take
+precedence.
 
 ## GUI-specific theme
 

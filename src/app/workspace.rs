@@ -169,8 +169,16 @@ impl NvimGpui {
             .filter(|spec| !spec.trim().is_empty())
         {
             parse_guifont_spec(spec)
-        } else {
+        } else if self
+            .editor
+            .protocol
+            .guifont
+            .as_deref()
+            .is_some_and(|spec| !spec.trim().is_empty())
+        {
             self.current_grid_font(window)
+        } else {
+            GuiFontSpec::system_wide(window)
         };
         self.editor.resolved_grid_wide_font = Some(font.clone());
         font

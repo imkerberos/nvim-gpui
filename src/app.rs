@@ -41,17 +41,46 @@ pub(crate) enum QuitDialogState {
 pub(crate) const DEFAULT_GRID_FONT_SIZE: f32 = 14.0;
 pub(crate) const DEFAULT_GRID_CELL_WIDTH: f32 = DEFAULT_GRID_FONT_SIZE * 0.6;
 pub(crate) const DEFAULT_GRID_LINE_HEIGHT: f32 = 20.0;
+
+#[cfg(target_os = "macos")]
+pub(crate) const DEFAULT_GRID_FONT_FAMILY: &str = "Menlo";
+#[cfg(target_os = "windows")]
+pub(crate) const DEFAULT_GRID_FONT_FAMILY: &str = "Consolas";
+#[cfg(target_os = "linux")]
+pub(crate) const DEFAULT_GRID_FONT_FAMILY: &str = "DejaVu Sans Mono";
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub(crate) const DEFAULT_GRID_FONT_FAMILY: &str = "monospace";
+
+#[cfg(target_os = "macos")]
+pub(crate) const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &["Menlo", "SF Mono", "Monaco"];
+#[cfg(target_os = "windows")]
+pub(crate) const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] =
+    &["Cascadia Mono", "Consolas", "Courier New"];
+#[cfg(target_os = "linux")]
 pub(crate) const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &[
-    "Menlo",
-    "SF Mono",
-    "Monaco",
-    "Cascadia Mono",
-    "Consolas",
+    "Ubuntu Mono",
     "Noto Sans Mono",
     "DejaVu Sans Mono",
     "Liberation Mono",
-    "Courier New",
+    "Source Code Pro",
 ];
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub(crate) const PREFERRED_SYSTEM_MONOSPACE_FONTS: &[&str] = &["monospace"];
+
+#[cfg(target_os = "macos")]
+pub(crate) const PREFERRED_SYSTEM_WIDE_FONTS: &[&str] = &["PingFang SC", "Hiragino Sans GB"];
+#[cfg(target_os = "windows")]
+pub(crate) const PREFERRED_SYSTEM_WIDE_FONTS: &[&str] =
+    &["Microsoft YaHei UI", "Microsoft YaHei", "SimSun"];
+#[cfg(target_os = "linux")]
+pub(crate) const PREFERRED_SYSTEM_WIDE_FONTS: &[&str] = &[
+    "Noto Sans Mono CJK SC",
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+];
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub(crate) const PREFERRED_SYSTEM_WIDE_FONTS: &[&str] = &[];
+
 pub(crate) const MIN_WINDOW_WIDTH: f32 = 80.0;
 pub(crate) const MIN_WINDOW_HEIGHT: f32 = 44.0;
 pub(crate) const THEMED_TITLEBAR_HEIGHT: f32 = 32.0;

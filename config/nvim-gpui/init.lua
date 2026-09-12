@@ -5,8 +5,8 @@
 vim.opt.termguicolors = true
 vim.opt.number = true
 vim.opt.title = true
-vim.opt.guifont = "Iosevka Term Slab:h16"
-vim.opt.guifontwide = "LXGW WenKai:h16"
+-- vim.opt.guifont = "Iosevka Term Slab:h16"
+-- vim.opt.guifontwide = "LXGW WenKai:h16"
 vim.g.nvim_gpui = vim.env.NVIM_GPUI == "1"
 
 -- The flake supplies all three plugins from the same nixpkgs revision. Lazy

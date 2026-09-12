@@ -1,6 +1,7 @@
 use crate::app::{
-    DEFAULT_GRID_CELL_WIDTH, DEFAULT_GRID_FONT_SIZE, DEFAULT_GRID_LINE_HEIGHT, MIN_WINDOW_HEIGHT,
-    MIN_WINDOW_WIDTH, PREFERRED_SYSTEM_MONOSPACE_FONTS, THEMED_TITLEBAR_HEIGHT,
+    DEFAULT_GRID_CELL_WIDTH, DEFAULT_GRID_FONT_FAMILY, DEFAULT_GRID_FONT_SIZE,
+    DEFAULT_GRID_LINE_HEIGHT, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    PREFERRED_SYSTEM_MONOSPACE_FONTS, PREFERRED_SYSTEM_WIDE_FONTS, THEMED_TITLEBAR_HEIGHT,
 };
 use gpui::{font, px, size, Pixels, Window};
 
@@ -13,7 +14,7 @@ pub(crate) struct GuiFontSpec {
 impl Default for GuiFontSpec {
     fn default() -> Self {
         Self {
-            family: "Menlo".to_owned(),
+            family: DEFAULT_GRID_FONT_FAMILY.to_owned(),
             size: DEFAULT_GRID_FONT_SIZE,
         }
     }
@@ -41,6 +42,24 @@ impl GuiFontSpec {
             // a last-resort value for unusual platforms with incomplete font
             // enumeration; the normal path above is runtime-selected.
             .unwrap_or_else(|| Self::default().family);
+
+        Self {
+            family,
+            size: DEFAULT_GRID_FONT_SIZE,
+        }
+    }
+
+    pub(crate) fn system_wide(window: &Window) -> Self {
+        let available_fonts = window.text_system().all_font_names();
+        let family = PREFERRED_SYSTEM_WIDE_FONTS
+            .iter()
+            .find_map(|preferred| {
+                available_fonts
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(preferred))
+                    .cloned()
+            })
+            .unwrap_or_else(|| Self::system(window).family);
 
         Self {
             family,

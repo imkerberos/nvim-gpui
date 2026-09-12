@@ -8,7 +8,7 @@ use crate::{
     },
     editor::{
         initial_window_size_for_grid, parse_guifont_spec, EditorRuntime, EditorState,
-        GridPlacement, ViewportAnimation,
+        GridPlacement, GuiFontSpec, ViewportAnimation,
     },
     grid::{
         AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
@@ -601,7 +601,7 @@ fn guifont_family_and_size_are_parsed_for_grid_metrics() {
 fn empty_guifont_falls_back_to_a_safe_grid_font() {
     let spec = parse_guifont_spec("");
 
-    assert_eq!(spec.family, "Menlo");
+    assert_eq!(spec.family, GuiFontSpec::default().family);
     assert_eq!(spec.size, 14.0);
 }
 

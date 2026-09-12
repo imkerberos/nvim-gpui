@@ -1,6 +1,6 @@
 use super::*;
 
-const MAX_SHAPED_LINE_CACHE_ENTRIES: usize = 8192;
+const MAX_SHAPED_LINE_CACHE_ENTRIES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GlyphCoverageKey {
@@ -72,7 +72,13 @@ pub(super) struct StyledTextRun {
 
 #[derive(Default)]
 pub struct ShapedLineCache {
-    lines: HashMap<ShapingKey, ShapedLine>,
+    lines: HashMap<ShapingKey, CachedShapedLine>,
+    usage_clock: u64,
+}
+
+struct CachedShapedLine {
+    line: ShapedLine,
+    last_used: u64,
 }
 
 pub type SharedShapedLineCache = Rc<RefCell<ShapedLineCache>>;
@@ -84,6 +90,7 @@ impl ShapedLineCache {
 
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.usage_clock = 0;
     }
 
     pub(super) fn shape_line(
@@ -97,12 +104,21 @@ impl ShapedLineCache {
             runs: runs.clone(),
         };
 
-        if let Some(line) = self.lines.get(&key) {
-            return line.clone();
+        self.usage_clock = self.usage_clock.saturating_add(1);
+        if let Some(entry) = self.lines.get_mut(&key) {
+            entry.last_used = self.usage_clock;
+            return entry.line.clone();
         }
 
         if self.lines.len() >= MAX_SHAPED_LINE_CACHE_ENTRIES {
-            self.lines.clear();
+            if let Some(oldest_key) = self
+                .lines
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            {
+                self.lines.remove(&oldest_key);
+            }
         }
 
         let font_size = runs
@@ -123,7 +139,13 @@ impl ShapedLineCache {
         let line = window
             .text_system()
             .shape_line(text, font_size, &text_runs, None);
-        self.lines.insert(key, line.clone());
+        self.lines.insert(
+            key,
+            CachedShapedLine {
+                line: line.clone(),
+                last_used: self.usage_clock,
+            },
+        );
         line
     }
 }
