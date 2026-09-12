@@ -1,4 +1,6 @@
 use super::*;
+use crate::editor::image_store;
+use std::collections::HashSet;
 
 impl NvimGpui {
     #[cfg(test)]
@@ -7,7 +9,7 @@ impl NvimGpui {
         self.compositor_frame()
             .layers
             .into_iter()
-            .filter(|layer| layer.kind != compositor::GridLayerKind::Main)
+            .filter(|layer| layer.kind != GridLayerKind::Main)
             .map(|layer| (layer.grid_id, layer.model, layer.placement))
             .collect()
     }
@@ -15,9 +17,15 @@ impl NvimGpui {
     pub(crate) fn visible_image_layers(&self) -> Vec<ImageLayer> {
         let mut layers = Vec::new();
 
-        for placement in self.image_store.placements() {
+        for placement in self.editor.protocol.presentation.image_store.placements() {
             if placement.is_virtual_placeholder()
-                || self.image_store.asset(placement.key.image).is_none()
+                || self
+                    .editor
+                    .protocol
+                    .presentation
+                    .image_store
+                    .asset(placement.key.image)
+                    .is_none()
                 || !self.grid_is_visible(placement.anchor.grid.0)
             {
                 continue;
@@ -36,7 +44,13 @@ impl NvimGpui {
         // Most frames have no Kitty placeholder at all. Avoid walking every
         // visible grid in that common case. Build the lookup once as well so
         // placeholder cells do not rescan every image placement individually.
-        if !self.image_store.has_virtual_placements() {
+        if !self
+            .editor
+            .protocol
+            .presentation
+            .image_store
+            .has_virtual_placements()
+        {
             layers.sort_by(|left, right| {
                 left.z_index
                     .cmp(&right.z_index)
@@ -48,10 +62,16 @@ impl NvimGpui {
         }
 
         let virtual_image_sizes = self
+            .editor
+            .protocol
+            .presentation
             .image_store
             .virtual_placements()
             .filter_map(|placement| {
-                self.image_store
+                self.editor
+                    .protocol
+                    .presentation
+                    .image_store
                     .asset(placement.key.image)
                     .is_some()
                     .then_some((
@@ -60,11 +80,18 @@ impl NvimGpui {
                     ))
             })
             .collect::<HashMap<_, _>>();
-        let mut models = vec![(1, self.grid.as_ref())];
-        models.extend(self.other_grids.iter().filter_map(|(grid, model)| {
-            self.grid_is_visible(*grid)
-                .then_some((*grid, model.as_ref()))
-        }));
+        let mut models = vec![(1, self.editor.protocol.presentation.grid.as_ref())];
+        models.extend(
+            self.editor
+                .protocol
+                .presentation
+                .other_grids
+                .iter()
+                .filter_map(|(grid, model)| {
+                    self.grid_is_visible(*grid)
+                        .then_some((*grid, model.as_ref()))
+                }),
+        );
 
         let mut virtual_layer_keys = HashSet::new();
 
@@ -111,7 +138,7 @@ impl NvimGpui {
                     // signal instead of treating a partial placeholder as a
                     // complete preview.
                     let source_row = row.saturating_sub(1);
-                    if self.cursor_grid == *grid
+                    if self.editor.protocol.cursor.cursor_grid == *grid
                         && model
                             .cursor()
                             .is_some_and(|cursor| cursor.row == source_row)
@@ -142,13 +169,5 @@ impl NvimGpui {
                 .then_with(|| left.column.cmp(&right.column))
         });
         layers
-    }
-
-    pub(crate) fn grid_is_visible(&self, grid: u64) -> bool {
-        grid == 1
-            || self
-                .grid_placements
-                .get(&grid)
-                .is_some_and(|placement| placement.visible)
     }
 }

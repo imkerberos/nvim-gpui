@@ -265,6 +265,33 @@ fn model_pads_rows_to_a_stable_grid_width() {
 }
 
 #[test]
+fn grid_model_clone_only_copies_rows_that_are_modified() {
+    let source = GridModel::from_rows(vec![
+        GridRow::new(vec![GridCell::text("a", DEFAULT_HIGHLIGHT)]),
+        GridRow::new(vec![GridCell::text("b", DEFAULT_HIGHLIGHT)]),
+    ]);
+    let mut pending = source.clone();
+
+    pending.apply_grid_line(
+        0,
+        0,
+        &[GridLineCell::new("updated", DEFAULT_HIGHLIGHT, 1)],
+        false,
+    );
+
+    assert!(!std::ptr::eq(
+        source.rows().get(0).expect("source row should exist"),
+        pending.rows().get(0).expect("pending row should exist")
+    ));
+    assert!(std::ptr::eq(
+        source.rows().get(1).expect("source row should exist"),
+        pending.rows().get(1).expect("pending row should exist")
+    ));
+    assert_eq!(source.rows()[0].cells()[0].text, "a");
+    assert_eq!(pending.rows()[0].cells()[0].text, "updated");
+}
+
+#[test]
 fn grid_line_updates_unicode_cells_repeats_and_wrap_state() {
     let mut model = GridModel::new(6, 2);
 

@@ -1,5 +1,48 @@
-use super::*;
-use std::cell::RefCell;
+use super::{
+    initial_window_size_for_grid, NvimGpui, DEBUG_WINDOW_HEIGHT, DEFAULT_GRID_HEIGHT,
+    DEFAULT_GRID_WIDTH, DEFAULT_WINDOW_TITLE, LOGO_ASSET, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    WINDOW_CONTROL_CLOSE_ASSET, WINDOW_CONTROL_MAXIMIZE_ASSET, WINDOW_CONTROL_MINIMIZE_ASSET,
+    WINDOW_CONTROL_RESTORE_ASSET,
+};
+use crate::app::{themed_titlebar_options, themed_window_decorations};
+use crate::gui::DebugWindow;
+use crate::{
+    nvim::{self, NvimProcess},
+    platform, settings, update_check, CliOptions, NvimConnection,
+};
+use gpui::{
+    point, px, size, App, AppContext, Application, AssetSource, Bounds, Entity, SharedString,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions,
+};
+use std::{borrow::Cow, cell::RefCell, ffi::OsString, rc::Rc};
+
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        let asset: &'static [u8] = match path {
+            LOGO_ASSET => include_bytes!("../../assets/icons/neovim-gpui.png"),
+            WINDOW_CONTROL_MINIMIZE_ASSET => {
+                include_bytes!("../../assets/icons/window-controls/minimize.svg")
+            }
+            WINDOW_CONTROL_MAXIMIZE_ASSET => {
+                include_bytes!("../../assets/icons/window-controls/maximize.svg")
+            }
+            WINDOW_CONTROL_RESTORE_ASSET => {
+                include_bytes!("../../assets/icons/window-controls/restore.svg")
+            }
+            WINDOW_CONTROL_CLOSE_ASSET => {
+                include_bytes!("../../assets/icons/window-controls/close.svg")
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Cow::Borrowed(asset)))
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
 
 pub(crate) fn run(
     options: CliOptions,
@@ -193,10 +236,10 @@ fn open_main_window(
             }
             should_close
         });
-        view.window_bounds_subscription =
+        view.window.window_bounds_subscription =
             Some(cx.observe_window_bounds(window, |view, window, _cx| view.sync_nvim_size(window)));
         view.sync_nvim_size(window);
-        if let Some(focus_handle) = view.focus_handle.as_ref() {
+        if let Some(focus_handle) = view.window.focus_handle.as_ref() {
             window.focus(focus_handle);
         }
     })?;

@@ -148,6 +148,7 @@ impl ImageStore {
         self.prune_unplaced_assets(None)
     }
 
+    #[cfg(test)]
     pub fn insert_asset(&mut self, id: ImageId, encoded: Vec<u8>) {
         let format = ImageFormatKind::detect(&encoded);
         let _ = self.insert_asset_with_format(id, encoded, format);
@@ -178,6 +179,7 @@ impl ImageStore {
         self.placements.insert(placement.key, placement);
     }
 
+    #[cfg(test)]
     pub fn placement(&self, key: PlacementKey) -> Option<&ImagePlacement> {
         self.placements.get(&key)
     }

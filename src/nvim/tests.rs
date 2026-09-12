@@ -16,7 +16,7 @@ use super::{
     NvimFloatPosition, NvimProcess, NvimProtocolInfo, NvimTheme, NvimVersion, RequestRegistry,
     RequestState, NVIM_EXITED,
 };
-use crate::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
+use crate::app::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
 use rmpv::Value;
 use std::{
@@ -433,7 +433,7 @@ fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
         .request(
             "nvim_exec_lua",
             Value::Array(vec![
-                Value::from(crate::clipboard::remote_provider_lua(
+                Value::from(crate::app::clipboard::remote_provider_lua(
                     process
                         .protocol()
                         .expect("protocol should be available")

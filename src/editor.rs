@@ -1,1275 +1,218 @@
 use crate::{
-    app::{compositor, GridPlacement, GuiFontSpec, ImageLayer, NvimGpui},
+    app::{NvimGpui, THEMED_TITLEBAR_HEIGHT},
+    editor::image_store::ImageId,
     grid,
     grid::GridElement,
-    input,
+    input as input_core,
     input::InputTarget,
     settings,
     widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT},
 };
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Window,
+    Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, Image, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, Window,
 };
-use std::{ops::Range, rc::Rc, time::Instant};
+use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use unicode_segmentation::UnicodeSegmentation;
 
-impl Focusable for NvimGpui {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle
-            .clone()
-            .expect("NvimGpui focus handle is initialized for app entities")
+mod compositor;
+mod compositor_layers;
+mod compositor_state;
+pub(crate) mod image_store;
+mod input;
+mod layout;
+mod protocol;
+mod render;
+mod rime;
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) use layout::{initial_window_size_for_grid, parse_guifont_spec, GuiFontSpec};
+pub(crate) use protocol::{
+    GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
+    RedrawCommit,
+};
+
+pub(crate) const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditorState {
+    pub(crate) mode: String,
+    pub(crate) file: &'static str,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            mode: "NORMAL".to_owned(),
+            file: "src/main.rs",
+            line: 1,
+            column: 1,
+        }
     }
 }
 
-impl EntityInputHandler for NvimGpui {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        adjusted_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let (text, actual_range) = self.system_ime.text_for_range(range_utf16);
-        adjusted_range.replace(actual_range);
-        Some(text)
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<gpui::UTF16Selection> {
-        Some(self.system_ime.selected_text_range())
-    }
-
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        self.system_ime.marked_text_range()
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        // The local buffer only represents the active composition. Once the
-        // platform cancels its marked range, there is no text to retain here.
-        log::debug!(target: "nvim_gpui::ime", "IME composition unmarked");
-        self.system_ime.clear();
-        cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.input_router.target() != InputTarget::SystemIme {
-            return;
-        }
-
-        log::debug!(
-            target: "nvim_gpui::ime",
-            "IME text committed: bytes={}, replacement_range={range:?}",
-            text.len()
-        );
-        self.system_ime.replace_text(range, text);
-        if !text.is_empty() {
-            if let Some(nvim) = self.nvim.as_ref() {
-                if let Err(error) = nvim.send_input(text.to_owned()) {
-                    log::error!(
-                        target: "nvim_gpui::ime",
-                        "failed to forward committed IME text: {error}"
-                    );
-                    self.rpc_status = format!("rpc input error: {error}");
-                }
-            }
-        }
-        self.system_ime.clear();
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range: Option<Range<usize>>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.input_router.target() == InputTarget::SystemIme {
-            log::debug!(
-                target: "nvim_gpui::ime",
-                "IME preedit updated: bytes={}, replacement_range={range:?}, selected_range={new_selected_range:?}",
-                new_text.len()
-            );
-            self.system_ime
-                .replace_and_mark_text(range, new_text, new_selected_range);
-            cx.notify();
-        }
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        element_bounds: Bounds<gpui::Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<gpui::Pixels>> {
-        let cursor = self.ime_cursor_position()?;
-        log::trace!(
-            target: "nvim_gpui::ime",
-            "IME bounds requested: grid={:?}, range={range_utf16:?}, row={}, col={}",
-            self.ime_input_grid,
-            cursor.row,
-            cursor.col
-        );
-        let font_spec = self.current_grid_font(window);
-        let cell_width = font_spec.cell_width(window);
-        let line_height = font_spec.line_height(window, self.linespace);
-        let origin = gpui::point(
-            element_bounds.origin.x + cell_width * cursor.col,
-            element_bounds.origin.y + line_height * cursor.row,
-        );
-        Some(Bounds::new(origin, size(cell_width, line_height)))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        point: gpui::Point<gpui::Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let font_spec = self.current_grid_font(window);
-        let cell_width = font_spec.cell_width(window);
-        let column = (f32::from(point.x) / f32::from(cell_width))
-            .max(0.0)
-            .floor() as usize;
-        let byte_offset = self
-            .system_ime
-            .text()
-            .char_indices()
-            .nth(column)
-            .map(|(offset, _)| offset)
-            .unwrap_or(self.system_ime.text().len());
-        Some(input::utf8_to_utf16_offset(
-            self.system_ime.text(),
-            byte_offset,
-        ))
-    }
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImageLayer {
+    pub(crate) image: ImageId,
+    pub(crate) grid: u64,
+    pub(crate) row: usize,
+    pub(crate) column: usize,
+    pub(crate) columns: u32,
+    pub(crate) rows: u32,
+    pub(crate) z_index: i32,
 }
 
-impl NvimGpui {
-    fn with_ime_input_handler(
+#[derive(Clone)]
+pub(crate) struct ViewportAnimation {
+    pub(crate) previous_grid: Rc<grid::GridModel>,
+    pub(crate) scroll_delta: i64,
+    pub(crate) started_at: Instant,
+    pub(crate) presented: bool,
+}
+
+impl ViewportAnimation {
+    fn progress(&self, now: Instant) -> f32 {
+        (now.saturating_duration_since(self.started_at).as_secs_f32()
+            / VIEWPORT_SCROLL_DURATION.as_secs_f32())
+        .min(1.0)
+    }
+
+    pub(crate) fn is_active(&self, now: Instant) -> bool {
+        self.progress(now) < 1.0
+    }
+
+    pub(crate) fn mark_presented(&mut self, now: Instant) {
+        if !self.presented {
+            self.started_at = now;
+            self.presented = true;
+        }
+    }
+
+    pub(crate) fn offsets(
         &self,
-        element: GridElement,
-        grid: u64,
-        entity: Entity<Self>,
-        invalidate_coordinates: bool,
-        composition: Option<&grid::ImeComposition>,
-    ) -> GridElement {
-        let owns_composition = self.composition_grid() == Some(grid);
-        let element = if owns_composition {
-            element.with_ime_composition(composition.cloned())
-        } else {
-            element
-        };
-        if self.ime_input_grid != Some(grid) {
-            return element;
-        }
-
-        element.with_input_handler(move |bounds, window, cx| {
-            let focus_handle = entity.read(cx).focus_handle.clone();
-            if let Some(focus_handle) = focus_handle {
-                window.handle_input(
-                    &focus_handle,
-                    ElementInputHandler::new(bounds, entity.clone()),
-                    cx,
-                );
-                if invalidate_coordinates {
-                    log::debug!(
-                        target: "nvim_gpui::ime",
-                        "registered system IME input handler: grid={grid}"
-                    );
-                    // Schedule this after the current paint so the platform
-                    // observes the input handler for this grid, rather than
-                    // the handler from the previous frame.
-                    window.invalidate_character_coordinates();
-                }
-            }
-        })
-    }
-
-    fn composition_grid(&self) -> Option<u64> {
-        match self.input_router.target() {
-            InputTarget::SystemIme => self.ime_input_grid,
-            InputTarget::Rime => self
-                .rime_context
-                .as_ref()
-                .filter(|context| !context.preedit.is_empty())
-                .map(|_| self.cursor_grid),
-            InputTarget::Neovim => None,
-        }
-    }
-
-    fn system_ime_composition(&self) -> Option<grid::ImeComposition> {
-        let marked_range = self.system_ime.marked_range_utf8()?;
-        let cursor = self.ime_cursor_position()?;
-        (!self.system_ime.is_empty()).then(|| {
-            let text = self.system_ime.text().to_owned();
-            grid::ImeComposition {
-                row: cursor.row,
-                col: cursor.col,
-                grid_width: self.display_options.text_cell_width(&text).max(1),
-                text: text.into(),
-                marked_range,
-                selected_range: self.system_ime.selected_range_utf8(),
-            }
-        })
-    }
-
-    fn rime_composition(&self) -> Option<grid::ImeComposition> {
-        let context = self.rime_context.as_ref()?;
-        if context.preedit.is_empty() {
-            return None;
-        }
-        let cursor = self.active_cursor_model()?.cursor_visual_position()?;
-        let text = context.preedit.clone();
-        let text_len = text.len();
-        let cursor_pos = context.cursor_pos.min(text_len);
-        Some(grid::ImeComposition {
-            row: cursor.row,
-            col: cursor.col,
-            grid_width: self.display_options.text_cell_width(&text).max(1),
-            text: text.into(),
-            marked_range: 0..text_len,
-            selected_range: cursor_pos..cursor_pos,
-        })
-    }
-
-    fn active_ime_composition(&self) -> Option<grid::ImeComposition> {
-        match self.input_router.target() {
-            InputTarget::SystemIme => self.system_ime_composition(),
-            InputTarget::Rime => self.rime_composition(),
-            InputTarget::Neovim => None,
-        }
-    }
-
-    fn ime_cursor_position_for_composition(
-        &self,
-        composition: &grid::ImeComposition,
-        screen_position: grid::CursorVisualPosition,
-        local_position: grid::CursorVisualPosition,
-    ) -> grid::CursorVisualPosition {
-        let selected_start = composition.selected_range.start.min(composition.text.len());
-        let prefix = &composition.text[..selected_start];
-        let offset = grid::ime_text_cell_offset(prefix, self.display_options);
-        let screen_row = screen_position
-            .row
-            .saturating_sub(local_position.row)
-            .saturating_add(composition.row);
-        let screen_col = screen_position
-            .col
-            .saturating_sub(local_position.col)
-            .saturating_add(composition.col)
-            .saturating_add(offset);
-        grid::CursorVisualPosition {
-            row: screen_row,
-            col: screen_col,
-            width: 1,
-        }
-    }
-
-    fn rime_candidate_popup(
-        &self,
-        gui_font: &GuiFontSpec,
-        gui_wide_font: &GuiFontSpec,
-        cell_width: Pixels,
+        now: Instant,
+        max_delta: usize,
         line_height: Pixels,
-    ) -> Option<gpui::Div> {
-        if self.input_router.target() != InputTarget::Rime {
-            return None;
-        }
-        let context = self.rime_context.as_ref()?;
-        if context.candidates.is_empty() {
-            return None;
-        }
-        let position = self.current_cursor_screen_position()?;
-        let popup_background = self.theme.normal_float_background.unwrap_or(SURFACE);
-        let popup_foreground = self.theme_foreground();
-        let horizontal =
-            self.settings.rime_candidate_layout == settings::RimeCandidateLayout::Horizontal;
-        let page = context.page_no.saturating_add(1);
-        let page_label = page.to_string();
-        let cell_width_px = f32::from(cell_width);
-        let candidate_widths = context
-            .candidates
-            .iter()
-            .enumerate()
-            .map(|(index, candidate)| {
-                let marker_width = self
-                    .display_options
-                    .text_cell_width(candidate_marker(index));
-                let text_width = self.display_options.text_cell_width(&candidate.text);
-                let mut width = 8.0 + (marker_width + 1 + text_width) as f32 * cell_width_px;
-                if let Some(comment) = candidate.comment.as_deref() {
-                    width +=
-                        8.0 + self.display_options.text_cell_width(comment) as f32 * cell_width_px;
-                }
-                width
-            })
-            .collect::<Vec<_>>();
-        let page_indicator_width = 16.0 + (page_label.len() + 2) as f32 * cell_width_px;
-        let content_width = if horizontal {
-            candidate_widths.iter().sum::<f32>() + page_indicator_width
-        } else {
-            candidate_widths
-                .iter()
-                .copied()
-                .reduce(f32::max)
-                .unwrap_or_default()
-                .max(page_indicator_width)
-        };
-        let popup_width = px(content_width.max(12.0 * cell_width_px));
-        let row_count = if horizontal {
-            1
-        } else {
-            context.candidates.len() + 1
-        };
-        let popup_height = px((row_count as f32 + 1.0) * f32::from(line_height));
-        let viewport_width = self
-            .grid_size
-            .map(|(width, _)| width as f32 * f32::from(cell_width));
-        let viewport_height = self
-            .grid_size
-            .map(|(_, height)| height as f32 * f32::from(line_height));
-        let cursor_left = position.col as f32 * f32::from(cell_width);
-        let cursor_top = position.row as f32 * f32::from(line_height);
-        let left = viewport_width
-            .map(|width| (cursor_left.min((width - f32::from(popup_width)).max(0.0))).max(0.0))
-            .unwrap_or(cursor_left);
-        let below_top = cursor_top + f32::from(line_height);
-        let top = viewport_height
-            .filter(|height| below_top + f32::from(popup_height) > *height)
-            .map(|_| (cursor_top - f32::from(popup_height)).max(0.0))
-            .unwrap_or(below_top);
-
-        let mut candidate_font = font(gui_font.family.clone());
-        if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
-            candidate_font.fallbacks =
-                Some(FontFallbacks::from_fonts(vec![nerd_font_family.clone()]));
-        }
-        let candidate_wide_font = if gui_wide_font.family == gui_font.family {
-            candidate_font.clone()
-        } else {
-            font(gui_wide_font.family.clone())
-        };
-
-        let mut popup = div()
-            .absolute()
-            .left(px(left))
-            .top(px(top))
-            .w(popup_width)
-            .p_1()
-            .border_1()
-            .border_color(rgb(SURFACE_BRIGHT))
-            .bg(rgb(popup_background))
-            .text_color(rgb(popup_foreground))
-            .font(candidate_font.clone())
-            .text_size(px(gui_font.size))
-            .when(horizontal, |popup| popup.flex().items_center());
-
-        for (index, candidate) in context.candidates.iter().enumerate() {
-            let selected = index as i32 == context.highlighted_candidate_index;
-            let mut row = div()
-                .when(!horizontal, |row| row.w_full())
-                .flex_none()
-                .h(line_height)
-                .flex()
-                .items_center()
-                .px_1()
-                .bg(rgb(if selected { ACCENT } else { popup_background }))
-                .text_color(rgb(if selected {
-                    BACKGROUND
-                } else {
-                    popup_foreground
-                }))
-                .child(format!("{} ", candidate_marker(index)));
-            row = row.child(candidate_text(
-                &candidate.text,
-                self.display_options,
-                &candidate_font,
-                &candidate_wide_font,
-                px(gui_font.size),
-                px(gui_wide_font.size),
-            ));
-            if let Some(comment) = candidate.comment.as_deref() {
-                row = row.child(
-                    div()
-                        .ml_2()
-                        .text_color(rgb(if selected { BACKGROUND } else { MUTED_TEXT }))
-                        .child(candidate_text(
-                            comment,
-                            self.display_options,
-                            &candidate_font,
-                            &candidate_wide_font,
-                            px(gui_font.size),
-                            px(gui_wide_font.size),
-                        )),
-                );
-            }
-            popup = popup.child(row);
-        }
-
-        let previous_color = if context.page_no > 0 {
-            ACCENT
-        } else {
-            MUTED_TEXT
-        };
-        let next_color = if context.is_last_page {
-            MUTED_TEXT
-        } else {
-            ACCENT
-        };
-        let previous_icon = if self.nerd_font_family.is_some() {
-            // Nerd Font: angle-up (U+F0D9).
-            "\u{f0d9}"
-        } else {
-            "‹"
-        };
-        let next_icon = if self.nerd_font_family.is_some() {
-            // Nerd Font: angle-down (U+F0DA).
-            "\u{f0da}"
-        } else {
-            "›"
-        };
-        let page_indicator = div()
-            .h(line_height)
-            .flex()
-            .items_center()
-            .justify_end()
-            .px_1()
-            .text_sm()
-            .child(div().text_color(rgb(previous_color)).child(previous_icon))
-            .child(
-                div()
-                    .mx_1()
-                    .text_color(rgb(if context.page_no == 0 && context.is_last_page {
-                        MUTED_TEXT
-                    } else {
-                        popup_foreground
-                    }))
-                    .child(page_label),
-            )
-            .child(div().text_color(rgb(next_color)).child(next_icon));
-        if horizontal {
-            popup = popup.child(page_indicator.w(px(page_indicator_width)));
-        } else {
-            popup = popup.child(page_indicator.w_full());
-        }
-
-        Some(popup)
-    }
-}
-
-fn candidate_marker(index: usize) -> &'static str {
-    ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⓪"]
-        .get(index)
-        .copied()
-        .unwrap_or("⓪")
-}
-
-fn candidate_text(
-    text: &str,
-    display_options: grid::DisplayOptions,
-    normal_font: &gpui::Font,
-    wide_font: &gpui::Font,
-    normal_size: Pixels,
-    wide_size: Pixels,
-) -> gpui::Div {
-    text.graphemes(true).fold(
-        div().flex().items_center().flex_none(),
-        |container, grapheme| {
-            let is_wide = display_options.text_cell_width(grapheme) > 1;
-            container.child(
-                div()
-                    .flex_none()
-                    .font(if is_wide {
-                        wide_font.clone()
-                    } else {
-                        normal_font.clone()
-                    })
-                    .text_size(if is_wide { wide_size } else { normal_size })
-                    .child(grapheme.to_owned()),
-            )
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-struct GridRenderOptions<'a> {
-    placement: GridPlacement,
-    width: usize,
-    height: usize,
-    cell_width: Pixels,
-    line_height: Pixels,
-    gui_font: &'a GuiFontSpec,
-    gui_wide_font: &'a GuiFontSpec,
-    cursor_blink_started_at: Instant,
-    viewport_offset: Pixels,
-}
-
-impl NvimGpui {
-    fn highlight_context_for_layer(
-        &self,
-        kind: compositor::GridLayerKind,
-    ) -> grid::HighlightContext {
-        match kind {
-            compositor::GridLayerKind::Float => grid::HighlightContext::Floating {
-                background: self.theme.normal_float_background,
-            },
-            compositor::GridLayerKind::Message => grid::HighlightContext::Message {
-                background: self.theme.normal_float_background,
-            },
-            compositor::GridLayerKind::Main
-            | compositor::GridLayerKind::Window
-            | compositor::GridLayerKind::External => grid::HighlightContext::Main,
-        }
-    }
-
-    fn grid_element(
-        &self,
-        model: Rc<grid::GridModel>,
-        options: GridRenderOptions<'_>,
-    ) -> GridElement {
-        let highlight_context = self.highlight_context_for_layer(options.placement.kind);
-        let mut element = GridElement::with_shared_model(model)
-            .with_metrics(options.cell_width, options.line_height)
-            .with_highlight_context(highlight_context)
-            .with_wide_font(
-                options.gui_wide_font.family.clone(),
-                px(options.gui_wide_font.size),
-            )
-            .with_nerd_fallback_font(
-                self.nerd_font_family.clone().unwrap_or_default(),
-                px(options.gui_font.size),
-            )
-            .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-            .with_shaping_cache(Rc::clone(&self.shaping_cache))
-            .with_nerd_fallback_mode(self.settings.fallback_mode)
-            .with_cursor_blink_started_at(options.cursor_blink_started_at)
-            .with_viewport_offset(point(px(0.0), options.viewport_offset))
-            .with_nerd_font_mode(true);
-
-        if let Some(margins) = options.placement.viewport_margins {
-            element = element.with_viewport_margins(
-                margins.top,
-                margins.bottom,
-                margins.left,
-                margins.right,
-            );
-        }
-
-        element
-    }
-
-    fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::Div {
-        div()
-            .absolute()
-            .left(px(0.0))
-            .top(px(0.0))
-            .w(px(options.width as f32 * f32::from(options.cell_width)))
-            .h(px(options.height as f32 * f32::from(options.line_height)))
-            .child(element)
-    }
-
-    fn multicursor_elements(
-        &self,
-        cell_width: Pixels,
-        line_height: Pixels,
-        gui_font: &GuiFontSpec,
-        gui_wide_font: &GuiFontSpec,
-        cursor_blink_started_at: Instant,
-    ) -> Vec<grid::CursorElement> {
-        let mut positions = self.visible_multicursor_positions();
-        positions.sort_by_key(|position| {
-            (
-                position.key.grid,
-                position.row,
-                position.col,
-                position.key.ns_id,
-                position.key.mark_id,
-            )
-        });
-
-        positions
-            .into_iter()
-            .filter_map(|position| {
-                let model = if position.key.grid == 1 {
-                    Rc::clone(&self.grid)
-                } else {
-                    self.other_grids.get(&position.key.grid).cloned()?
-                };
-                let local_position = model.visual_position_at(position.row, position.col)?;
-                let placement = self.grid_placement(position.key.grid);
-                let row = placement.row.checked_add(local_position.row as i64)?;
-                let col = placement.col.checked_add(local_position.col as i64)?;
-                if row < 0 || col < 0 {
-                    return None;
-                }
-                let screen_position = grid::CursorVisualPosition {
-                    row: row as usize,
-                    col: col as usize,
-                    width: local_position.width,
-                };
-                let context = self.highlight_context_for_layer(placement.kind);
-                let (foreground, background) =
-                    grid::multicursor_colors_with_context(&model, local_position, context);
-                let glyph_source = self.grid_element(
-                    Rc::clone(&model),
-                    GridRenderOptions {
-                        placement,
-                        width: model.width(),
-                        height: model.height(),
-                        cell_width,
-                        line_height,
-                        gui_font,
-                        gui_wide_font,
-                        cursor_blink_started_at,
-                        viewport_offset: px(0.0),
-                    },
-                );
-                Some(
-                    grid::CursorElement::new(
-                        screen_position,
-                        background,
-                        grid::CursorModeInfo::default(),
-                    )
-                    .with_local_position(local_position)
-                    .with_glyph_foreground(foreground)
-                    .with_glyph_source(Some(glyph_source))
-                    .with_metrics(cell_width, line_height)
-                    .with_grid_size(model.width(), model.height())
-                    .with_blink_started_at(cursor_blink_started_at)
-                    .with_rounded_corners(false),
-                )
-            })
-            .collect()
-    }
-
-    pub(super) fn viewport_rect(
-        placement: GridPlacement,
-        width: usize,
-        height: usize,
-    ) -> (usize, usize, usize, usize) {
-        let margins = placement
-            .viewport_margins
-            .map(|margins| {
-                (
-                    usize::try_from(margins.top).unwrap_or(usize::MAX),
-                    usize::try_from(margins.bottom).unwrap_or(usize::MAX),
-                    usize::try_from(margins.left).unwrap_or(usize::MAX),
-                    usize::try_from(margins.right).unwrap_or(usize::MAX),
-                )
-            })
-            .unwrap_or_default();
-        let top = margins.0.min(height);
-        let bottom = margins.1.min(height.saturating_sub(top));
-        let left = margins.2.min(width);
-        let right = margins.3.min(width.saturating_sub(left));
+    ) -> (Pixels, Pixels) {
+        let progress = self.progress(now);
+        let progress = progress * progress * (3.0 - 2.0 * progress);
+        let delta = self
+            .scroll_delta
+            .clamp(-(max_delta as i64), max_delta as i64) as f32;
         (
-            left,
-            top,
-            width.saturating_sub(left + right),
-            height.saturating_sub(top + bottom),
+            px(-delta * progress * f32::from(line_height)),
+            px(delta * (1.0 - progress) * f32::from(line_height)),
         )
     }
+}
 
-    fn image_surface(
-        &self,
-        grid_id: u64,
-        image_layers: &[ImageLayer],
-        options: GridRenderOptions<'_>,
-    ) -> gpui::Div {
-        let (left, top, viewport_width, viewport_height) =
-            Self::viewport_rect(options.placement, options.width, options.height);
-        let mut surface = div()
-            .absolute()
-            .left(px(left as f32 * f32::from(options.cell_width)))
-            .top(px(top as f32 * f32::from(options.line_height)))
-            .w(px(viewport_width as f32 * f32::from(options.cell_width)))
-            .h(px(viewport_height as f32 * f32::from(options.line_height)))
-            .overflow_hidden();
+#[derive(Default)]
+pub(crate) struct RenderRuntime {
+    pub(crate) viewport_animations: HashMap<u64, ViewportAnimation>,
+    pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
+    pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
+}
 
-        for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
-            let Some(source) = self.image_sources.get(&image_layer.image).cloned() else {
-                continue;
-            };
-            surface = surface.child(
-                img(source)
-                    .absolute()
-                    .left(px(
-                        (image_layer.column as f32 - left as f32) * f32::from(options.cell_width)
-                    ))
-                    .top(px(
-                        (image_layer.row as f32 - top as f32) * f32::from(options.line_height)
-                    ))
-                    .w(px(
-                        image_layer.columns as f32 * f32::from(options.cell_width)
-                    ))
-                    .h(px(image_layer.rows as f32 * f32::from(options.line_height)))
-                    .object_fit(gpui::ObjectFit::Fill),
-            );
+pub(crate) struct InputRuntime {
+    pub(crate) input_router: input_core::InputRouter,
+    pub(crate) last_modifiers: gpui::Modifiers,
+    pub(crate) rime_service: Option<RimeService>,
+    pub(crate) rime_context: Option<RimeContextSnapshot>,
+    pub(crate) rime_menu_open: bool,
+    pub(crate) rime_menu_message: Option<String>,
+    pub(crate) system_ime: input_core::SystemImeState,
+    pub(crate) rime_init_task: Option<Task<()>>,
+    pub(crate) rime_deploy_task: Option<Task<()>>,
+    pub(crate) mouse_option: String,
+    pub(crate) mouse_enabled: bool,
+    pub(crate) mouse_capture: Option<u64>,
+    pub(crate) nvim_mode: String,
+    pub(crate) scroll_remainder: gpui::Point<f32>,
+    pub(crate) ime_input_grid: Option<u64>,
+    pub(crate) ime_coordinates_dirty: bool,
+}
+
+impl Default for InputRuntime {
+    fn default() -> Self {
+        Self {
+            input_router: input_core::InputRouter::default(),
+            last_modifiers: gpui::Modifiers::none(),
+            rime_service: None,
+            rime_context: None,
+            rime_menu_open: false,
+            rime_menu_message: None,
+            system_ime: input_core::SystemImeState::default(),
+            rime_init_task: None,
+            rime_deploy_task: None,
+            mouse_option: "nvi".to_owned(),
+            mouse_enabled: true,
+            mouse_capture: None,
+            nvim_mode: "n".to_owned(),
+            scroll_remainder: point(0.0, 0.0),
+            ime_input_grid: None,
+            ime_coordinates_dirty: true,
         }
-
-        surface
     }
 }
 
-impl NvimGpui {
-    pub(crate) fn render_editor_surface(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        self.sync_nvim_size(window);
+pub(crate) struct CursorRuntime {
+    pub(crate) cursor_blink_started_at: Instant,
+    pub(crate) cursor_animation: Option<grid::CursorAnimation>,
+    pub(crate) multicursor_namespace_task: Option<Task<()>>,
+    pub(crate) multicursor_reconcile_task: Option<Task<()>>,
+    pub(crate) multicursor_reconcile_dirty: bool,
+}
 
-        let gui_font = self.current_grid_font(window);
-        let gui_wide_font = self.current_grid_wide_font(window);
-        let line_height = gui_font.line_height(window, self.linespace);
-        let cursor_mode = self.current_cursor_mode();
-        let cursor_blink_started_at = self.cursor_blink_started_at;
-
-        let entity = cx.entity();
-
-        let cell_width = gui_font.cell_width(window);
-        let grid_ready = self.nvim_grid_ready;
-        let now = Instant::now();
-        for animation in self.viewport_animations.values_mut() {
-            // Redraw processing can take longer than the animation duration,
-            // especially for a large screen update. Start the clock when this
-            // frame is actually about to be rendered so the first visible
-            // frame cannot consume the whole animation.
-            animation.mark_presented(now);
+impl Default for CursorRuntime {
+    fn default() -> Self {
+        Self {
+            cursor_blink_started_at: Instant::now(),
+            cursor_animation: None,
+            multicursor_namespace_task: None,
+            multicursor_reconcile_task: None,
+            multicursor_reconcile_dirty: false,
         }
-        self.viewport_animations
-            .retain(|_, animation| animation.is_active(now));
-        let viewport_animations = self.viewport_animations.clone();
-
-        let active_ime_grid =
-            (self.input_router.target() == InputTarget::SystemIme).then_some(self.cursor_grid);
-        if self.ime_input_grid != active_ime_grid {
-            log::debug!(
-                target: "nvim_gpui::ime",
-                "IME input grid changed: from={:?}, to={active_ime_grid:?}",
-                self.ime_input_grid
-            );
-            self.ime_input_grid = active_ime_grid;
-            self.ime_coordinates_dirty = true;
-        }
-        let invalidate_ime_coordinates = self.ime_coordinates_dirty;
-        if invalidate_ime_coordinates && self.ime_input_grid.is_some() {
-            self.ime_coordinates_dirty = false;
-        }
-        let ime_composition = self.active_ime_composition();
-
-        let cursor_element = grid_ready.then(|| {
-            let model = self.active_cursor_model()?;
-            let local_position = model.cursor_visual_position()?;
-            let position = self.current_cursor_screen_position()?;
-            let position = ime_composition
-                .as_ref()
-                .map(|composition| {
-                    self.ime_cursor_position_for_composition(composition, position, local_position)
-                })
-                .unwrap_or(position);
-            let cursor_placement = self.grid_placement(self.cursor_grid);
-            let cursor_context = self.highlight_context_for_layer(cursor_placement.kind);
-            let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
-                &model,
-                local_position,
-                cursor_mode,
-                cursor_context,
-            );
-            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
-                self.grid_element(
-                    Rc::clone(&model),
-                    GridRenderOptions {
-                        placement: cursor_placement,
-                        width: model.width(),
-                        height: model.height(),
-                        cell_width,
-                        line_height,
-                        gui_font: &gui_font,
-                        gui_wide_font: &gui_wide_font,
-                        cursor_blink_started_at,
-                        viewport_offset: px(0.0),
-                    },
-                )
-            });
-            Some(
-                grid::CursorElement::new(position, cursor_background, cursor_mode)
-                    .with_local_position(local_position)
-                    .with_glyph_foreground(cursor_foreground)
-                    .with_glyph_source(glyph_source)
-                    .with_animation(
-                        self.cursor_animation.filter(|animation| {
-                            ime_composition.is_none() && animation.is_active(now)
-                        }),
-                    )
-                    .with_metrics(cell_width, line_height)
-                    .with_grid_size(self.grid.width(), self.grid.height())
-                    .with_blink_started_at(cursor_blink_started_at),
-            )
-        });
-        let cursor_element = cursor_element.flatten();
-        let multicursor_elements = if grid_ready {
-            self.multicursor_elements(
-                cell_width,
-                line_height,
-                &gui_font,
-                &gui_wide_font,
-                cursor_blink_started_at,
-            )
-        } else {
-            Vec::new()
-        };
-        let mut editor = div()
-            .flex_1()
-            .relative()
-            .overflow_hidden()
-            .font_family(gui_font.family.clone())
-            .text_size(px(gui_font.size))
-            .line_height(line_height)
-            .on_any_mouse_down(cx.listener(Self::on_mouse_down))
-            .capture_any_mouse_up(cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
-
-        if grid_ready {
-            let compositor_frame = self.compositor_frame();
-            // A grid and its Kitty placements must share one compositing
-            // layer. Keeping images as siblings of all grids lets a later
-            // floating grid paint over an image that belongs to an earlier
-            // grid, which is not how Neovim's multigrid compositor behaves.
-            let main_layer = &compositor_frame.layers[0];
-            let main_placement = main_layer.placement;
-            let main_width = main_layer.content_rect.width as usize;
-            let main_height = main_layer.content_rect.height as usize;
-            let main_animation = viewport_animations.get(&1);
-            let (old_offset, current_offset) = main_animation
-                .map(|animation| animation.offsets(now, main_height, line_height))
-                .unwrap_or((px(0.0), px(0.0)));
-            let main_options = GridRenderOptions {
-                placement: main_placement,
-                width: main_width,
-                height: main_height,
-                cell_width,
-                line_height,
-                gui_font: &gui_font,
-                gui_wide_font: &gui_wide_font,
-                cursor_blink_started_at,
-                viewport_offset: current_offset,
-            };
-            let mut main_layer = div()
-                .absolute()
-                .left(px(0.0))
-                .top(px(0.0))
-                .w_full()
-                .h_full()
-                .overflow_hidden();
-
-            if let Some(animation) = main_animation {
-                let old_options = GridRenderOptions {
-                    viewport_offset: old_offset,
-                    ..main_options
-                };
-                main_layer = main_layer.child(Self::grid_surface(
-                    self.grid_element(Rc::clone(&animation.previous_grid), old_options),
-                    old_options,
-                ));
-            }
-
-            let main_element = self.with_ime_input_handler(
-                self.grid_element(Rc::clone(&self.grid), main_options),
-                1,
-                entity.clone(),
-                invalidate_ime_coordinates,
-                ime_composition.as_ref(),
-            );
-            main_layer = main_layer.child(Self::grid_surface(main_element, main_options));
-
-            let image_layers = self.visible_image_layers();
-            main_layer = main_layer.child(self.image_surface(1, &image_layers, main_options));
-            editor = editor.child(main_layer);
-
-            for compositor_layer in compositor_frame.layers.iter().skip(1) {
-                let grid_id = compositor_layer.grid_id;
-                let model = Rc::clone(&compositor_layer.model);
-                let placement = compositor_layer.placement;
-                let content_rect = compositor_layer.content_rect;
-                let surface_rect = compositor_layer.surface_rect;
-                let clip_rect = compositor_layer.clip_rect;
-                let model_width = content_rect.width as usize;
-                let model_height = content_rect.height as usize;
-                let animation = viewport_animations.get(&grid_id);
-                let (old_offset, current_offset) = animation
-                    .map(|animation| animation.offsets(now, model_height, line_height))
-                    .unwrap_or((px(0.0), px(0.0)));
-                let options = GridRenderOptions {
-                    placement,
-                    width: model_width,
-                    height: model_height,
-                    cell_width,
-                    line_height,
-                    gui_font: &gui_font,
-                    gui_wide_font: &gui_wide_font,
-                    cursor_blink_started_at,
-                    viewport_offset: current_offset,
-                };
-                let mut layer = div()
-                    .absolute()
-                    .left(px(surface_rect.col as f32 * f32::from(cell_width)))
-                    .top(px(surface_rect.row as f32 * f32::from(line_height)))
-                    .w(px(clip_rect.width as f32 * f32::from(cell_width)))
-                    .h(px(clip_rect.height as f32 * f32::from(line_height)))
-                    // Kitty images are children of their owning grid. Keep
-                    // an oversized preview inside that grid's compositor
-                    // bounds so it cannot cover a neighbouring picker pane
-                    // or its separator.
-                    .overflow_hidden();
-                if let Some(animation) = animation {
-                    let old_options = GridRenderOptions {
-                        viewport_offset: old_offset,
-                        ..options
-                    };
-                    layer = layer.child(Self::grid_surface(
-                        self.grid_element(Rc::clone(&animation.previous_grid), old_options),
-                        old_options,
-                    ));
-                }
-                layer = layer.child(Self::grid_surface(
-                    self.with_ime_input_handler(
-                        self.grid_element(model, options),
-                        grid_id,
-                        entity.clone(),
-                        invalidate_ime_coordinates,
-                        ime_composition.as_ref(),
-                    ),
-                    options,
-                ));
-                layer = layer.child(self.image_surface(grid_id, &image_layers, options));
-                editor = editor.child(layer);
-            }
-
-            if cursor_element.is_some() || !multicursor_elements.is_empty() {
-                let mut cursor_layer = div()
-                    .absolute()
-                    .left(px(0.0))
-                    .top(px(0.0))
-                    .w_full()
-                    .h_full();
-                for multicursor_element in multicursor_elements {
-                    cursor_layer = cursor_layer.child(multicursor_element);
-                }
-                if let Some(cursor_element) = cursor_element {
-                    cursor_layer = cursor_layer.child(cursor_element);
-                }
-                editor = editor.child(cursor_layer);
-            }
-
-            if let Some(rime_popup) =
-                self.rime_candidate_popup(&gui_font, &gui_wide_font, cell_width, line_height)
-            {
-                editor = editor.child(rime_popup);
-            }
-        }
-
-        editor
     }
 }
 
-impl NvimGpui {
-    pub(crate) fn mouse_option_allows_mode(mouse_option: &str, nvim_mode: &str) -> bool {
-        let mode = nvim_mode.chars().next().unwrap_or('n');
-        let required = match mode {
-            'i' | 'R' | 's' | 'S' => 'i',
-            'v' | 'V' | '\u{16}' => 'v',
-            'c' => 'c',
-            'r' => 'r',
-            // Terminal-mode mouse input is enabled by `a`, which is the
-            // useful GUI behavior even though the option predates terminal
-            // mode as a separate mode code.
-            't' => return mouse_option.contains('a'),
-            _ => 'n',
-        };
-        mouse_option.contains('a') || mouse_option.contains(required)
-    }
+pub(crate) struct EditorRuntime {
+    pub(crate) protocol: ProtocolState,
+    pub(crate) presentation: RenderRuntime,
+    pub(crate) input: InputRuntime,
+    pub(crate) cursor: CursorRuntime,
+    pub(crate) resolved_grid_font: Option<GuiFontSpec>,
+    pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
+    pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) nerd_font_family: Option<String>,
+    pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) bundled_nerd_font_registered: bool,
+}
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(super) fn nvim_mouse_position(
-        position: gpui::Point<Pixels>,
-        cell_width: Pixels,
-        line_height: Pixels,
-    ) -> (u64, u64) {
-        let (row, col) =
-            compositor::CompositorFrame::point_in_grid_space(position, cell_width, line_height);
-        (row.max(0.0).floor() as u64, col.max(0.0).floor() as u64)
-    }
-
-    fn mouse_target_at(
-        &mut self,
-        position: gpui::Point<Pixels>,
-        window: &mut Window,
-    ) -> Option<compositor::MouseTarget> {
-        let gui_font = self.current_grid_font(window);
-        let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.linespace);
-        let target = self
-            .compositor_frame()
-            .hit_test(position, cell_width, line_height);
-        self.map_mouse_target_through_ime(target)
-    }
-
-    fn mouse_target_for_grid(
-        &mut self,
-        grid_id: u64,
-        position: gpui::Point<Pixels>,
-        window: &mut Window,
-    ) -> Option<compositor::MouseTarget> {
-        let gui_font = self.current_grid_font(window);
-        let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.linespace);
-        let target =
-            self.compositor_frame()
-                .target_for_grid(grid_id, position, cell_width, line_height);
-        self.map_mouse_target_through_ime(target)
-    }
-
-    fn map_mouse_target_through_ime(
-        &self,
-        target: Option<compositor::MouseTarget>,
-    ) -> Option<compositor::MouseTarget> {
-        let mut target = target?;
-        let Some(composition_grid) = self.composition_grid() else {
-            return Some(target);
-        };
-        let Some(composition) = self.active_ime_composition() else {
-            return Some(target);
-        };
-        let composition_row = u64::try_from(composition.row).unwrap_or(u64::MAX);
-        if target.grid_id != composition_grid || target.row != composition_row {
-            return Some(target);
+impl Default for EditorRuntime {
+    fn default() -> Self {
+        Self {
+            protocol: ProtocolState::default(),
+            presentation: RenderRuntime::default(),
+            input: InputRuntime::default(),
+            cursor: CursorRuntime::default(),
+            resolved_grid_font: None,
+            resolved_grid_wide_font: None,
+            shaping_cache: grid::ShapedLineCache::shared(),
+            nerd_font_family: None,
+            glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
+            bundled_nerd_font_registered: false,
         }
-
-        let composition_col = u64::try_from(composition.col).unwrap_or(u64::MAX);
-        let composition_width = u64::try_from(composition.grid_width).unwrap_or(u64::MAX);
-        let gap_end = composition_col.saturating_add(composition_width);
-        if target.col >= gap_end {
-            target.col = target.col.saturating_sub(composition_width);
-        } else if target.col >= composition_col {
-            // A click inside the visual gap still means the Neovim cursor
-            // position at which the composition is anchored.
-            target.col = composition_col;
-        }
-        Some(target)
-    }
-
-    fn send_mouse(
-        &mut self,
-        button: &str,
-        action: &str,
-        modifiers: gpui::Modifiers,
-        target: Option<compositor::MouseTarget>,
-    ) {
-        let Some(target) = target else {
-            return;
-        };
-        if !self.mouse_enabled {
-            return;
-        }
-        let modifier = input::nvim_mouse_modifiers(modifiers);
-        if let Some(nvim) = self.nvim.as_ref() {
-            if let Err(error) = nvim.send_mouse(
-                button,
-                action,
-                modifier,
-                target.grid_id,
-                target.row,
-                target.col,
-            ) {
-                log::error!(
-                    target: "nvim_gpui::input",
-                    "mouse event failed: button={button}, action={action}, grid={}, row={}, col={}: {error}",
-                    target.grid_id,
-                    target.row,
-                    target.col
-                );
-                self.rpc_status = format!("rpc mouse error: {error}");
-            }
-        }
-    }
-
-    pub(super) fn on_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if cx.has_active_drag() {
-            window.prevent_default();
-            return;
-        }
-
-        if let Some(focus_handle) = self.focus_handle.as_ref() {
-            window.focus(focus_handle);
-        }
-        let target = self.mouse_target_at(event.position, window);
-        self.mouse_capture = target.map(|target| target.grid_id);
-        self.send_mouse(
-            input::nvim_mouse_button(event.button),
-            "press",
-            event.modifiers,
-            target,
-        );
-        window.prevent_default();
-    }
-
-    pub(super) fn on_mouse_up(
-        &mut self,
-        event: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if cx.has_active_drag() {
-            window.prevent_default();
-            return;
-        }
-
-        let target = self
-            .mouse_capture
-            .take()
-            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
-            .or_else(|| self.mouse_target_at(event.position, window));
-        self.send_mouse(
-            input::nvim_mouse_button(event.button),
-            "release",
-            event.modifiers,
-            target,
-        );
-        window.prevent_default();
-    }
-
-    pub(super) fn on_mouse_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if cx.has_active_drag() {
-            window.prevent_default();
-            return;
-        }
-
-        let (button, action) = event
-            .pressed_button
-            .map(|button| (input::nvim_mouse_button(button), "drag"))
-            .unwrap_or(("move", "move"));
-        let target = self
-            .mouse_capture
-            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
-            .or_else(|| self.mouse_target_at(event.position, window));
-        self.send_mouse(button, action, event.modifiers, target);
-        window.prevent_default();
-    }
-
-    pub(super) fn on_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        if !self.mouse_enabled {
-            return;
-        }
-
-        let gui_font = self.current_grid_font(window);
-        let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.linespace);
-        let mut delta = input::scroll_delta_to_lines(event.delta, line_height);
-
-        // Shift-wheel is conventionally horizontal. Windows' GPUI backend
-        // already performs this conversion, while macOS/Linux may expose
-        // the original vertical axis, so keep the behavior consistent.
-        if event.modifiers.shift && delta.x.abs() < f32::EPSILON {
-            delta.x = delta.y;
-            delta.y = 0.0;
-        }
-        self.scroll_remainder.x += delta.x;
-        self.scroll_remainder.y += delta.y;
-
-        let x_steps = self.scroll_remainder.x.trunc() as i32;
-        let y_steps = self.scroll_remainder.y.trunc() as i32;
-        self.scroll_remainder.x -= x_steps as f32;
-        self.scroll_remainder.y -= y_steps as f32;
-        let modifier = input::nvim_mouse_modifiers(event.modifiers);
-        let target = self
-            .compositor_frame()
-            .hit_test(event.position, cell_width, line_height);
-
-        if let Some(nvim) = self.nvim.as_ref() {
-            let Some(target) = target else {
-                window.prevent_default();
-                return;
-            };
-            for _ in 0..x_steps.unsigned_abs() {
-                let action = if x_steps > 0 { "right" } else { "left" };
-                if let Err(error) = nvim.send_mouse(
-                    "wheel",
-                    action,
-                    modifier.clone(),
-                    target.grid_id,
-                    target.row,
-                    target.col,
-                ) {
-                    log::error!(
-                        target: "nvim_gpui::input",
-                        "horizontal wheel event failed: action={action}, grid={}, row={}, col={}: {error}",
-                        target.grid_id,
-                        target.row,
-                        target.col
-                    );
-                    self.rpc_status = format!("rpc mouse error: {error}");
-                    break;
-                }
-            }
-            for _ in 0..y_steps.unsigned_abs() {
-                let action = if y_steps > 0 { "up" } else { "down" };
-                if let Err(error) = nvim.send_mouse(
-                    "wheel",
-                    action,
-                    modifier.clone(),
-                    target.grid_id,
-                    target.row,
-                    target.col,
-                ) {
-                    log::error!(
-                        target: "nvim_gpui::input",
-                        "vertical wheel event failed: action={action}, grid={}, row={}, col={}: {error}",
-                        target.grid_id,
-                        target.row,
-                        target.col
-                    );
-                    self.rpc_status = format!("rpc mouse error: {error}");
-                    break;
-                }
-            }
-        }
-        window.prevent_default();
     }
 }

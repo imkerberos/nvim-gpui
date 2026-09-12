@@ -290,13 +290,46 @@ impl GridRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GridModel {
-    rows: Vec<GridRow>,
+    rows: Vec<Rc<GridRow>>,
     width: usize,
     cursor: Option<GridCursor>,
     highlights: std::collections::HashMap<HighlightId, HighlightAttrs>,
     default_foreground: Option<u32>,
     default_background: Option<u32>,
     default_special: Option<u32>,
+}
+
+/// A borrowed view of grid rows that keeps the model's public row accessors
+/// independent from its copy-on-write representation.
+#[derive(Debug, Clone, Copy)]
+pub struct GridRows<'a> {
+    rows: &'a [Rc<GridRow>],
+}
+
+impl<'a> GridRows<'a> {
+    pub fn get(self, index: usize) -> Option<&'a GridRow> {
+        self.rows.get(index).map(Rc::as_ref)
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = &'a GridRow> + 'a {
+        self.rows.iter().map(Rc::as_ref)
+    }
+
+    pub fn len(self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+impl std::ops::Index<usize> for GridRows<'_> {
+    type Output = GridRow;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.rows[index].as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,7 +436,7 @@ impl GridModel {
         }
 
         Self {
-            rows,
+            rows: rows.into_iter().map(Rc::new).collect(),
             width,
             cursor: None,
             highlights: std::collections::HashMap::new(),
@@ -433,10 +466,12 @@ impl GridModel {
                 .rows
                 .get(row_index)
                 .cloned()
-                .unwrap_or_else(|| GridRow::new(Vec::new()));
-            row.cells
+                .unwrap_or_else(|| Rc::new(GridRow::new(Vec::new())));
+            let row_mut = Rc::make_mut(&mut row);
+            row_mut
+                .cells
                 .resize_with(width, || GridCell::blank(DEFAULT_HIGHLIGHT));
-            row.cells.truncate(width);
+            row_mut.cells.truncate(width);
             rows.push(row);
         }
 
@@ -450,6 +485,7 @@ impl GridModel {
 
     pub fn clear(&mut self) {
         for row in &mut self.rows {
+            let row = Rc::make_mut(row);
             for cell in &mut row.cells {
                 *cell = GridCell::blank(DEFAULT_HIGHLIGHT);
             }
@@ -508,7 +544,7 @@ impl GridModel {
             }
         }
 
-        self.rows[row].wraps_to_next = wraps_to_next;
+        Rc::make_mut(&mut self.rows[row]).wraps_to_next = wraps_to_next;
     }
 
     pub fn set_cursor(&mut self, row: usize, col: usize) {
@@ -585,6 +621,8 @@ impl GridModel {
             return;
         }
 
+        // Row references are copied here, not cell storage. Each destination
+        // row is cloned lazily by `replace_cell` only when it is modified.
         let original = self.rows.clone();
         for row in top..bot {
             for col in left..right {
@@ -602,7 +640,7 @@ impl GridModel {
         }
 
         for row in top..bot {
-            self.rows[row].wraps_to_next =
+            Rc::make_mut(&mut self.rows[row]).wraps_to_next =
                 if (top as isize..bot as isize).contains(&(row as isize + rows)) {
                     original[(row as isize + rows) as usize].wraps_to_next
                 } else {
@@ -611,8 +649,8 @@ impl GridModel {
         }
     }
 
-    pub fn rows(&self) -> &[GridRow] {
-        &self.rows
+    pub fn rows(&self) -> GridRows<'_> {
+        GridRows { rows: &self.rows }
     }
 
     pub fn width(&self) -> usize {
@@ -624,32 +662,34 @@ impl GridModel {
     }
 
     fn replace_cell(&mut self, row: usize, col: usize, cell: GridCell) {
-        if self.rows[row].cells[col].kind == CellKind::WideContinuation
+        let row = Rc::make_mut(&mut self.rows[row]);
+
+        if row.cells[col].kind == CellKind::WideContinuation
             && col > 0
-            && self.rows[row].cells[col - 1].kind == CellKind::WideLead
+            && row.cells[col - 1].kind == CellKind::WideLead
         {
-            self.rows[row].cells[col - 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
+            row.cells[col - 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
         }
 
-        if self.rows[row].cells[col].kind == CellKind::WideLead
-            && self.rows[row]
+        if row.cells[col].kind == CellKind::WideLead
+            && row
                 .cells
                 .get(col + 1)
                 .is_some_and(|next| next.kind == CellKind::WideContinuation)
         {
-            self.rows[row].cells[col + 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
+            row.cells[col + 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
         }
 
         if cell.kind != CellKind::WideContinuation
-            && self.rows[row]
+            && row
                 .cells
                 .get(col + 1)
                 .is_some_and(|next| next.kind == CellKind::WideContinuation)
         {
-            self.rows[row].cells[col + 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
+            row.cells[col + 1] = GridCell::blank(DEFAULT_HIGHLIGHT);
         }
 
-        self.rows[row].cells[col] = cell;
+        row.cells[col] = cell;
     }
 }
 

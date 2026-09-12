@@ -1,7 +1,8 @@
+use crate::app::NvimGpui;
 #[cfg(target_os = "macos")]
 use crate::widgets::setting_checkbox;
 use crate::{
-    app::{themed_titlebar, themed_titlebar_enabled, NvimGpui},
+    app::{themed_titlebar, themed_titlebar_enabled},
     helper, settings, update_check,
     widgets::{
         setting_combo_box, setting_combo_option, setting_option_button, setting_row,
@@ -262,7 +263,7 @@ impl SettingsWindow {
     }
 
     fn paste_rime_path(&mut self, field: RimePathField, cx: &mut Context<Self>) {
-        let text = match crate::clipboard::paste_text(cx) {
+        let text = match crate::app::clipboard::paste_text(cx) {
             Ok(text) => text,
             Err(error) => {
                 log::warn!(

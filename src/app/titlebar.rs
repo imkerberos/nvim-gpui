@@ -1,13 +1,22 @@
-use super::super::*;
+use crate::app::{NvimGpui, THEMED_TITLEBAR_HEIGHT};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::app::{
+    WINDOW_CONTROL_CLOSE_ASSET, WINDOW_CONTROL_MAXIMIZE_ASSET, WINDOW_CONTROL_MINIMIZE_ASSET,
+    WINDOW_CONTROL_RESTORE_ASSET,
+};
 use crate::{
     gui,
     widgets::{logo_image, titlebar_button, IME_ACTIVE, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
 };
-use gpui::deferred;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use gpui::svg;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use gpui::Window;
+use gpui::WindowDecorations;
+use gpui::{
+    deferred, div, img, prelude::*, px, rgb, App, Entity, MouseButton, TitlebarOptions,
+    WindowControlArea,
+};
 #[cfg(target_os = "linux")]
 use gpui::{CursorStyle, Decorations, Div, ResizeEdge};
 

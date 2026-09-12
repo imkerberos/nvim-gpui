@@ -1,14 +1,19 @@
 use crate::{
     app::{
-        initial_window_size_for_grid, parse_guifont_spec, themed_titlebar_enabled, EditorState,
-        GridPlacement, GridViewport, GridViewportMargins, NvimGpui, DEFAULT_GRID_CELL_WIDTH,
-        DEFAULT_GRID_LINE_HEIGHT, DEFAULT_WINDOW_TITLE, THEMED_TITLEBAR_HEIGHT,
+        NvimGpui, DEFAULT_GRID_CELL_WIDTH, DEFAULT_GRID_LINE_HEIGHT, DEFAULT_WINDOW_TITLE,
+        THEMED_TITLEBAR_HEIGHT,
+    },
+    editor::image_store::{
+        GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey,
+    },
+    editor::{
+        initial_window_size_for_grid, parse_guifont_spec, EditorRuntime, EditorState,
+        GridPlacement, ViewportAnimation,
     },
     grid::{
         AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
         EmojiWidth, GridLineCell, HighlightAttrs, HighlightId,
     },
-    image_store::{GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey},
     nvim::{NvimEvent, NvimFloatAnchor, NvimFloatPosition, DEFAULT_CONNECT_TIMEOUT},
     parse_cli, CliAction, CliOptions, NvimConnection,
 };
@@ -17,10 +22,14 @@ use std::ffi::OsString;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use super::layout::line_height_from_metrics;
+use super::protocol::{GridViewport, GridViewportMargins, ProtocolState, StartupState};
+
 #[test]
 fn cli_keeps_unknown_arguments_for_neovim() {
     let action = parse_cli([
         OsString::from("--no-debug-window"),
+        OsString::from("--"),
         OsString::from("--clean"),
         OsString::from("+set number"),
         OsString::from("README.md"),
@@ -136,6 +145,7 @@ fn cli_selects_a_wrapped_nvim_command_for_embed_mode() {
     let action = parse_cli([
         OsString::from("--nvim-command"),
         OsString::from("/nix/store/example/bin/nvim"),
+        OsString::from("--"),
         OsString::from("--clean"),
     ])
     .expect("CLI should parse");
@@ -178,6 +188,7 @@ fn cli_preserves_a_working_directory_for_app_bundle_launches() {
 fn cli_rejects_neovim_arguments_in_remote_mode() {
     let error = parse_cli([
         OsString::from("--connect=127.0.0.1:6666"),
+        OsString::from("--"),
         OsString::from("--clean"),
     ])
     .expect_err("remote mode should reject local Neovim arguments");
@@ -197,7 +208,11 @@ fn editor_starts_in_normal_mode() {
 #[test]
 fn initial_window_size_is_derived_from_the_attached_grid() {
     let window_size = initial_window_size_for_grid(80, 24);
-    let expected_titlebar = if themed_titlebar_enabled() {
+    let expected_titlebar = if cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    )) {
         THEMED_TITLEBAR_HEIGHT
     } else {
         0.0
@@ -212,7 +227,11 @@ fn initial_window_size_is_derived_from_the_attached_grid() {
 
 #[test]
 fn mouse_position_converts_window_pixels_to_grid_cells() {
-    let titlebar = if themed_titlebar_enabled() {
+    let titlebar = if cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows"
+    )) {
         THEMED_TITLEBAR_HEIGHT
     } else {
         0.0
@@ -228,133 +247,163 @@ fn mouse_position_converts_window_pixels_to_grid_cells() {
 #[test]
 fn startup_keeps_grid_hidden_until_matching_resize_is_flushed() {
     let mut app = NvimGpui {
-        nvim_grid_ready: false,
-        startup_resize_target: Some((4, 2)),
+        editor: EditorRuntime {
+            protocol: ProtocolState::with_startup(StartupState {
+                nvim_grid_ready: false,
+                resize_target: Some((4, 2)),
+                ..StartupState::default()
+            }),
+            ..EditorRuntime::default()
+        },
         ..Default::default()
     };
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 3,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 1,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("initial", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(!app.nvim_grid_ready);
-    assert_eq!(app.grid.rows()[0].cells()[0].text, "initial");
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(!app.editor.protocol.startup.nvim_grid_ready);
+    assert_eq!(
+        app.editor.protocol.presentation.grid.rows()[0].cells()[0].text,
+        "initial"
+    );
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 1,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("ready", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(app.nvim_grid_ready);
-    assert_eq!(app.grid.rows()[0].cells()[0].text, "ready");
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(app.editor.protocol.startup.nvim_grid_ready);
+    assert_eq!(
+        app.editor.protocol.presentation.grid.rows()[0].cells()[0].text,
+        "ready"
+    );
 }
 
 #[test]
 fn startup_does_not_show_a_cursor_only_flush() {
     let mut app = NvimGpui {
-        nvim_grid_ready: false,
-        startup_resize_target: Some((3, 2)),
+        editor: EditorRuntime {
+            protocol: ProtocolState::with_startup(StartupState {
+                nvim_grid_ready: false,
+                resize_target: Some((3, 2)),
+                ..StartupState::default()
+            }),
+            ..EditorRuntime::default()
+        },
         ..Default::default()
     };
 
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(!app.nvim_grid_ready);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(!app.editor.protocol.startup.nvim_grid_ready);
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 3,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(!app.nvim_grid_ready);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(!app.editor.protocol.startup.nvim_grid_ready);
 
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 1,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("ready", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(app.nvim_grid_ready);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(app.editor.protocol.startup.nvim_grid_ready);
 }
 
 #[test]
 fn startup_maximize_transition_restarts_the_final_grid_sync() {
     let mut app = NvimGpui {
-        nvim_grid_ready: false,
-        startup_maximize_pending: true,
-        startup_resize_target: Some((80, 24)),
-        startup_flush_seen: true,
-        startup_grid_content_seen: true,
+        editor: EditorRuntime {
+            protocol: ProtocolState::with_startup(StartupState {
+                nvim_grid_ready: false,
+                maximize_pending: true,
+                resize_target: Some((80, 24)),
+                flush_seen: true,
+                grid_content_seen: true,
+                ..StartupState::default()
+            }),
+            ..EditorRuntime::default()
+        },
         ..Default::default()
     };
 
     app.complete_startup_maximize();
 
-    assert!(!app.startup_maximize_pending);
-    assert!(app.startup_resize_target.is_none());
-    assert!(!app.startup_flush_seen);
-    assert!(!app.startup_grid_content_seen);
-    assert!(app.startup_redraw_pending);
+    assert!(!app.editor.protocol.startup.maximize_pending);
+    assert!(app.editor.protocol.startup.resize_target.is_none());
+    assert!(!app.editor.protocol.startup.flush_seen);
+    assert!(!app.editor.protocol.startup.grid_content_seen);
+    assert!(app.editor.protocol.startup.redraw_pending);
 }
 
 #[test]
 fn nvim_title_updates_the_window_title_model() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::SetTitle {
+    app.apply_nvim_event_for_test(NvimEvent::SetTitle {
         title: "nvim — README.md".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.window_title, "nvim — README.md");
+    assert_eq!(app.window.window_title, "nvim — README.md");
 }
 
 #[test]
 fn default_window_title_is_gpvim() {
-    assert_eq!(NvimGpui::default().window_title, DEFAULT_WINDOW_TITLE);
+    assert_eq!(
+        NvimGpui::default().window.window_title,
+        DEFAULT_WINDOW_TITLE
+    );
 }
 
 #[test]
 fn nvim_icon_and_ui_options_update_the_client_model() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::SetIcon {
+    app.apply_nvim_event_for_test(NvimEvent::SetIcon {
         icon: "nvim-document".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "linespace".to_owned(),
         value: "3".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "ambiwidth".to_owned(),
         value: "single".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.window_icon, "nvim-document");
-    assert_eq!(app.linespace, 3.0);
-    assert_eq!(app.ui_options.get("ambiwidth"), Some(&"single".to_owned()));
+    assert_eq!(app.window.window_icon, "nvim-document");
+    assert_eq!(app.editor.protocol.linespace, 3.0);
     assert_eq!(
-        app.display_options,
+        app.editor.protocol.ui_options.get("ambiwidth"),
+        Some(&"single".to_owned())
+    );
+    assert_eq!(
+        app.editor.protocol.display_options,
         DisplayOptions {
             ambiwidth: AmbiguousWidth::Single,
             emoji: EmojiWidth::Emoji,
@@ -368,26 +417,32 @@ fn nvim_icon_and_ui_options_update_the_client_model() {
 fn typed_display_options_are_committed_at_flush() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "ambiwidth".to_owned(),
         value: "double".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "emoji".to_owned(),
         value: "false".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "arabicshape".to_owned(),
         value: "true".to_owned(),
     });
 
-    assert_eq!(app.display_options, DisplayOptions::default());
+    assert_eq!(
+        app.editor.protocol.display_options,
+        DisplayOptions::default()
+    );
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.display_options.ambiwidth, AmbiguousWidth::Double);
-    assert_eq!(app.display_options.emoji, EmojiWidth::Text);
-    assert!(app.display_options.arabicshape);
+    assert_eq!(
+        app.editor.protocol.display_options.ambiwidth,
+        AmbiguousWidth::Double
+    );
+    assert_eq!(app.editor.protocol.display_options.emoji, EmojiWidth::Text);
+    assert!(app.editor.protocol.display_options.arabicshape);
 }
 
 #[test]
@@ -403,73 +458,73 @@ fn nvim_mode_info_and_mode_change_select_the_cursor_style() {
         attr_id_lm: Some(HighlightId(9)),
     };
 
-    app.apply_nvim_event(NvimEvent::ModeInfoSet {
+    app.apply_nvim_event_for_test(NvimEvent::ModeInfoSet {
         cursor_style_enabled: true,
         modes: vec![mode],
     });
-    app.apply_nvim_event(NvimEvent::ModeChanged {
+    app.apply_nvim_event_for_test(NvimEvent::ModeChanged {
         mode: "i".to_owned(),
         mode_idx: 0,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     assert_eq!(app.current_cursor_mode(), mode);
-    assert_eq!(app.state.mode, "I");
+    assert_eq!(app.editor.protocol.state.mode, "I");
 }
 
 #[test]
 fn cursor_grid_is_committed_only_at_flush() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 4,
         height: 1,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 2,
         row: 0,
         col: 1,
     });
 
-    assert_eq!(app.cursor_grid, 1);
-    assert_eq!(app.pending_cursor_grid, Some(2));
+    assert_eq!(app.editor.protocol.cursor.cursor_grid, 1);
+    assert_eq!(app.editor.protocol.cursor.pending_cursor_grid, Some(2));
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.cursor_grid, 2);
-    assert_eq!(app.pending_cursor_grid, None);
+    assert_eq!(app.editor.protocol.cursor.cursor_grid, 2);
+    assert_eq!(app.editor.protocol.cursor.pending_cursor_grid, None);
 }
 
 #[test]
 fn ime_cursor_position_uses_the_registered_grid() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 1,
         row: 1,
         col: 3,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 2,
         row: 0,
         col: 1,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    app.ime_input_grid = Some(2);
+    app.editor.input.ime_input_grid = Some(2);
     assert_eq!(
         app.ime_cursor_position(),
         Some(CursorVisualPosition {
@@ -479,7 +534,7 @@ fn ime_cursor_position_uses_the_registered_grid() {
         })
     );
 
-    app.ime_input_grid = Some(1);
+    app.editor.input.ime_input_grid = Some(1);
     assert_eq!(
         app.ime_cursor_position(),
         Some(CursorVisualPosition {
@@ -494,24 +549,24 @@ fn ime_cursor_position_uses_the_registered_grid() {
 fn cursor_move_between_grids_uses_one_screen_animation() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 1,
         row: 0,
         col: 1,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::WinPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinPos {
         grid: 2,
         win: Vec::new(),
         row: 2,
@@ -519,15 +574,17 @@ fn cursor_move_between_grids_uses_one_screen_animation() {
         width: 4,
         height: 2,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 2,
         row: 0,
         col: 2,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.cursor_grid, 2);
+    assert_eq!(app.editor.protocol.cursor.cursor_grid, 2);
     assert!(app
+        .editor
+        .cursor
         .cursor_animation
         .is_some_and(|animation| animation.is_active(Instant::now())));
 }
@@ -551,27 +608,15 @@ fn empty_guifont_falls_back_to_a_safe_grid_font() {
 #[test]
 fn grid_line_height_keeps_a_terminal_sized_cell_and_explicit_linespace() {
     assert_eq!(
-        f32::from(crate::app::line_height_from_metrics(
-            px(15.0),
-            px(16.0),
-            0.0
-        )),
+        f32::from(line_height_from_metrics(px(15.0), px(16.0), 0.0)),
         20.0
     );
     assert_eq!(
-        f32::from(crate::app::line_height_from_metrics(
-            px(15.0),
-            px(16.0),
-            2.0
-        )),
+        f32::from(line_height_from_metrics(px(15.0), px(16.0), 2.0)),
         22.0
     );
     assert_eq!(
-        f32::from(crate::app::line_height_from_metrics(
-            px(19.0),
-            px(16.0),
-            0.0
-        )),
+        f32::from(line_height_from_metrics(px(19.0), px(16.0), 0.0)),
         20.0
     );
 }
@@ -580,12 +625,12 @@ fn grid_line_height_keeps_a_terminal_sized_cell_and_explicit_linespace() {
 fn grid_updates_become_visible_at_flush() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 4,
         height: 1,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 1,
         row: 0,
         col_start: 0,
@@ -593,27 +638,30 @@ fn grid_updates_become_visible_at_flush() {
         wraps_to_next: false,
     });
 
-    assert_ne!(app.grid.width(), 4);
-    assert!(app.pending_grid.is_some());
+    assert_ne!(app.editor.protocol.presentation.grid.width(), 4);
+    assert!(app.editor.protocol.presentation.pending_grid.is_some());
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.grid.width(), 4);
-    assert_eq!(app.grid.height(), 1);
-    assert_eq!(app.grid.rows()[0].cells()[0].text, "界");
-    assert!(app.pending_grid.is_none());
+    assert_eq!(app.editor.protocol.presentation.grid.width(), 4);
+    assert_eq!(app.editor.protocol.presentation.grid.height(), 1);
+    assert_eq!(
+        app.editor.protocol.presentation.grid.rows()[0].cells()[0].text,
+        "界"
+    );
+    assert!(app.editor.protocol.presentation.pending_grid.is_none());
 }
 
 #[test]
 fn theme_changes_become_visible_at_flush() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::DefaultColorsSet {
+    app.apply_nvim_event_for_test(NvimEvent::DefaultColorsSet {
         foreground: Some(0x101010),
         background: Some(0xf0f0f0),
         special: None,
     });
-    app.apply_nvim_event(NvimEvent::HlAttrDefine {
+    app.apply_nvim_event_for_test(NvimEvent::HlAttrDefine {
         id: HighlightId(1),
         attrs: HighlightAttrs {
             foreground: Some(0x202020),
@@ -626,7 +674,7 @@ fn theme_changes_become_visible_at_flush() {
     assert_eq!(app.theme_background(), crate::widgets::BACKGROUND);
     assert_eq!(app.theme_foreground(), crate::widgets::TEXT);
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     assert_eq!(app.theme_background(), 0xe0e0e0);
     assert_eq!(app.theme_foreground(), 0x202020);
@@ -641,26 +689,45 @@ fn highlight_definitions_are_applied_before_the_next_flush() {
         ..Default::default()
     };
 
-    app.apply_nvim_event(NvimEvent::HlAttrDefine {
+    app.apply_nvim_event_for_test(NvimEvent::HlAttrDefine {
         id: HighlightId(9),
         attrs: attrs.clone(),
     });
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 1,
         height: 1,
     });
 
-    assert!(app.grid.highlight(HighlightId(9)).is_none());
+    assert!(app
+        .editor
+        .protocol
+        .presentation
+        .grid
+        .highlight(HighlightId(9))
+        .is_none());
     assert_eq!(
-        app.pending_grid.as_ref().unwrap().highlight(HighlightId(9)),
+        app.editor
+            .protocol
+            .presentation
+            .pending_grid
+            .as_ref()
+            .unwrap()
+            .highlight(HighlightId(9)),
         Some(attrs.clone())
     );
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.grid.highlight(HighlightId(9)), Some(attrs));
+    assert_eq!(
+        app.editor
+            .protocol
+            .presentation
+            .grid
+            .highlight(HighlightId(9)),
+        Some(attrs)
+    );
 }
 
 #[test]
@@ -671,41 +738,53 @@ fn highlight_changes_to_other_grids_wait_for_flush() {
         ..Default::default()
     };
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 2,
         height: 1,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
     assert!(app
+        .editor
+        .protocol
+        .presentation
         .other_grids
         .get(&2)
         .unwrap()
         .highlight(HighlightId(9))
         .is_none());
 
-    app.apply_nvim_event(NvimEvent::HlAttrDefine {
+    app.apply_nvim_event_for_test(NvimEvent::HlAttrDefine {
         id: HighlightId(9),
         attrs: attrs.clone(),
     });
 
     assert!(app
+        .editor
+        .protocol
+        .presentation
         .other_grids
         .get(&2)
         .unwrap()
         .highlight(HighlightId(9))
         .is_none());
     assert_eq!(
-        app.pending_other_grids
+        app.editor
+            .protocol
+            .presentation
+            .pending_other_grids
             .get(&2)
             .and_then(|grid| grid.highlight(HighlightId(9))),
         Some(attrs.clone())
     );
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     assert_eq!(
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .get(&2)
             .and_then(|grid| grid.highlight(HighlightId(9))),
         Some(attrs)
@@ -716,35 +795,41 @@ fn highlight_changes_to_other_grids_wait_for_flush() {
 fn redraw_metadata_becomes_visible_at_flush() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::SetTitle {
+    app.apply_nvim_event_for_test(NvimEvent::SetTitle {
         title: "pending title".to_owned(),
     });
-    app.apply_nvim_event(NvimEvent::OptionSet {
+    app.apply_nvim_event_for_test(NvimEvent::OptionSet {
         name: "linespace".to_owned(),
         value: "3".to_owned(),
     });
 
-    assert_eq!(app.window_title, DEFAULT_WINDOW_TITLE);
-    assert_eq!(app.linespace, 0.0);
+    assert_eq!(app.window.window_title, DEFAULT_WINDOW_TITLE);
+    assert_eq!(app.editor.protocol.linespace, 0.0);
 
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.window_title, "pending title");
-    assert_eq!(app.linespace, 3.0);
+    assert_eq!(app.window.window_title, "pending title");
+    assert_eq!(app.editor.protocol.linespace, 3.0);
 }
 
 #[test]
 fn default_colors_are_applied_to_the_pending_grid() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::DefaultColorsSet {
+    app.apply_nvim_event_for_test(NvimEvent::DefaultColorsSet {
         foreground: Some(0x101010),
         background: Some(0xf0f0f0),
         special: Some(0xff0000),
     });
 
     assert_eq!(
-        app.pending_grid.as_ref().unwrap().default_colors(),
+        app.editor
+            .protocol
+            .presentation
+            .pending_grid
+            .as_ref()
+            .unwrap()
+            .default_colors(),
         (Some(0x101010), Some(0xf0f0f0), Some(0xff0000))
     );
 }
@@ -753,12 +838,12 @@ fn default_colors_are_applied_to_the_pending_grid() {
 fn multigrid_layers_keep_window_positions_and_visibility() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 20,
         height: 10,
     });
-    app.apply_nvim_event(NvimEvent::WinPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinPos {
         grid: 2,
         win: Vec::new(),
         row: 3,
@@ -766,19 +851,19 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
         width: 20,
         height: 10,
     });
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 3,
         width: 8,
         height: 4,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 3,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("│", HighlightId(4), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::WinFloatPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
         grid: 3,
         win: Vec::new(),
         position: NvimFloatPosition::Screen { row: 5, col: 6 },
@@ -786,11 +871,28 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
         zindex: 50,
         compindex: 7,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.other_grids.get(&2).unwrap().width(), 20);
     assert_eq!(
-        app.other_grids.get(&3).unwrap().rows()[0].cells()[0].text,
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
+            .get(&2)
+            .unwrap()
+            .width(),
+        20
+    );
+    assert_eq!(
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
+            .get(&3)
+            .unwrap()
+            .rows()[0]
+            .cells()[0]
+            .text,
         "│"
     );
     let layers = app.visible_grid_layers();
@@ -804,8 +906,8 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
     assert_eq!(layers[1].2.col, 6);
     assert!(layers[1].2.mouse_enabled);
 
-    app.apply_nvim_event(NvimEvent::WinHide { grid: 3 });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::WinHide { grid: 3 });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
     assert_eq!(
         app.visible_grid_layers()
             .iter()
@@ -814,9 +916,14 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
         vec![2]
     );
 
-    app.apply_nvim_event(NvimEvent::WinClose { grid: 2 });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert!(!app.other_grids.contains_key(&2));
+    app.apply_nvim_event_for_test(NvimEvent::WinClose { grid: 2 });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert!(!app
+        .editor
+        .protocol
+        .presentation
+        .other_grids
+        .contains_key(&2));
 }
 
 #[test]
@@ -824,13 +931,13 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
     let mut app = NvimGpui::default();
 
     for grid in [2, 3, 4] {
-        app.apply_nvim_event(NvimEvent::GridResized {
+        app.apply_nvim_event_for_test(NvimEvent::GridResized {
             grid,
             width: 8,
             height: 3,
         });
     }
-    app.apply_nvim_event(NvimEvent::WinFloatPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
         grid: 2,
         win: Vec::new(),
         position: NvimFloatPosition::Screen { row: 1, col: 1 },
@@ -838,7 +945,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
         zindex: 100,
         compindex: 2,
     });
-    app.apply_nvim_event(NvimEvent::WinFloatPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
         grid: 3,
         win: Vec::new(),
         position: NvimFloatPosition::Screen { row: 2, col: 2 },
@@ -850,7 +957,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
     // Margins can arrive before win_pos (as they do during initial
     // multigrid setup), so applying win_pos must merge with the existing
     // window state instead of replacing it.
-    app.apply_nvim_event(NvimEvent::WinViewportMargins {
+    app.apply_nvim_event_for_test(NvimEvent::WinViewportMargins {
         grid: 4,
         win: Vec::new(),
         top: 1,
@@ -858,7 +965,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
         left: 3,
         right: 4,
     });
-    app.apply_nvim_event(NvimEvent::WinViewport {
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
         grid: 4,
         win: Vec::new(),
         topline: 10,
@@ -868,7 +975,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
         line_count: 100,
         scroll_delta: -3,
     });
-    app.apply_nvim_event(NvimEvent::WinPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinPos {
         grid: 4,
         win: Vec::new(),
         row: 4,
@@ -876,7 +983,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
         width: 8,
         height: 3,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     let layers = app.visible_grid_layers();
     assert_eq!(
@@ -887,7 +994,13 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
     assert_eq!(layers[1].2.z_index, 40);
     assert_eq!(layers[2].2.z_index, 100);
 
-    let placement = app.grid_placements.get(&4).expect("grid 4 placement");
+    let placement = app
+        .editor
+        .protocol
+        .presentation
+        .grid_placements
+        .get(&4)
+        .expect("grid 4 placement");
     assert_eq!(
         placement.viewport,
         Some(GridViewport {
@@ -915,12 +1028,12 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
 fn legacy_float_position_is_resolved_from_anchor_grid() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 20,
         height: 10,
     });
-    app.apply_nvim_event(NvimEvent::WinPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinPos {
         grid: 2,
         win: Vec::new(),
         row: 4,
@@ -928,12 +1041,12 @@ fn legacy_float_position_is_resolved_from_anchor_grid() {
         width: 20,
         height: 10,
     });
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 3,
         width: 4,
         height: 3,
     });
-    app.apply_nvim_event(NvimEvent::WinFloatPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
         grid: 3,
         win: Vec::new(),
         position: NvimFloatPosition::Anchored {
@@ -950,7 +1063,7 @@ fn legacy_float_position_is_resolved_from_anchor_grid() {
     let placement = app.grid_placement(3);
     assert_eq!((placement.row, placement.col), (7, 10));
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 3,
         width: 6,
         height: 4,
@@ -964,19 +1077,19 @@ fn legacy_float_position_is_resolved_from_anchor_grid() {
 fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 2,
         width: 8,
         height: 3,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 2,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("old", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::WinPos {
+    app.apply_nvim_event_for_test(NvimEvent::WinPos {
         grid: 2,
         win: Vec::new(),
         row: 0,
@@ -984,7 +1097,7 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
         width: 8,
         height: 3,
     });
-    app.apply_nvim_event(NvimEvent::WinViewportMargins {
+    app.apply_nvim_event_for_test(NvimEvent::WinViewportMargins {
         grid: 2,
         win: Vec::new(),
         top: 1,
@@ -992,7 +1105,7 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
         left: 0,
         right: 0,
     });
-    app.apply_nvim_event(NvimEvent::WinViewport {
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
         grid: 2,
         win: Vec::new(),
         topline: 0,
@@ -1002,16 +1115,16 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
         line_count: 10,
         scroll_delta: 0,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 2,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new("new", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::WinViewport {
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
         grid: 2,
         win: Vec::new(),
         topline: 1,
@@ -1021,22 +1134,33 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
         line_count: 10,
         scroll_delta: 1,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     let animation = app
+        .editor
+        .presentation
         .viewport_animations
         .get(&2)
         .expect("viewport scroll should start an animation");
     assert_eq!(animation.scroll_delta, 1);
     assert_eq!(animation.previous_grid.rows()[0].cells()[0].text, "old");
-    assert_eq!(app.other_grids[&2].rows()[0].cells()[0].text, "new");
-    assert_eq!(app.grid_placements[&2].viewport_margins.unwrap().top, 1);
+    assert_eq!(
+        app.editor.protocol.presentation.other_grids[&2].rows()[0].cells()[0].text,
+        "new"
+    );
+    assert_eq!(
+        app.editor.protocol.presentation.grid_placements[&2]
+            .viewport_margins
+            .unwrap()
+            .top,
+        1
+    );
 }
 
 #[test]
 fn delayed_viewport_animation_starts_when_presented() {
     let started_at = Instant::now() - Duration::from_secs(1);
-    let mut animation = crate::app::ViewportAnimation {
+    let mut animation = ViewportAnimation {
         previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
         scroll_delta: 1,
         started_at,
@@ -1070,19 +1194,19 @@ fn viewport_margins_define_the_inner_render_area() {
 fn message_grid_position_makes_native_cmdline_grid_visible() {
     let mut app = NvimGpui::default();
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 3,
         width: 80,
         height: 4,
     });
-    app.apply_nvim_event(NvimEvent::GridLine {
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
         grid: 3,
         row: 0,
         col_start: 0,
         cells: vec![GridLineCell::new(":echo", HighlightId(1), 1)],
         wraps_to_next: false,
     });
-    app.apply_nvim_event(NvimEvent::MsgSetPos {
+    app.apply_nvim_event_for_test(NvimEvent::MsgSetPos {
         grid: 3,
         row: 20,
         scrolled: false,
@@ -1090,7 +1214,7 @@ fn message_grid_position_makes_native_cmdline_grid_visible() {
         zindex: 200,
         compindex: 11,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
     let layers = app.visible_grid_layers();
     assert_eq!(
@@ -1104,30 +1228,40 @@ fn message_grid_position_makes_native_cmdline_grid_visible() {
     assert_eq!(layers[0].2.compindex, 11);
     assert!(!layers[0].2.message_scrolled);
     assert_eq!(layers[0].2.message_separator, Some(' '));
-    assert_eq!(app.other_grids[&3].rows()[0].cells()[0].text, ":echo");
+    assert_eq!(
+        app.editor.protocol.presentation.other_grids[&3].rows()[0].cells()[0].text,
+        ":echo"
+    );
 }
 
 #[test]
 fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
     let image = ImageId(17);
     let mut app = NvimGpui::default();
-    app.image_store
+    app.editor
+        .protocol
+        .presentation
+        .image_store
         .insert_asset_with_format(image, vec![1, 2, 3], ImageFormatKind::Png);
-    app.image_store.place(ImagePlacement {
-        key: PlacementKey {
-            image,
-            placement: 4,
-        },
-        anchor: GridAnchor {
-            grid: GridId(0),
-            row: 0,
-            column: 0,
-        },
-        columns: 3,
-        rows: 2,
-        z_index: 0,
-        virtual_placeholder: true,
-    });
+    app.editor
+        .protocol
+        .presentation
+        .image_store
+        .place(ImagePlacement {
+            key: PlacementKey {
+                image,
+                placement: 4,
+            },
+            anchor: GridAnchor {
+                grid: GridId(0),
+                row: 0,
+                column: 0,
+            },
+            columns: 3,
+            rows: 2,
+            z_index: 0,
+            virtual_placeholder: true,
+        });
 
     let mut model = crate::grid::GridModel::new(6, 3);
     let highlight = HighlightId(1839);
@@ -1143,8 +1277,12 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
     let marker = format!("{}{}{}", '\u{10eeee}', '\u{0305}', '\u{030d}');
     model.apply_grid_line(1, 1, &[GridLineCell::new(marker, highlight, 1)], false);
     model.set_cursor(2, 0);
-    app.other_grids.insert(2, Rc::new(model));
-    app.grid_placements.insert(
+    app.editor
+        .protocol
+        .presentation
+        .other_grids
+        .insert(2, Rc::new(model));
+    app.editor.protocol.presentation.grid_placements.insert(
         2,
         GridPlacement {
             width: 6,
@@ -1153,7 +1291,7 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
             ..Default::default()
         },
     );
-    app.cursor_grid = 2;
+    app.editor.protocol.cursor.cursor_grid = 2;
 
     let layers = app.visible_image_layers();
     assert_eq!(layers.len(), 1);
@@ -1167,9 +1305,13 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
         (image, 2, 1, 0)
     );
 
-    let mut hidden_model = (*app.other_grids[&2]).clone();
+    let mut hidden_model = (*app.editor.protocol.presentation.other_grids[&2]).clone();
     hidden_model.set_cursor(0, 0);
-    app.other_grids.insert(2, Rc::new(hidden_model));
+    app.editor
+        .protocol
+        .presentation
+        .other_grids
+        .insert(2, Rc::new(hidden_model));
     assert!(app.visible_image_layers().is_empty());
 }
 
@@ -1181,29 +1323,35 @@ fn grid_destroy_removes_the_visible_grid_at_flush() {
         ..Default::default()
     };
 
-    app.apply_nvim_event(NvimEvent::GridResized {
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
         grid: 1,
         width: 2,
         height: 1,
     });
-    app.apply_nvim_event(NvimEvent::HlAttrDefine {
+    app.apply_nvim_event_for_test(NvimEvent::HlAttrDefine {
         id: HighlightId(7),
         attrs,
     });
-    app.apply_nvim_event(NvimEvent::GridCursorGoto {
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
         grid: 1,
         row: 0,
         col: 1,
     });
-    app.apply_nvim_event(NvimEvent::Flush);
-    assert_eq!(app.grid.width(), 2);
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    assert_eq!(app.editor.protocol.presentation.grid.width(), 2);
 
-    app.apply_nvim_event(NvimEvent::GridDestroy { grid: 1 });
-    app.apply_nvim_event(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::GridDestroy { grid: 1 });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.grid.width(), 0);
-    assert_eq!(app.grid.height(), 0);
-    assert_eq!(app.grid.cursor(), None);
-    assert!(app.grid.highlights().is_empty());
-    assert_eq!(app.grid_size, None);
+    assert_eq!(app.editor.protocol.presentation.grid.width(), 0);
+    assert_eq!(app.editor.protocol.presentation.grid.height(), 0);
+    assert_eq!(app.editor.protocol.presentation.grid.cursor(), None);
+    assert!(app
+        .editor
+        .protocol
+        .presentation
+        .grid
+        .highlights()
+        .is_empty());
+    assert_eq!(app.editor.protocol.presentation.grid_size, None);
 }

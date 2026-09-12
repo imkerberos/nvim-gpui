@@ -1,13 +1,11 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 
 pub mod app;
-mod clipboard;
 mod editor;
 pub mod grid;
 pub(crate) mod gui;
 mod health_check;
 pub mod helper;
-pub mod image_store;
 pub mod input;
 mod logging;
 pub mod nvim;

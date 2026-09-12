@@ -1,4 +1,4 @@
-use crate::{image_store::is_kitty_placeholder, settings::FallbackMode};
+use crate::{editor::image_store::is_kitty_placeholder, settings::FallbackMode};
 use gpui::{
     fill, font, point, px, rgb, size, App, Bounds, Corners, Element, ElementId, Font,
     FontFallbacks, GlobalElementId, Hsla, IntoElement, LayoutId, Pixels, ShapedLine, SharedString,
@@ -31,7 +31,7 @@ pub use cursor::CursorElement;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
     AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition,
-    DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow,
+    DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow, GridRows,
     HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
 pub use visual::{HighlightContext, ResolvedHighlight};

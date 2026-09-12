@@ -1,18 +1,5 @@
 use super::*;
-
-/// The semantic owner of a grid layer.
-///
-/// Keeping this separate from the raw Neovim placement values lets the
-/// compositor make decisions from context instead of inferring that a grid is
-/// floating from `zindex` or `compindex`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GridLayerKind {
-    Main,
-    Window,
-    Float,
-    Message,
-    External,
-}
+use gpui::{Pixels, Point};
 
 impl GridLayerKind {
     fn paint_rank(self) -> u8 {
@@ -106,6 +93,19 @@ pub(crate) struct CompositorFrame {
     pub(crate) layers: Vec<CompositorLayer>,
 }
 
+/// The immutable presentation view published from the last completed
+/// Neovim redraw transaction.
+///
+/// The protocol reducer owns the mutable committed state. Rendering and
+/// pointer routing consume this view so they cannot independently rebuild
+/// layer geometry from different pieces of application state.
+#[derive(Clone)]
+pub(crate) struct PresentationSnapshot {
+    pub(crate) compositor: CompositorFrame,
+    pub(crate) image_layers: Vec<ImageLayer>,
+    pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MouseTarget {
     pub(crate) grid_id: u64,
@@ -123,7 +123,11 @@ impl CompositorFrame {
         line_height: Pixels,
     ) -> (f32, f32) {
         let editor_y = f32::from(position.y)
-            - if themed_titlebar_enabled() {
+            - if cfg!(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "windows"
+            )) {
                 THEMED_TITLEBAR_HEIGHT
             } else {
                 0.0
@@ -176,11 +180,29 @@ impl CompositorFrame {
 }
 
 impl NvimGpui {
+    pub(crate) fn presentation_snapshot(&mut self) -> Rc<PresentationSnapshot> {
+        if let Some(snapshot) = &self.editor.presentation.presentation_snapshot {
+            return Rc::clone(snapshot);
+        }
+
+        let snapshot = Rc::new(PresentationSnapshot {
+            compositor: self.compositor_frame(),
+            image_layers: self.visible_image_layers(),
+            image_sources: self.editor.presentation.image_sources.clone(),
+        });
+        self.editor.presentation.presentation_snapshot = Some(Rc::clone(&snapshot));
+        snapshot
+    }
+
+    pub(crate) fn invalidate_presentation_snapshot(&mut self) {
+        self.editor.presentation.presentation_snapshot = None;
+    }
+
     /// Build the committed multigrid state in the order in which the current
     /// renderer paints it. This is deliberately pure data construction; the
     /// GPUI element tree will consume it in a later compositor step.
     pub(crate) fn compositor_frame(&self) -> CompositorFrame {
-        let main_model = Rc::clone(&self.grid);
+        let main_model = Rc::clone(&self.editor.protocol.presentation.grid);
         let main_width = main_model.width() as u64;
         let main_height = main_model.height() as u64;
         let main_placement = GridPlacement {
@@ -200,8 +222,15 @@ impl NvimGpui {
             main_placement,
         )];
 
-        for (grid_id, model) in &self.other_grids {
-            let Some(placement) = self.grid_placements.get(grid_id).copied() else {
+        for (grid_id, model) in &self.editor.protocol.presentation.other_grids {
+            let Some(placement) = self
+                .editor
+                .protocol
+                .presentation
+                .grid_placements
+                .get(grid_id)
+                .copied()
+            else {
                 continue;
             };
             if !placement.visible {
@@ -248,17 +277,27 @@ impl NvimGpui {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nvim::NvimEvent;
 
     #[test]
     fn compositor_frame_contains_main_and_visible_grids_in_paint_order() {
         let mut app = NvimGpui::default();
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(2, Rc::new(grid::GridModel::new(4, 2)));
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(3, Rc::new(grid::GridModel::new(6, 3)));
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(4, Rc::new(grid::GridModel::new(2, 1)));
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             2,
             GridPlacement {
                 kind: GridLayerKind::Float,
@@ -267,7 +306,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             3,
             GridPlacement {
                 kind: GridLayerKind::Message,
@@ -276,7 +315,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             4,
             GridPlacement {
                 kind: GridLayerKind::Window,
@@ -304,11 +343,17 @@ mod tests {
     #[test]
     fn compositor_uses_legacy_zindex_when_compindex_is_unavailable() {
         let mut app = NvimGpui::default();
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(2, Rc::new(grid::GridModel::new(4, 2)));
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(3, Rc::new(grid::GridModel::new(6, 3)));
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             2,
             GridPlacement {
                 kind: GridLayerKind::Float,
@@ -318,7 +363,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             3,
             GridPlacement {
                 kind: GridLayerKind::Float,
@@ -390,11 +435,17 @@ mod tests {
     #[test]
     fn hit_test_chooses_the_topmost_mouse_enabled_layer() {
         let mut app = NvimGpui::default();
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(2, Rc::new(grid::GridModel::new(10, 5)));
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(3, Rc::new(grid::GridModel::new(4, 3)));
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             2,
             GridPlacement {
                 row: 2,
@@ -407,7 +458,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             3,
             GridPlacement {
                 row: 3,
@@ -422,7 +473,11 @@ mod tests {
         );
 
         let frame = app.compositor_frame();
-        let titlebar = if themed_titlebar_enabled() {
+        let titlebar = if cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
             THEMED_TITLEBAR_HEIGHT
         } else {
             0.0
@@ -442,11 +497,45 @@ mod tests {
     }
 
     #[test]
+    fn presentation_snapshot_only_publishes_after_flush() {
+        let mut app = NvimGpui::default();
+        let initial = app.presentation_snapshot();
+        let initial_width = initial.compositor.layers[0].content_rect.width;
+
+        assert!(Rc::ptr_eq(&initial, &app.presentation_snapshot()));
+
+        app.apply_nvim_event_for_test(NvimEvent::GridResized {
+            grid: 1,
+            width: 12,
+            height: 3,
+        });
+
+        assert_eq!(
+            app.presentation_snapshot().compositor.layers[0]
+                .content_rect
+                .width,
+            initial_width
+        );
+
+        app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+        assert_eq!(
+            app.presentation_snapshot().compositor.layers[0]
+                .content_rect
+                .width,
+            12
+        );
+    }
+
+    #[test]
     fn hit_test_skips_a_mouse_disabled_float() {
         let mut app = NvimGpui::default();
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(2, Rc::new(grid::GridModel::new(5, 3)));
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             2,
             GridPlacement {
                 row: 1,
@@ -462,7 +551,11 @@ mod tests {
         );
 
         let frame = app.compositor_frame();
-        let titlebar = if themed_titlebar_enabled() {
+        let titlebar = if cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
             THEMED_TITLEBAR_HEIGHT
         } else {
             0.0
@@ -478,9 +571,12 @@ mod tests {
     #[test]
     fn captured_grid_keeps_receiving_pointer_coordinates_outside_its_rect() {
         let mut app = NvimGpui::default();
-        app.other_grids
+        app.editor
+            .protocol
+            .presentation
+            .other_grids
             .insert(2, Rc::new(grid::GridModel::new(4, 2)));
-        app.grid_placements.insert(
+        app.editor.protocol.presentation.grid_placements.insert(
             2,
             GridPlacement {
                 row: 2,
@@ -495,7 +591,11 @@ mod tests {
         );
 
         let frame = app.compositor_frame();
-        let titlebar = if themed_titlebar_enabled() {
+        let titlebar = if cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
             THEMED_TITLEBAR_HEIGHT
         } else {
             0.0

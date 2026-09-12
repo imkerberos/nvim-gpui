@@ -1,17 +1,21 @@
+use crate::app::NvimGpui;
+use crate::app::{themed_titlebar_options, themed_window_decorations};
+use gpui::{
+    prelude::*, App, AppContext, Bounds, Entity, WindowBounds, WindowHandle, WindowKind,
+    WindowOptions,
+};
+
 mod about;
+mod debug;
 mod quit_confirmation;
 mod settings;
 mod startup_error;
 
 pub(crate) use about::AboutWindow;
+pub(crate) use debug::DebugWindow;
 pub(crate) use quit_confirmation::quit_confirmation_dialog;
 pub(crate) use settings::SettingsWindow;
 pub(crate) use startup_error::startup_error_dialog;
-
-use crate::app::{themed_titlebar_options, themed_window_decorations, NvimGpui};
-use gpui::{
-    prelude::*, size, App, Bounds, Entity, WindowBounds, WindowHandle, WindowKind, WindowOptions,
-};
 
 pub(crate) fn dialog_overlay(id: &'static str, panel: impl IntoElement) -> gpui::Div {
     let backdrop = gpui::div()
@@ -51,7 +55,7 @@ pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
         }
     }
 
-    let bounds = Bounds::centered(None, size(gpui::px(720.0), gpui::px(560.0)), cx);
+    let bounds = Bounds::centered(None, gpui::size(gpui::px(720.0), gpui::px(560.0)), cx);
     let handle: WindowHandle<SettingsWindow> = cx
         .open_window(
             WindowOptions {
@@ -60,13 +64,13 @@ pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
                 window_decorations: themed_window_decorations(),
                 kind: WindowKind::Floating,
                 is_resizable: true,
-                window_min_size: Some(size(gpui::px(560.0), gpui::px(420.0))),
+                window_min_size: Some(gpui::size(gpui::px(560.0), gpui::px(420.0))),
                 ..Default::default()
             },
             |_, cx| cx.new(|cx| SettingsWindow::new(source.clone(), cx)),
         )
         .expect("failed to open nvim-gpui settings window");
-    source.update(cx, |view, _| view.set_settings_window_handle(handle));
+    source.update(cx, |view, _| view.set_settings_window_handle(handle.into()));
 }
 
 pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
@@ -80,7 +84,7 @@ pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
         }
     }
 
-    let bounds = Bounds::centered(None, size(gpui::px(440.0), gpui::px(320.0)), cx);
+    let bounds = Bounds::centered(None, gpui::size(gpui::px(440.0), gpui::px(320.0)), cx);
     let handle: WindowHandle<AboutWindow> = cx
         .open_window(
             WindowOptions {
@@ -94,5 +98,5 @@ pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
             |_, cx| cx.new(|_| AboutWindow),
         )
         .expect("failed to open nvim-gpui about window");
-    source.update(cx, |view, _| view.set_about_window_handle(handle));
+    source.update(cx, |view, _| view.set_about_window_handle(handle.into()));
 }
