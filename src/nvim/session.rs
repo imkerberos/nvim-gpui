@@ -1,4 +1,4 @@
-use async_channel::Sender;
+use async_channel::{Receiver, Sender, TrySendError};
 use rmpv::Value;
 use std::io::{BufReader, Read};
 use std::sync::mpsc::SyncSender;
@@ -8,8 +8,14 @@ use super::protocol::*;
 use super::transport::{read_message, write_shared_message, RpcReader, SharedWriter};
 use super::{
     parse_protocol_info, NvimEvent, NvimProtocolInfo, NvimTheme, PendingRequests,
-    RpcRequestHandlers,
+    RpcRequestHandlers, INCOMING_REQUEST_QUEUE_CAPACITY,
 };
+
+pub(super) struct IncomingRpcRequest {
+    id: u64,
+    method: String,
+    params: Value,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_session(
@@ -22,6 +28,7 @@ pub(super) fn run_session(
     startup_theme_sender: &std::sync::mpsc::SyncSender<NvimTheme>,
     protocol_sender: &SyncSender<NvimProtocolInfo>,
     pending_requests: &PendingRequests,
+    incoming_requests: &Sender<IncomingRpcRequest>,
     request_handlers: &RpcRequestHandlers,
 ) -> Result<(), String> {
     let mut reader = BufReader::new(reader);
@@ -35,7 +42,7 @@ pub(super) fn run_session(
         "nvim_get_api_info",
         Value::Array(Vec::new()),
         events,
-        request_handlers,
+        incoming_requests,
         &unknown_protocol,
     )?;
     request_id += 1;
@@ -74,7 +81,7 @@ pub(super) fn run_session(
         "nvim_set_client_info",
         client_info_params(request_methods),
         events,
-        request_handlers,
+        incoming_requests,
         &protocol_adapter,
     )?;
     request_id += 1;
@@ -89,7 +96,7 @@ pub(super) fn run_session(
         "nvim_get_option",
         Value::Array(vec![Value::from("mouse")]),
         events,
-        request_handlers,
+        incoming_requests,
         &protocol_adapter,
     )?;
     request_id += 1;
@@ -110,7 +117,7 @@ pub(super) fn run_session(
         "nvim_ui_attach",
         ui_attach_params_for(width, height, &protocol.capabilities),
         events,
-        request_handlers,
+        incoming_requests,
         &protocol_adapter,
     )?;
     let _ = rpc_ready.send_blocking(());
@@ -132,7 +139,7 @@ pub(super) fn run_session(
             message,
             events,
             pending_requests,
-            request_handlers,
+            incoming_requests,
             &protocol_adapter,
         )?;
     }
@@ -201,7 +208,7 @@ fn request(
     method: &str,
     params: Value,
     events: &Sender<NvimEvent>,
-    request_handlers: &RpcRequestHandlers,
+    incoming_requests: &Sender<IncomingRpcRequest>,
     protocol: &NvimProtocolAdapter,
 ) -> Result<Value, String> {
     write_shared_message(
@@ -253,12 +260,12 @@ fn request(
                     .and_then(string_value)
                     .ok_or_else(|| "RPC request has no method".to_owned())?;
                 let request_params = &values[3];
-                handle_request(
+                queue_incoming_request(
                     writer,
+                    incoming_requests,
                     request_id,
-                    &request_method,
+                    request_method,
                     request_params,
-                    request_handlers,
                 )?;
             }
             Some(tag) => return Err(format!("unexpected RPC message type: {tag}")),
@@ -272,7 +279,7 @@ fn dispatch_message(
     message: Value,
     events: &Sender<NvimEvent>,
     pending_requests: &PendingRequests,
-    request_handlers: &RpcRequestHandlers,
+    incoming_requests: &Sender<IncomingRpcRequest>,
     protocol: &NvimProtocolAdapter,
 ) -> Result<(), String> {
     let Some(values) = message.as_array() else {
@@ -298,9 +305,10 @@ fn dispatch_message(
             let response_sender = pending_requests
                 .lock()
                 .map_err(|_| "RPC request registry is poisoned".to_owned())?
+                .pending
                 .remove(&response_id);
             if let Some(response_sender) = response_sender {
-                let _ = response_sender.send_blocking(result);
+                response_sender.complete(result);
             } else if let Err(error) = result {
                 send_event(events, NvimEvent::Error(error))?;
             }
@@ -326,10 +334,62 @@ fn dispatch_message(
                 .and_then(string_value)
                 .ok_or_else(|| "RPC request has no method".to_owned())?;
             let params = &values[3];
-            handle_request(writer, id, &method, params, request_handlers)
+            queue_incoming_request(writer, incoming_requests, id, method, params)
         }
         Some(tag) => Err(format!("unexpected RPC message type: {tag}")),
         None => Err("RPC message has no type".to_owned()),
+    }
+}
+
+fn queue_incoming_request(
+    writer: &SharedWriter,
+    incoming_requests: &Sender<IncomingRpcRequest>,
+    id: u64,
+    method: String,
+    params: &Value,
+) -> Result<(), String> {
+    let request = IncomingRpcRequest {
+        id,
+        method,
+        params: params.clone(),
+    };
+    match incoming_requests.try_send(request) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(request)) => {
+            let frame = Value::Array(vec![
+                Value::from(1),
+                Value::from(request.id),
+                Value::from(format!(
+                    "RPC request queue is full (capacity {INCOMING_REQUEST_QUEUE_CAPACITY})"
+                )),
+                Value::Nil,
+            ]);
+            write_shared_message(writer, &frame)
+        }
+        Err(TrySendError::Closed(_)) => Err("Neovim RPC request worker stopped".to_owned()),
+    }
+}
+
+pub(super) fn run_request_dispatcher(
+    writer: SharedWriter,
+    incoming_requests: Receiver<IncomingRpcRequest>,
+    request_handlers: RpcRequestHandlers,
+) {
+    while let Ok(request) = incoming_requests.recv_blocking() {
+        if let Err(error) = handle_request(
+            &writer,
+            request.id,
+            &request.method,
+            &request.params,
+            &request_handlers,
+        ) {
+            log::error!(
+                target: "nvim_gpui::nvim",
+                "failed to handle incoming Neovim RPC request {}: {error}",
+                request.method
+            );
+            break;
+        }
     }
 }
 
@@ -340,11 +400,12 @@ fn handle_request(
     params: &Value,
     request_handlers: &RpcRequestHandlers,
 ) -> Result<(), String> {
-    let response = request_handlers
+    let handler = request_handlers
         .lock()
         .map_err(|_| "RPC request handler registry is poisoned".to_owned())?
         .get(method)
-        .cloned()
+        .cloned();
+    let response = handler
         .map(|handler| handler(params))
         .unwrap_or_else(|| Err(format!("RPC method is not supported: {method}")));
 

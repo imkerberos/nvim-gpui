@@ -13,7 +13,8 @@ use super::transport::{read_message, write_message};
 use super::version::parse_protocol_info;
 use super::{
     disconnect_reason, DisconnectReason, NvimCapabilities, NvimEvent, NvimFloatAnchor,
-    NvimFloatPosition, NvimProcess, NvimProtocolInfo, NvimTheme, NvimVersion, NVIM_EXITED,
+    NvimFloatPosition, NvimProcess, NvimProtocolInfo, NvimTheme, NvimVersion, RequestRegistry,
+    RequestState, NVIM_EXITED,
 };
 use crate::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
@@ -27,10 +28,10 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::channel,
-        Arc,
+        Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[test]
@@ -51,6 +52,43 @@ fn request_frame_uses_msgpack_rpc_shape() {
     assert_eq!(decoded[0].as_u64(), Some(0));
     assert_eq!(decoded[1].as_u64(), Some(7));
     assert_eq!(decoded[2].as_str(), Some("nvim_get_api_info"));
+}
+
+#[test]
+fn pending_request_watchdog_completes_a_queued_request() {
+    let (response, response_queue) = async_channel::bounded(1);
+    let request = Arc::new(RequestState::new(
+        "nvim_test".to_owned(),
+        Instant::now() - Duration::from_secs(1),
+        response,
+    ));
+    let registry = Arc::new(Mutex::new(RequestRegistry {
+        queued: HashMap::from([(1, Arc::clone(&request))]),
+        pending: HashMap::new(),
+    }));
+    let rpc_alive = Arc::new(AtomicBool::new(true));
+    let stop = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let registry = Arc::clone(&registry);
+        let rpc_alive = Arc::clone(&rpc_alive);
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || super::run_pending_request_watchdog(registry, rpc_alive, stop))
+    };
+
+    let result = response_queue
+        .recv_blocking()
+        .expect("expired request should receive a timeout");
+    assert!(result
+        .expect_err("expired request should fail")
+        .contains("timed out"));
+    assert!(registry
+        .lock()
+        .expect("registry should not be poisoned")
+        .queued
+        .is_empty());
+
+    stop.store(true, Ordering::Release);
+    watchdog.join().expect("watchdog should stop cleanly");
 }
 
 #[test]

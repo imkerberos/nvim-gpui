@@ -5,13 +5,16 @@
 //! access is different for remote sessions, where Neovim must ask this GUI to
 //! read or write the local `+`/`*` clipboard through RPC.
 
-use async_channel::{Receiver, Sender};
+use async_channel::{Receiver, Sender, TrySendError};
 use gpui::{App, ClipboardItem};
 use rmpv::Value;
 use std::sync::mpsc::{sync_channel, SyncSender};
+use std::time::Duration;
 
 pub(crate) const CLIPBOARD_GET_METHOD: &str = "nvim_gpui_clipboard_get";
 pub(crate) const CLIPBOARD_SET_METHOD: &str = "nvim_gpui_clipboard_set";
+const CLIPBOARD_QUEUE_CAPACITY: usize = 32;
+const CLIPBOARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) enum ClipboardRequest {
     Get {
@@ -26,7 +29,7 @@ pub(crate) enum ClipboardRequest {
 }
 
 pub(crate) fn channel() -> (Sender<ClipboardRequest>, Receiver<ClipboardRequest>) {
-    async_channel::unbounded()
+    async_channel::bounded(CLIPBOARD_QUEUE_CAPACITY)
 }
 
 pub(crate) fn get_request_handler(
@@ -36,14 +39,14 @@ pub(crate) fn get_request_handler(
         let primary = register_from_params(params)?;
         let (response_tx, response_rx) = sync_channel(1);
         requests
-            .send_blocking(ClipboardRequest::Get {
+            .try_send(ClipboardRequest::Get {
                 primary,
                 response: response_tx,
             })
-            .map_err(|_| "clipboard UI service is unavailable".to_owned())?;
+            .map_err(clipboard_queue_error)?;
         let text = response_rx
-            .recv()
-            .map_err(|_| "clipboard UI service stopped while reading".to_owned())??;
+            .recv_timeout(CLIPBOARD_REQUEST_TIMEOUT)
+            .map_err(|_| "clipboard UI service timed out while reading".to_owned())??;
         Ok(register_value(&text))
     }
 }
@@ -73,16 +76,25 @@ pub(crate) fn set_request_handler(
 
         let (response_tx, response_rx) = sync_channel(1);
         requests
-            .send_blocking(ClipboardRequest::Set {
+            .try_send(ClipboardRequest::Set {
                 primary,
                 text,
                 response: response_tx,
             })
-            .map_err(|_| "clipboard UI service is unavailable".to_owned())?;
+            .map_err(clipboard_queue_error)?;
         response_rx
-            .recv()
-            .map_err(|_| "clipboard UI service stopped while writing".to_owned())??;
+            .recv_timeout(CLIPBOARD_REQUEST_TIMEOUT)
+            .map_err(|_| "clipboard UI service timed out while writing".to_owned())??;
         Ok(Value::Nil)
+    }
+}
+
+fn clipboard_queue_error(error: TrySendError<ClipboardRequest>) -> String {
+    match error {
+        TrySendError::Full(_) => {
+            format!("clipboard UI request queue is full (capacity {CLIPBOARD_QUEUE_CAPACITY})")
+        }
+        TrySendError::Closed(_) => "clipboard UI service is unavailable".to_owned(),
     }
 }
 

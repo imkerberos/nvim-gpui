@@ -2,6 +2,11 @@ use crate::grid::{CursorModeInfo, GridLineCell, HighlightAttrs, HighlightId};
 
 use async_channel::Sender;
 use rmpv::Value;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Instant;
 
 use super::{NvimCapabilities, NvimVersion};
 
@@ -42,20 +47,45 @@ pub(super) enum NvimCommand {
         row: u64,
         col: u64,
     },
-    Resize {
-        width: u32,
-        height: u32,
-    },
     Request {
-        method: String,
         params: Value,
-        response: Sender<Result<Value, String>>,
+        token: u64,
+        request: Arc<RequestState>,
     },
     TermEvent {
         event: String,
         value: String,
     },
+    DrainCoalesced,
     Shutdown,
+}
+
+pub(super) struct RequestState {
+    pub(super) method: String,
+    pub(super) deadline: Instant,
+    pub(super) response: Sender<Result<Value, String>>,
+    pub(super) completed: AtomicBool,
+}
+
+impl RequestState {
+    pub(super) fn new(
+        method: String,
+        deadline: Instant,
+        response: Sender<Result<Value, String>>,
+    ) -> Self {
+        Self {
+            method,
+            deadline,
+            response,
+            completed: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn complete(&self, result: Result<Value, String>) {
+        if !self.completed.swap(true, Ordering::AcqRel) {
+            let _ = self.response.try_send(result);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
