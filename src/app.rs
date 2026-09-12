@@ -6,7 +6,7 @@ use crate::{
     input::{InputRouter, InputRouterConfig, InputTarget, SystemImeState},
     nvim::{
         self, DisconnectReason, NvimEvent, NvimFloatAnchor, NvimFloatPosition, NvimProcess,
-        NvimTheme, NvimVersion,
+        NvimTheme, NvimVersion, SessionId,
     },
     platform, settings, update_check,
     widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
@@ -18,7 +18,7 @@ use gpui::{
     SharedString, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowControlArea,
     WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
-use nvim_gpui::rime::{RimeBackend, RimeContextSnapshot};
+use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -323,9 +323,12 @@ pub(crate) struct NvimGpui {
     pub(crate) grid: Rc<grid::GridModel>,
     pub(crate) pending_grid: Option<Rc<grid::GridModel>>,
     pub(crate) nvim: Option<NvimProcess>,
+    /// Identity of the Neovim connection whose events and asynchronous
+    /// responses are allowed to mutate this view.
+    pub(crate) nvim_session_id: Option<SessionId>,
     pub(crate) input_router: InputRouter,
     pub(crate) last_modifiers: gpui::Modifiers,
-    pub(crate) rime_backend: Option<RimeBackend>,
+    pub(crate) rime_service: Option<RimeService>,
     pub(crate) rime_context: Option<RimeContextSnapshot>,
     pub(crate) rime_menu_open: bool,
     pub(crate) rime_menu_message: Option<String>,
@@ -462,9 +465,10 @@ impl Default for NvimGpui {
             )),
             pending_grid: None,
             nvim: None,
+            nvim_session_id: None,
             input_router: InputRouter::default(),
             last_modifiers: gpui::Modifiers::none(),
-            rime_backend: None,
+            rime_service: None,
             rime_context: None,
             rime_menu_open: false,
             rime_menu_message: None,

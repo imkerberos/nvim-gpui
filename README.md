@@ -234,10 +234,10 @@ uses nvim-gpui's application-support directory.
 Rime starts disabled even when it is selected as the backend. Press the
 platform default activation shortcut (`Cmd-\` on macOS, `Ctrl-\` on Linux and
 Windows) to toggle it, then enter Insert mode and type with Rime. The bundled
-runtime is selected automatically when
-the application is launched from the macOS AppBundle or Windows bundle; do not set
-`NVIM_GPUI_RIME_LIBRARY` or `NVIM_GPUI_RIME_SHARED_DIR` when testing that
-path.
+runtime is selected automatically when the application is launched from the
+macOS AppBundle or Windows bundle. Development builds also search the repository's
+`.cache/rime-runtime` staging directory; a different development runtime can
+be selected with `NVIM_GPUI_RIME_RUNTIME=/path/to/rime-runtime`.
 
 ## Font configuration
 

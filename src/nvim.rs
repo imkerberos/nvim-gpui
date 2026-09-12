@@ -14,6 +14,7 @@ use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::AtomicU64;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -51,6 +52,17 @@ const NVIM_EXITED: &str = "nvim process exited";
 const STARTUP_THEME_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(u64);
+
+impl SessionId {
+    fn next() -> Self {
+        Self(NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 type PendingRequests = Arc<Mutex<HashMap<u64, Sender<Result<Value, String>>>>>;
 pub type RpcRequestHandler = Arc<dyn Fn(&Value) -> Result<Value, String> + Send + Sync + 'static>;
 type RpcRequestHandlers = Arc<Mutex<HashMap<String, RpcRequestHandler>>>;
@@ -68,6 +80,7 @@ pub(crate) enum ConnectionSpec {
 }
 
 pub struct NvimProcess {
+    session_id: SessionId,
     child: Option<Arc<Mutex<Child>>>,
     remote: Option<Arc<RemoteConnection>>,
     shutdown_requested: Arc<AtomicBool>,
@@ -221,6 +234,7 @@ impl NvimProcess {
         remote: Option<Arc<RemoteConnection>>,
         connection: ConnectionSpec,
     ) -> Result<Self, String> {
+        let session_id = SessionId::next();
         let worker_child = child.clone();
         let worker_remote = remote.clone();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -336,6 +350,7 @@ impl NvimProcess {
         );
 
         Ok(Self {
+            session_id,
             child,
             remote,
             shutdown_requested,
@@ -350,6 +365,10 @@ impl NvimProcess {
 
     pub fn events(&self) -> Receiver<NvimEvent> {
         self.events.clone()
+    }
+
+    pub(crate) fn session_id(&self) -> SessionId {
+        self.session_id
     }
 
     pub fn startup_theme(&self) -> Option<NvimTheme> {

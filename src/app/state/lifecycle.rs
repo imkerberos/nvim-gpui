@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nvim_gpui::rime::{RimeBackend, RimeConfig, RimeRuntimeResolver};
+use nvim_gpui::rime::{RimeConfig, RimeRuntimeResolver, RimeService};
 
 const MODIFIED_BUFFERS_LUA: &str = r#"
 local modified = {}
@@ -27,8 +27,8 @@ impl NvimGpui {
         app_settings: settings::Settings,
     ) -> Result<(), String> {
         let config = rime_config_from_settings(&app_settings, Some(false))?;
-        let backend = RimeBackend::new(config)?;
-        backend.context().map(|_| ()).map_err(|error| {
+        let service = RimeService::start(config)?;
+        service.context().map(|_| ()).map_err(|error| {
             format!("Rime session was created but context loading failed: {error}")
         })
     }
@@ -84,7 +84,8 @@ impl NvimGpui {
             this.start_remote_clipboard_bridge(cx);
         }
         if let Some(nvim) = this.nvim.as_ref() {
-            this.start_event_task(nvim.events(), cx);
+            this.nvim_session_id = Some(nvim.session_id());
+            this.start_event_task(nvim.events(), nvim.session_id(), cx);
         }
 
         this
@@ -99,40 +100,22 @@ impl NvimGpui {
         let config = match rime_config_from_settings(&app_settings, None) {
             Ok(config) => config,
             Err(error) => {
-                log::warn!(target: "nvim_gpui::rime", "Rime backend unavailable: {error}");
+                log::warn!(target: "nvim_gpui::rime", "Rime service unavailable: {error}");
                 return;
             }
         };
-        let deploy_config = config.clone();
-        let mut backend_config = config;
-        backend_config.deploy = false;
-        let task = cx.background_spawn(async move {
-            if deploy_config.deploy {
-                RimeBackend::deploy(deploy_config)
-            } else {
-                Ok(())
-            }
-        });
+        let task = cx.background_spawn(async move { RimeService::start(config) });
         self.rime_init_task = Some(cx.spawn(async move |weak, cx| {
-            let deploy_result = task.await;
+            let service_result = task.await;
             let _ = weak.update(cx, |view, cx| {
                 view.rime_init_task = None;
-                view.rime_backend = match deploy_result {
-                    Ok(()) => match RimeBackend::new(backend_config) {
-                        Ok(backend) => {
-                            log::info!(target: "nvim_gpui::rime", "Rime backend available");
-                            Some(backend)
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                target: "nvim_gpui::rime",
-                                "Rime backend unavailable after deploy: {error}"
-                            );
-                            None
-                        }
-                    },
+                view.rime_service = match service_result {
+                    Ok(service) => {
+                        log::info!(target: "nvim_gpui::rime", "Rime service available");
+                        Some(service)
+                    }
                     Err(error) => {
-                        log::warn!(target: "nvim_gpui::rime", "Rime deploy failed: {error}");
+                        log::warn!(target: "nvim_gpui::rime", "Rime service failed to start: {error}");
                         None
                     }
                 };
@@ -334,6 +317,7 @@ impl NvimGpui {
     fn start_event_task(
         &mut self,
         events: async_channel::Receiver<NvimEvent>,
+        session_id: SessionId,
         cx: &mut Context<Self>,
     ) {
         self.event_task = Some(cx.spawn(async move |weak, cx| {
@@ -380,8 +364,11 @@ impl NvimGpui {
                             | NvimEvent::Disconnected { .. }
                     )
                 });
-                if weak
+                let accepted = weak
                     .update(cx, |this, cx| {
+                        if this.nvim_session_id != Some(session_id) {
+                            return false;
+                        }
                         for event in batch {
                             this.apply_nvim_event(event);
                         }
@@ -397,9 +384,10 @@ impl NvimGpui {
                         if should_notify {
                             cx.notify();
                         }
+                        true
                     })
-                    .is_err()
-                {
+                    .unwrap_or(false);
+                if !accepted {
                     break;
                 }
 
@@ -425,6 +413,7 @@ impl NvimGpui {
         let Some(nvim) = self.nvim.as_ref() else {
             return;
         };
+        let session_id = nvim.session_id();
         let response = match nvim.request("nvim_get_namespaces", rmpv::Value::Array(Vec::new())) {
             Ok(response) => response,
             Err(error) => {
@@ -444,6 +433,9 @@ impl NvimGpui {
                 Err(error) => Err(format!("namespace response channel closed: {error}")),
             };
             let _ = weak.update(cx, |this, cx| {
+                if this.nvim_session_id != Some(session_id) {
+                    return;
+                }
                 this.multicursor_namespace_task = None;
                 match result {
                     Ok(namespaces) => this.install_multicursor_namespaces(namespaces),
@@ -487,6 +479,7 @@ impl NvimGpui {
         let Some(nvim) = self.nvim.as_ref() else {
             return;
         };
+        let session_id = nvim.session_id();
         let namespaces = self
             .multicursor_namespace_ids
             .values()
@@ -524,6 +517,9 @@ impl NvimGpui {
                 }
             }
             let _ = weak.update(cx, |this, cx| {
+                if this.nvim_session_id != Some(session_id) {
+                    return;
+                }
                 this.multicursor_reconcile_task = None;
                 this.reconcile_multicursor_marks(&live_marks);
                 let rerun = std::mem::take(&mut this.multicursor_reconcile_dirty);
@@ -651,6 +647,10 @@ impl NvimGpui {
 
     fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
         self.discard_pending_redraw();
+        // Invalidate the disconnected connection before scheduling any
+        // replacement. Late events and responses from its workers must not
+        // be allowed to mutate state while reconnecting.
+        self.nvim_session_id = None;
         log::info!(target: "nvim_gpui::state", "Neovim disconnected: reason={reason:?}");
         match reason {
             DisconnectReason::Requested => {}
@@ -713,21 +713,24 @@ impl NvimGpui {
 
     fn install_reconnected_nvim(&mut self, nvim: NvimProcess, cx: &mut Context<Self>) {
         let events = nvim.events();
+        let session_id = nvim.session_id();
         let initial_theme = nvim.startup_theme().unwrap_or_default();
         let protocol = nvim.protocol().cloned();
 
         self.reset_nvim_session(initial_theme);
         self.nvim = Some(nvim);
+        self.nvim_session_id = Some(session_id);
         self.api_level = protocol.as_ref().map(|protocol| protocol.version.api_level);
         self.nvim_version = protocol.map(|protocol| protocol.version);
         self.rpc_status = "rpc: reconnected".to_owned();
         log::info!(target: "nvim_gpui::state", "installed reconnected Neovim session");
-        self.start_event_task(events, cx);
+        self.start_event_task(events, session_id, cx);
         self.start_remote_clipboard_bridge(cx);
         self.startup_redraw_pending = true;
     }
 
     fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {
+        self.nvim_session_id = None;
         self.state = EditorState::default();
         self.grid = Rc::new(grid::GridModel::new(
             DEFAULT_GRID_WIDTH as usize,
@@ -791,63 +794,57 @@ impl NvimGpui {
             return;
         }
         self.reset_rime_composition();
-        if self.rime_backend.is_none() {
+        let Some(service) = self.rime_service.take() else {
             self.rime_menu_message = Some("Rime backend is unavailable".to_owned());
             self.rime_menu_open = true;
             cx.notify();
             return;
-        }
+        };
 
         let config = match rime_config_from_settings(&self.settings, Some(true)) {
             Ok(config) => config,
             Err(error) => {
+                self.rime_service = Some(service);
                 self.rime_menu_message = Some(format!("Rime redeploy failed: {error}"));
                 self.rime_menu_open = true;
                 cx.notify();
                 return;
             }
         };
-        let mut backend_config = config.clone();
-        backend_config.deploy = false;
-        // librime's deployer and live sessions share process-global service
-        // state. Release the session before the worker starts and recreate it
-        // on this thread after deployment completes.
-        drop(self.rime_backend.take());
         self.rime_menu_message = Some("Deploying Rime data…".to_owned());
         self.rime_menu_open = true;
         cx.notify();
 
-        let task = cx.background_spawn(async move { RimeBackend::deploy(config) });
+        let task = cx.background_spawn(async move {
+            let result = service.redeploy(config);
+            (service, result)
+        });
         self.rime_deploy_task = Some(cx.spawn(async move |weak, cx| {
-            let deploy_result = task.await;
+            let (service, redeploy_result) = task.await;
             let _ = weak.update(cx, |view, cx| {
                 view.rime_deploy_task = None;
-                view.rime_backend = match RimeBackend::new(backend_config) {
-                    Ok(backend) => Some(backend),
-                    Err(error) => {
-                        log::error!(
-                            target: "nvim_gpui::rime",
-                            "Rime backend could not be recreated after redeploy: {error}"
-                        );
-                        None
-                    }
-                };
-                view.rime_menu_message = Some(match deploy_result {
+                let (service, message) = match redeploy_result {
                     Ok(()) => {
                         log::info!(
                             target: "nvim_gpui::rime",
                             "Rime data redeployed from titlebar menu"
                         );
-                        "Rime data redeployed successfully.".to_owned()
+                        (
+                            Some(service),
+                            "Rime data redeployed successfully.".to_owned(),
+                        )
                     }
                     Err(error) => {
                         log::error!(
                             target: "nvim_gpui::rime",
-                            "Rime data redeploy failed: {error}"
+                            "Rime service could not be recreated after deploy: {error}"
                         );
-                        format!("Rime redeploy failed: {error}")
+                        drop(service);
+                        (None, format!("Rime redeploy failed: {error}"))
                     }
-                });
+                };
+                view.rime_service = service;
+                view.rime_menu_message = Some(message);
                 view.rime_menu_open = true;
                 cx.notify();
             });
@@ -896,6 +893,7 @@ impl NvimGpui {
         let Some(nvim) = self.nvim.as_ref() else {
             return true;
         };
+        let session_id = nvim.session_id();
         let response = match nvim.request(
             "nvim_exec_lua",
             rmpv::Value::Array(vec![
@@ -918,6 +916,9 @@ impl NvimGpui {
         cx.spawn(async move |weak, cx| {
             let result = response.recv().await;
             let _ = weak.update(cx, |this, cx| {
+                if this.nvim_session_id != Some(session_id) {
+                    return;
+                }
                 match result {
                     Ok(Ok(value)) => match parse_modified_buffers(value) {
                         Ok(modified_buffers) if modified_buffers.is_empty() => {
@@ -1027,6 +1028,7 @@ impl NvimGpui {
             cx.quit();
             return;
         };
+        let session_id = nvim.session_id();
         let response = match nvim.request(
             "nvim_command",
             rmpv::Value::Array(vec![rmpv::Value::from(command)]),
@@ -1044,25 +1046,30 @@ impl NvimGpui {
         let remote = nvim.is_remote();
         cx.spawn(async move |weak, cx| {
             let result = response.recv().await;
-            let _ = weak.update(cx, |this, cx| match result {
-                Ok(Ok(_)) if remote => {
-                    this.quit_dialog = QuitDialogState::Quitting;
-                    cx.quit();
+            let _ = weak.update(cx, |this, cx| {
+                if this.nvim_session_id != Some(session_id) {
+                    return;
                 }
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => {
-                    this.quit_dialog = QuitDialogState::Confirm {
-                        modified_buffers,
-                        error: Some(format!("Could not quit Neovim: {error}")),
-                    };
-                    cx.notify();
-                }
-                Err(error) => {
-                    this.quit_dialog = QuitDialogState::Confirm {
-                        modified_buffers,
-                        error: Some(format!("Could not quit Neovim: {error}")),
-                    };
-                    cx.notify();
+                match result {
+                    Ok(Ok(_)) if remote => {
+                        this.quit_dialog = QuitDialogState::Quitting;
+                        cx.quit();
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        this.quit_dialog = QuitDialogState::Confirm {
+                            modified_buffers,
+                            error: Some(format!("Could not quit Neovim: {error}")),
+                        };
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.quit_dialog = QuitDialogState::Confirm {
+                            modified_buffers,
+                            error: Some(format!("Could not quit Neovim: {error}")),
+                        };
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -1304,6 +1311,7 @@ mod tests {
         };
         app.reset_nvim_session(next_theme);
 
+        assert!(app.nvim_session_id.is_none());
         assert!(app.other_grids.is_empty());
         assert!(app.pending_grid.is_none());
         assert!(app.pending_other_grids.is_empty());

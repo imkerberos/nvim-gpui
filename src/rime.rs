@@ -1,4 +1,4 @@
-//! Reusable native librime backend.
+//! Single-threaded native librime service.
 //!
 //! This module owns the C ABI boundary and session lifecycle. It deliberately
 //! does not know about GPUI, Neovim, or how a candidate window is rendered.
@@ -8,7 +8,10 @@ use std::ffi::{c_char, c_int, CStr, CString};
 use std::fs;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 
+use async_channel::Sender;
 use libloading::Library;
 
 type Bool = c_int;
@@ -176,6 +179,7 @@ pub struct RimeConfig {
 
 const RIME_LIBRARY_ENV: &str = "NVIM_GPUI_RIME_LIBRARY";
 const RIME_SHARED_DATA_ENV: &str = "NVIM_GPUI_RIME_SHARED_DIR";
+const RIME_RUNTIME_ENV: &str = "NVIM_GPUI_RIME_RUNTIME";
 
 /// The origin of a runtime candidate, used in diagnostics and discovery
 /// tests. Explicit paths are never silently replaced by another source.
@@ -183,6 +187,7 @@ const RIME_SHARED_DATA_ENV: &str = "NVIM_GPUI_RIME_SHARED_DIR";
 pub enum RimeRuntimeSource {
     Explicit,
     Environment,
+    Development,
     Bundled,
     System,
 }
@@ -271,11 +276,11 @@ impl RimeRuntimeResolver {
             ));
         }
 
-        for directory in self.bundled_library_directories() {
+        for (directory, source) in self.library_directories() {
             candidates.extend(platform_library_names().into_iter().map(|name| {
                 RimeRuntimeCandidate {
                     path: directory.join(name),
-                    source: RimeRuntimeSource::Bundled,
+                    source,
                 }
             }));
         }
@@ -307,18 +312,18 @@ impl RimeRuntimeResolver {
             });
         }
 
-        for directory in self.bundled_runtime_directories() {
+        for (directory, source) in self.runtime_directories() {
             candidates.push(RimeRuntimeCandidate {
                 path: directory.join("data"),
-                source: RimeRuntimeSource::Bundled,
+                source,
             });
             candidates.push(RimeRuntimeCandidate {
                 path: directory.join("share/rime-data"),
-                source: RimeRuntimeSource::Bundled,
+                source,
             });
             candidates.push(RimeRuntimeCandidate {
                 path: directory.join("rime-data"),
-                source: RimeRuntimeSource::Bundled,
+                source,
             });
         }
 
@@ -348,6 +353,38 @@ impl RimeRuntimeResolver {
         deduplicate_candidates(candidates)
     }
 
+    fn runtime_directories(&self) -> Vec<(PathBuf, RimeRuntimeSource)> {
+        let mut directories = Vec::new();
+        if let Some(path) = non_empty_env_path(RIME_RUNTIME_ENV) {
+            directories.push((path, RimeRuntimeSource::Environment));
+        }
+
+        // The staged runtime is a development/build input, not part of a
+        // release binary. Restrict this fallback to debug builds so a
+        // packaged release cannot accidentally load a checkout-local runtime.
+        if cfg!(debug_assertions) {
+            directories.push((
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/rime-runtime"),
+                RimeRuntimeSource::Development,
+            ));
+        }
+
+        directories.extend(
+            self.bundled_runtime_directories()
+                .into_iter()
+                .map(|path| (path, RimeRuntimeSource::Bundled)),
+        );
+
+        let mut unique = Vec::with_capacity(directories.len());
+        for (path, source) in directories {
+            if unique.iter().any(|(seen, _)| seen == &path) {
+                continue;
+            }
+            unique.push((path, source));
+        }
+        unique
+    }
+
     fn bundled_runtime_directories(&self) -> Vec<PathBuf> {
         let Some(executable) = self.executable.as_deref() else {
             return Vec::new();
@@ -365,6 +402,37 @@ impl RimeRuntimeResolver {
         directories.push(bin_dir.join("rime"));
         directories.push(bin_dir.join("rime-runtime"));
         deduplicate_paths(directories)
+    }
+
+    fn library_directories(&self) -> Vec<(PathBuf, RimeRuntimeSource)> {
+        let mut directories = Vec::new();
+        if let Some(path) = non_empty_env_path(RIME_RUNTIME_ENV) {
+            directories.extend([
+                (path.join("lib"), RimeRuntimeSource::Environment),
+                (path, RimeRuntimeSource::Environment),
+            ]);
+        }
+        if cfg!(debug_assertions) {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/rime-runtime");
+            directories.extend([
+                (path.join("lib"), RimeRuntimeSource::Development),
+                (path, RimeRuntimeSource::Development),
+            ]);
+        }
+        directories.extend(
+            self.bundled_library_directories()
+                .into_iter()
+                .map(|path| (path, RimeRuntimeSource::Bundled)),
+        );
+
+        let mut unique = Vec::with_capacity(directories.len());
+        for (path, source) in directories {
+            if unique.iter().any(|(seen, _)| seen == &path) {
+                continue;
+            }
+            unique.push((path, source));
+        }
+        unique
     }
 
     fn bundled_library_directories(&self) -> Vec<PathBuf> {
@@ -416,6 +484,17 @@ pub struct RimeContextSnapshot {
     pub highlighted_candidate_index: c_int,
     pub page_no: usize,
     pub is_last_page: bool,
+}
+
+/// The complete result of processing one key event.
+///
+/// Keeping the consumed flag, context, and pending commit together prevents
+/// callers from interleaving another key between these librime operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RimeKeyResult {
+    pub consumed: bool,
+    pub context: RimeContextSnapshot,
+    pub commit: Option<String>,
 }
 
 struct RimeTraitsStorage {
@@ -562,59 +641,19 @@ impl LoadedRime {
     }
 }
 
-/// Initialized librime engine. Dropping it finalizes the native instance.
-pub struct RimeBackend {
+/// Initialized librime engine, owned exclusively by [`RimeService`].
+///
+/// This type must never cross the service-thread boundary. In particular, no
+/// librime pointer or API call is exposed to the UI thread.
+struct RimeEngine {
     library: LoadedRime,
     traits: Box<RimeTraitsStorage>,
     session: Option<RimeSessionId>,
     initialized: bool,
 }
 
-impl RimeBackend {
-    /// Deploy Rime data without creating a long-lived session.
-    ///
-    /// This is intentionally a standalone operation so callers can run the
-    /// potentially slow deployer on a worker thread while keeping the live
-    /// session on its owning thread.
-    pub fn deploy(config: RimeConfig) -> Result<(), String> {
-        let shared_data = resolve_shared_data(&config.shared_data)?;
-        ensure_directory(&config.user_data, "user data")?;
-        if let Some(path) = &config.staging_data {
-            ensure_directory(path, "staging data")?;
-        }
-
-        let mut traits = RimeTraitsStorage::new(&config, &shared_data)?;
-        let library = LoadedRime::load(config.library.as_deref())?;
-        let api = library.api()?;
-        let setup = required(api.setup, "setup")?;
-        let deployer_initialize = required(api.deployer_initialize, "deployer_initialize")?;
-        let prebuild = required(api.prebuild, "prebuild")?;
-        let deploy = required(api.deploy, "deploy")?;
-
-        // The standalone deployer does not create a session, but setup still
-        // needs to run before the deployer API is entered.
-        unsafe {
-            setup(&mut traits.traits);
-            deployer_initialize(&mut traits.traits);
-        }
-        let result = unsafe {
-            if prebuild() == 0 {
-                Err("librime could not prebuild data".to_owned())
-            } else if deploy() == 0 {
-                Err("librime could not deploy data".to_owned())
-            } else {
-                Ok(())
-            }
-        };
-
-        if let Some(finalize) = library.api()?.finalize {
-            // SAFETY: setup completed before the deployer was invoked.
-            unsafe { finalize() };
-        }
-        result
-    }
-
-    pub fn new(config: RimeConfig) -> Result<Self, String> {
+impl RimeEngine {
+    fn new(config: RimeConfig) -> Result<Self, String> {
         let shared_data = resolve_shared_data(&config.shared_data)?;
         ensure_directory(&config.user_data, "user data")?;
         if let Some(path) = &config.staging_data {
@@ -670,15 +709,9 @@ impl RimeBackend {
         }
         Ok(())
     }
-
-    /// Rebuild and redeploy the configured Rime data using the current
-    /// librime instance.
-    pub fn redeploy(&mut self) -> Result<(), String> {
-        self.deploy_data()
-    }
 }
 
-impl Drop for RimeBackend {
+impl Drop for RimeEngine {
     fn drop(&mut self) {
         if !self.initialized {
             return;
@@ -700,18 +733,18 @@ impl Drop for RimeBackend {
     }
 }
 
-impl RimeBackend {
+impl RimeEngine {
     fn session_id(&self) -> Result<RimeSessionId, String> {
         self.session
             .ok_or_else(|| "librime session is not available".to_owned())
     }
 
-    pub fn process_key(&self, keycode: c_int, modifiers: c_int) -> Result<bool, String> {
+    fn process_key(&self, keycode: c_int, modifiers: c_int) -> Result<bool, String> {
         let process_key = required(self.library.api()?.process_key, "process_key")?;
         Ok(unsafe { process_key(self.session_id()?, keycode, modifiers) != 0 })
     }
 
-    pub fn context(&self) -> Result<RimeContextSnapshot, String> {
+    fn context(&self) -> Result<RimeContextSnapshot, String> {
         let api = self.library.api()?;
         let get_context = required(api.get_context, "get_context")?;
         let free_context = required(api.free_context, "free_context")?;
@@ -772,7 +805,7 @@ impl RimeBackend {
         result
     }
 
-    pub fn take_commit(&self) -> Result<Option<String>, String> {
+    fn take_commit(&self) -> Result<Option<String>, String> {
         let api = self.library.api()?;
         let get_commit = required(api.get_commit, "get_commit")?;
         let free_commit = required(api.free_commit, "free_commit")?;
@@ -791,7 +824,7 @@ impl RimeBackend {
         result.map(Some)
     }
 
-    pub fn clear_composition(&self) -> Result<(), String> {
+    fn clear_composition(&self) -> Result<(), String> {
         let clear_composition =
             required(self.library.api()?.clear_composition, "clear_composition")?;
         unsafe {
@@ -800,7 +833,7 @@ impl RimeBackend {
         Ok(())
     }
 
-    pub fn is_ascii_mode(&self) -> Result<bool, String> {
+    fn is_ascii_mode(&self) -> Result<bool, String> {
         let api = self.library.api()?;
         let get_status = required(api.get_status, "get_status")?;
         let free_status = required(api.free_status, "free_status")?;
@@ -816,6 +849,247 @@ impl RimeBackend {
             free_status(&mut status);
         }
         Ok(is_ascii_mode)
+    }
+}
+
+enum RimeCommand {
+    ProcessKey {
+        keycode: c_int,
+        modifiers: c_int,
+        response: Sender<Result<RimeKeyResult, String>>,
+    },
+    Context {
+        response: Sender<Result<RimeContextSnapshot, String>>,
+    },
+    TakeCommit {
+        response: Sender<Result<Option<String>, String>>,
+    },
+    ClearComposition {
+        response: Sender<Result<(), String>>,
+    },
+    IsAsciiMode {
+        response: Sender<Result<bool, String>>,
+    },
+    Redeploy {
+        config: RimeConfig,
+        response: Sender<Result<(), String>>,
+    },
+    Shutdown,
+}
+
+/// Handle for the process's single-threaded librime service.
+///
+/// The service thread owns the dynamic library, traits, and session. Every
+/// librime operation, including the matching `free_*` calls, is executed by
+/// that thread in command order. The handle contains no librime state and is
+/// safe to move into application tasks.
+pub struct RimeService {
+    commands: Sender<RimeCommand>,
+    thread: Option<JoinHandle<()>>,
+}
+
+// librime's setup/initialize/finalize state is process-global. A service is
+// therefore a process-wide owner, not a freely clonable per-window runtime.
+static RIME_SERVICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct RimeServiceLease;
+
+impl RimeServiceLease {
+    fn acquire() -> Result<Self, String> {
+        RIME_SERVICE_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .map(|_| Self)
+            .map_err(|_| "another Rime service is already running".to_owned())
+    }
+}
+
+impl Drop for RimeServiceLease {
+    fn drop(&mut self) {
+        RIME_SERVICE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+impl RimeService {
+    /// Start the service and wait for librime initialization to complete.
+    ///
+    /// Callers that must keep the UI responsive should invoke this method from
+    /// a background task. The returned service is ready for synchronous
+    /// request/response calls once this method succeeds.
+    pub fn start(config: RimeConfig) -> Result<Self, String> {
+        let service_lease = RimeServiceLease::acquire()?;
+        let (commands, command_queue) = async_channel::unbounded();
+        let (ready, ready_queue) = async_channel::bounded(1);
+        let thread = thread::Builder::new()
+            .name("rime-service".to_owned())
+            .spawn(move || {
+                let _service_lease = service_lease;
+                let mut engine = match RimeEngine::new(config) {
+                    Ok(engine) => Some(engine),
+                    Err(error) => {
+                        let _ = ready.send_blocking(Err(error));
+                        return;
+                    }
+                };
+
+                if ready.send_blocking(Ok(())).is_err() {
+                    return;
+                }
+
+                while let Ok(command) = command_queue.recv_blocking() {
+                    if !run_rime_command(&mut engine, command) {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start Rime service thread: {error}"))?;
+
+        let service = Self {
+            commands,
+            thread: Some(thread),
+        };
+        match ready_queue.recv_blocking() {
+            Ok(Ok(())) => Ok(service),
+            Ok(Err(error)) => {
+                drop(service);
+                Err(error)
+            }
+            Err(error) => {
+                drop(service);
+                Err(format!(
+                    "Rime service initialization response was lost: {error}"
+                ))
+            }
+        }
+    }
+
+    fn request<T>(
+        &self,
+        command: impl FnOnce(Sender<Result<T, String>>) -> RimeCommand,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        let (response, response_queue) = async_channel::bounded(1);
+        self.commands
+            .send_blocking(command(response))
+            .map_err(|_| "Rime service is stopped".to_owned())?;
+        response_queue
+            .recv_blocking()
+            .map_err(|_| "Rime service response was lost".to_owned())?
+    }
+
+    /// Process a key and atomically collect its resulting context and commit.
+    pub fn process_key(&self, keycode: c_int, modifiers: c_int) -> Result<RimeKeyResult, String> {
+        self.request(|response| RimeCommand::ProcessKey {
+            keycode,
+            modifiers,
+            response,
+        })
+    }
+
+    pub fn context(&self) -> Result<RimeContextSnapshot, String> {
+        self.request(|response| RimeCommand::Context { response })
+    }
+
+    pub fn take_commit(&self) -> Result<Option<String>, String> {
+        self.request(|response| RimeCommand::TakeCommit { response })
+    }
+
+    pub fn clear_composition(&self) -> Result<(), String> {
+        self.request(|response| RimeCommand::ClearComposition { response })
+    }
+
+    pub fn is_ascii_mode(&self) -> Result<bool, String> {
+        self.request(|response| RimeCommand::IsAsciiMode { response })
+    }
+
+    /// Recreate the session and redeploy data on the service thread.
+    pub fn redeploy(&self, config: RimeConfig) -> Result<(), String> {
+        self.request(|response| RimeCommand::Redeploy { config, response })
+    }
+}
+
+impl Drop for RimeService {
+    fn drop(&mut self) {
+        let _ = self.commands.send_blocking(RimeCommand::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            if thread.thread().id() != thread::current().id() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+fn run_rime_command(engine: &mut Option<RimeEngine>, command: RimeCommand) -> bool {
+    match command {
+        RimeCommand::ProcessKey {
+            keycode,
+            modifiers,
+            response,
+        } => {
+            let result = engine
+                .as_ref()
+                .ok_or_else(|| "Rime engine is unavailable".to_owned())
+                .and_then(|engine| {
+                    let consumed = engine.process_key(keycode, modifiers)?;
+                    let context = engine.context()?;
+                    let commit = engine.take_commit()?;
+                    Ok(RimeKeyResult {
+                        consumed,
+                        context,
+                        commit,
+                    })
+                });
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::Context { response } => {
+            let result = engine
+                .as_ref()
+                .ok_or_else(|| "Rime engine is unavailable".to_owned())
+                .and_then(RimeEngine::context);
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::TakeCommit { response } => {
+            let result = engine
+                .as_ref()
+                .ok_or_else(|| "Rime engine is unavailable".to_owned())
+                .and_then(RimeEngine::take_commit);
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::ClearComposition { response } => {
+            let result = engine
+                .as_ref()
+                .ok_or_else(|| "Rime engine is unavailable".to_owned())
+                .and_then(RimeEngine::clear_composition);
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::IsAsciiMode { response } => {
+            let result = engine
+                .as_ref()
+                .ok_or_else(|| "Rime engine is unavailable".to_owned())
+                .and_then(RimeEngine::is_ascii_mode);
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::Redeploy { config, response } => {
+            // Finalization and initialization both happen on this same thread.
+            // This avoids the old drop-on-UI / deploy-on-worker split.
+            drop(engine.take());
+            let result = match RimeEngine::new(config) {
+                Ok(new_engine) => {
+                    *engine = Some(new_engine);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            };
+            let _ = response.send_blocking(result);
+            true
+        }
+        RimeCommand::Shutdown => false,
     }
 }
 
@@ -963,7 +1237,7 @@ fn utf8_boundary_at_or_before(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_shared_data, RimeBackend, RimeConfig, RimeRuntimeResolver, RimeRuntimeSource,
+        resolve_shared_data, RimeConfig, RimeRuntimeResolver, RimeRuntimeSource, RimeService,
         RIME_CONTROL_MASK, RIME_RELEASE_MASK,
     };
     use std::env;
@@ -1051,9 +1325,23 @@ mod tests {
         fs::remove_dir_all(root).expect("remove library path test directory");
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_resolver_includes_the_checkout_runtime_staging_directory() {
+        let resolver = RimeRuntimeResolver::from_executable(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/nvim-gpui"),
+        );
+        let development_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cache/rime-runtime");
+
+        assert!(resolver
+            .runtime_directories()
+            .contains(&(development_root, RimeRuntimeSource::Development)));
+    }
+
     #[test]
     #[ignore = "requires a local librime shared library and Rime data"]
-    fn backend_commits_nihao() {
+    fn service_commits_nihao() {
         let library = env::var_os("NVIM_GPUI_RIME_LIBRARY").map(PathBuf::from);
         let shared_data = env::var_os("NVIM_GPUI_RIME_SHARED_DIR")
             .map(PathBuf::from)
@@ -1076,47 +1364,43 @@ mod tests {
                 staging_data: Some(staging_data),
                 deploy: true,
             };
-            RimeBackend::deploy(config.clone())?;
-            let backend = RimeBackend::new(RimeConfig {
-                deploy: false,
-                ..config
-            })?;
+            let service = RimeService::start(config)?;
 
             // F35 is intentionally outside the default Rime bindings. Both
             // the plain key and a modified combination must be reported as
             // unconsumed so the application can forward each original event
             // to Neovim once.
-            assert!(!backend.process_key(0xffe0, 0)?);
-            assert!(!backend.process_key(0xffe0, RIME_CONTROL_MASK)?);
-            assert!(backend.take_commit()?.is_none());
+            assert!(!service.process_key(0xffe0, 0)?.consumed);
+            assert!(!service.process_key(0xffe0, RIME_CONTROL_MASK)?.consumed);
+            assert!(service.take_commit()?.is_none());
 
             for key in b"nihao" {
-                assert!(backend.process_key(*key as i32, 0)?);
+                assert!(service.process_key(*key as i32, 0)?.consumed);
             }
-            let context = backend.context()?;
+            let context = service.context()?;
             assert_eq!(context.preedit, "ni hao");
             assert_eq!(context.cursor_pos, context.preedit.len());
             assert!(!context.candidates.is_empty());
-            assert!(backend.process_key(b' ' as i32, 0)?);
-            assert!(backend.context()?.preedit.is_empty());
-            assert_eq!(backend.take_commit()?.as_deref(), Some("你好"));
+            let result = service.process_key(b' ' as i32, 0)?;
+            assert!(result.consumed);
+            assert!(result.context.preedit.is_empty());
+            assert_eq!(result.commit.as_deref(), Some("你好"));
 
             for key in b"nihao" {
-                assert!(backend.process_key(*key as i32, 0)?);
+                assert!(service.process_key(*key as i32, 0)?.consumed);
             }
-            let before = backend.context()?;
-            assert!(backend.process_key(0xff51, 0)?);
-            let moved = backend.context()?;
+            let before = service.context()?;
+            let moved = service.process_key(0xff51, 0)?.context;
             assert!(moved.cursor_pos < before.cursor_pos);
 
             // The bundled default.yaml uses Shift_L as a press-and-release
             // ASCII mode switch. The release itself is a kNoop at the engine
             // API boundary even though it changes the status, so verify the
             // state rather than treating process_key's bool as consumption.
-            assert!(!backend.is_ascii_mode()?);
-            assert!(!backend.process_key(0xffe1, 0)?);
-            assert!(!backend.process_key(0xffe1, RIME_RELEASE_MASK)?);
-            assert!(backend.is_ascii_mode()?);
+            assert!(!service.is_ascii_mode()?);
+            assert!(!service.process_key(0xffe1, 0)?.consumed);
+            assert!(!service.process_key(0xffe1, RIME_RELEASE_MASK)?.consumed);
+            assert!(service.is_ascii_mode()?);
             Ok::<(), String>(())
         })();
 

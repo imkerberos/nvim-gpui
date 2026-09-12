@@ -498,6 +498,11 @@ fn embedded_nvim_can_be_reconnected_after_a_clean_exit() {
     let replacement = process
         .reconnect(80, 24)
         .expect("the embedded command should be restartable");
+    assert_ne!(
+        process.session_id(),
+        replacement.session_id(),
+        "reconnecting must create a distinct session identity"
+    );
     assert!(
         replacement.version().is_some(),
         "the replacement should complete the RPC handshake"

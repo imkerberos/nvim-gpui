@@ -148,7 +148,7 @@ impl NvimGpui {
 
     pub(crate) fn apply_ime_backend_setting(&mut self) {
         let rime_enabled =
-            self.settings.ime_backend == settings::ImeBackend::Rime && self.rime_backend.is_some();
+            self.settings.ime_backend == settings::ImeBackend::Rime && self.rime_service.is_some();
         if rime_enabled {
             // Selecting Rime enables the Insert-mode route. Other text
             // contexts intentionally remain English until toggled there.
@@ -402,8 +402,8 @@ impl NvimGpui {
 
     fn reset_rime_composition(&mut self) {
         self.rime_context = None;
-        if let Some(backend) = self.rime_backend.as_ref() {
-            if let Err(error) = backend.clear_composition() {
+        if let Some(service) = self.rime_service.as_ref() {
+            if let Err(error) = service.clear_composition() {
                 log::debug!(target: "nvim_gpui::rime", "could not clear Rime composition: {error}");
             }
         }
@@ -411,7 +411,7 @@ impl NvimGpui {
 
     fn disable_rime(&mut self, reason: &str) {
         self.reset_rime_composition();
-        self.rime_backend = None;
+        self.rime_service = None;
         self.rime_menu_open = false;
         self.rime_menu_message = None;
         self.input_router.disable_rime();
@@ -422,7 +422,7 @@ impl NvimGpui {
     }
 
     pub(super) fn toggle_rime(&mut self, cx: &mut Context<Self>) {
-        if self.rime_backend.is_none() {
+        if self.rime_service.is_none() {
             log::debug!(target: "nvim_gpui::rime", "Rime toggle ignored because the backend is unavailable");
             return;
         }
@@ -442,7 +442,7 @@ impl NvimGpui {
     }
 
     pub(super) fn open_rime_menu(&mut self, cx: &mut Context<Self>) {
-        if self.rime_backend.is_none() {
+        if self.rime_service.is_none() {
             return;
         }
         self.rime_menu_open = true;
@@ -498,12 +498,13 @@ impl NvimGpui {
         reset_on_unconsumed: bool,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        let Some(backend) = self.rime_backend.as_ref() else {
+        let Some(service) = self.rime_service.as_ref() else {
             return Ok(false);
         };
-        let consumed = backend.process_key(keycode, modifiers)?;
-        let context = backend.context()?;
-        let commit = backend.take_commit()?;
+        let result = service.process_key(keycode, modifiers)?;
+        let consumed = result.consumed;
+        let context = result.context;
+        let commit = result.commit;
         log::debug!(
             target: "nvim_gpui::rime",
             "processed key: keycode={keycode}, consumed={consumed}, has_commit={}",
@@ -572,7 +573,7 @@ impl NvimGpui {
         self.last_modifiers = event.modifiers;
 
         if self.input_router.target() != InputTarget::Rime
-            || self.rime_backend.is_none()
+            || self.rime_service.is_none()
             || self.rime_deploy_task.is_some()
         {
             return;
@@ -636,7 +637,7 @@ impl NvimGpui {
 
         if self.settings.ime_backend == settings::ImeBackend::Rime
             && self.settings.rime_toggle_shortcut.matches(&event.keystroke)
-            && self.rime_backend.is_some()
+            && self.rime_service.is_some()
         {
             self.toggle_rime(cx);
             window.prevent_default();

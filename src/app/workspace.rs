@@ -32,10 +32,10 @@ impl Render for NvimGpui {
                 theme_foreground,
                 Some(entity),
                 (self.settings.ime_backend == settings::ImeBackend::Rime
-                    && (self.rime_backend.is_some() || self.rime_deploy_task.is_some()))
+                    && (self.rime_service.is_some() || self.rime_deploy_task.is_some()))
                 .then_some(RimeTitlebarState {
                     enabled: self.input_router.rime_enabled_for_toggle_context(),
-                    active: self.rime_backend.is_some()
+                    active: self.rime_service.is_some()
                         && self.input_router.target() == InputTarget::Rime,
                     menu_open: self.rime_menu_open,
                     menu_message: self.rime_menu_message.clone(),

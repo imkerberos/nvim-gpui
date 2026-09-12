@@ -551,11 +551,22 @@ does not emit for a standalone Shift.
 When `NVIM_GPUI_RIME_SHARED_DIR` is set, the application initializes the
 backend, but Rime remains disabled until it is selected or activated
 explicitly. The library is taken from `NVIM_GPUI_RIME_LIBRARY` or the platform
-bundle search path. The application stores its Rime user data below the
+bundle search path. Development builds also search the repository's
+`.cache/rime-runtime` staging directory, or an alternate runtime root supplied
+through `NVIM_GPUI_RIME_RUNTIME`. The application stores its Rime user data below the
 nvim-gpui application-support directory; it never uses `~/Library/Rime` or
 the `NVIM_GPUI_RIME_USER_DIR` override.
 Deployment is automatic when the internal `build/` directory is empty and can
 be forced with `NVIM_GPUI_RIME_DEPLOY=1`.
+
+For Rime in a debug development build, stage the platform runtime once before
+running the GUI:
+
+~~~sh
+just rime-runtime-macos       # macOS
+just rime-runtime-windows     # Windows PowerShell
+just run
+~~~
 
 ## Architecture
 
@@ -814,11 +825,12 @@ The packaging policy is:
   application-owned Rime user-data directory and is not a user setting;
   nvim-gpui does not create a separate `prebuilt/` directory.
 
-When no explicit path is supplied, the runtime resolver checks the
-development environment override, the application bundle, and supported
-system locations; an explicit path is used on its own. On macOS and Windows,
-application startup asks it for the bundled runtime; on Linux, the Settings
-paths and automatic system discovery
+When no explicit path is supplied, the runtime resolver checks the individual
+environment overrides, the development runtime root for debug builds, the
+application bundle, and supported system locations; an explicit path is used
+on its own. On macOS and Windows, application startup asks it for the bundled
+runtime in release builds and the repository staging runtime in development;
+on Linux, the Settings paths and automatic system discovery
 remain available. The bundled runtime layout is described by
 `packaging/rime/runtime.toml`, and `scripts/rime_runtime.py` stages and
 validates platform artifacts. The macOS source builder, runtime staging, and
