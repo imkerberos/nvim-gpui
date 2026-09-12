@@ -292,3 +292,55 @@ release-check tag="":
 # Print the changelog section used as GitHub Release notes.
 release-notes tag:
     {{python_command}} scripts/release.py notes {{tag}}
+
+# Trigger the GitHub release workflow, which creates a Draft Release.
+release-draft tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tag="{{tag}}"
+    case "$tag" in
+      v*) ;;
+      *) tag="v$tag" ;;
+    esac
+    command -v gh >/dev/null 2>&1 || {
+      echo "GitHub CLI (gh) is required; install it and run gh auth login first" >&2
+      exit 1
+    }
+    branch="$(git branch --show-current)"
+    [ -n "$branch" ] || {
+      echo "release-draft must run from a named branch" >&2
+      exit 1
+    }
+    git diff --quiet && git diff --cached --quiet || {
+      echo "working tree has uncommitted changes; commit them before release-draft" >&2
+      exit 1
+    }
+    local_commit="$(git rev-parse HEAD)"
+    remote_commit="$(git rev-parse "origin/$branch" 2>/dev/null || true)"
+    [ "$local_commit" = "$remote_commit" ] || {
+      echo "HEAD is not pushed to origin/$branch; push the current commit first" >&2
+      exit 1
+    }
+    {{python_command}} scripts/release.py check "$tag"
+    gh workflow run release.yml --ref "$branch" --raw-field "tag=$tag"
+    echo "started Draft Release workflow for $tag from $branch ($local_commit)"
+
+# Publish an existing GitHub Draft Release after its artifacts are verified.
+release-publish tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tag="{{tag}}"
+    case "$tag" in
+      v*) ;;
+      *) tag="v$tag" ;;
+    esac
+    command -v gh >/dev/null 2>&1 || {
+      echo "GitHub CLI (gh) is required; install it and run gh auth login first" >&2
+      exit 1
+    }
+    draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+    if [[ "$draft" != "true" ]]; then
+      echo "refusing to publish $tag: the release does not exist as a draft" >&2
+      exit 1
+    fi
+    gh release edit "$tag" --draft=false

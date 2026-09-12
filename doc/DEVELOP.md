@@ -4,6 +4,26 @@ This document contains repository and contributor notes. For installation,
 Neovim configuration, image configuration, and user-facing limitations, see
 the root [README](../README.md).
 
+## Current development baseline
+
+The current development version is **0.7.3**. The main-window ownership is
+intentionally kept small:
+
+```text
+NvimGpui
+└── workspace
+    ├── titlebar
+    ├── editor
+    └── other in-window overlays and toasts
+```
+
+`NvimGpui` is the GPUI root entity and application coordinator. The `app`
+module owns application state, Neovim session lifecycle, startup, and
+coordination. The `editor` module owns the main editor surface, protocol
+reduction, presentation snapshots, compositor layers, rendering, and editor
+input integration. The `gui` module is reserved for auxiliary windows and
+dialogs; reusable controls belong in `widgets`.
+
 ## Development environment
 
 The repository uses a Nix flake and `direnv`. The flake follows the
@@ -222,7 +242,7 @@ installer:   installer-windows (Inno Setup)
 smoke:       current OS -> smoke-macos or smoke-windows
 macOS:       bundle-macos, smoke-macos, dmg, pack-macos
 Windows:     bundle-windows, installer-windows, smoke-windows, pack-windows
-release:     release-prepare, release-check, release-notes
+release:     release-prepare, release-check, release-notes, release-draft, release-publish
 ```
 
 Common commands:
@@ -241,14 +261,19 @@ just pack-macos          # macOS only: checks, runtime, AppBundle, smoke test, D
 just pack-windows        # Windows only: checks, runtime, bundle, installer, smoke test
 just setup-ubuntu        # Ubuntu VM only: runtime libraries and IME support
 
-just docker-build x86_64
-just docker-build-nixos-aarch64
+just docker-build aarch64       # native on Apple Silicon
+just docker-build x86_64        # optional amd64 emulation
+just docker-build-nixos-aarch64 # alias for the aarch64 build
 just pack-debian-x86_64  # local Debian amd64 .deb through an Ubuntu container
 just pack-debian-aarch64  # local Debian arm64 .deb through an Ubuntu container
+just pack-fedora-x86_64  # local Fedora x86_64 RPM through Docker
+just pack-fedora-aarch64  # local Fedora arm64 RPM through Docker
 
-just release-prepare 0.2.0
-just release-check v0.2.0
-just release-notes v0.2.0
+just release-prepare 0.7.3
+just release-check v0.7.3
+just release-notes v0.7.3
+just release-draft v0.7.3    # trigger CI and prepare a Draft Release
+just release-publish v0.7.3  # publish the verified Draft Release
 ```
 
 The dependency flow is intentional: `ci` runs `check`, Clippy, and tests;
@@ -264,7 +289,10 @@ The old `release` task remains a compatibility alias for `build-release`.
 then run `just release-check vVERSION`. The script synchronizes `Cargo.lock`,
 the macOS AppBundle metadata, and the Homebrew Cask. The release workflow
 repeats the check and uses the matching changelog section as the GitHub Release
-body.
+body. After the commit is pushed, `just release-draft vVERSION` starts the
+release workflow from the current branch. The workflow builds all packages and
+uploads them to an unpublished Draft Release; publishing is intentionally left
+for a later `just release-publish vVERSION` step.
 
 `Makefile` forwards the common tasks to `just` for environments where a Make
 entry point is more convenient.
@@ -300,11 +328,14 @@ export NVIM_GPUI_NVIM=/usr/local/bin/nvim-gpui-nvim
 ### Linux builds through Docker
 
 On macOS, Docker can build Linux release-mode binaries for either supported
-architecture. The task selects the Docker platform and keeps the copied result
-in a separate architecture-specific output directory:
+architecture. On an Apple Silicon Mac, use the ARM64 task for local builds so
+the compiler runs natively; use the x86_64 task only when amd64 compatibility
+testing is required. The task selects the Docker platform and keeps the copied
+result in a separate architecture-specific output directory:
 
 ```sh
-just docker-build x86_64
+just docker-build aarch64
+just docker-build x86_64        # optional amd64 emulation
 just docker-build-nixos-aarch64
 ```
 
@@ -330,7 +361,7 @@ The task uses the pinned `nixos/nix:2.32.3` image by default. Override it only
 when intentionally testing another Nix image:
 
 ```sh
-NVIM_GPUI_NIX_IMAGE=nixos/nix:2.32.3 just docker-build x86_64
+NVIM_GPUI_NIX_IMAGE=nixos/nix:2.32.3 just docker-build aarch64
 ```
 
 The Docker task passes `sandbox = false` and `filter-syscalls = false` to the
@@ -354,8 +385,8 @@ Debian packages. They are suitable for local testing and are also used by the
 Linux release jobs on native GitHub ARM64 and x86_64 runners:
 
 ```sh
-just pack-debian-x86_64
 just pack-debian-aarch64
+just pack-debian-x86_64  # optional amd64 package through emulation
 ```
 
 The outputs are written to:
@@ -366,7 +397,12 @@ dist/ubuntu-aarch64/nvim-gpui_VERSION_arm64.deb
 ```
 
 On an Apple Silicon Mac, the arm64 task runs natively and the amd64 task runs
-through Docker's `linux/amd64` emulation.
+through Docker's `linux/amd64` emulation. The current 0.7.3 ARM64 test package
+is written to:
+
+```text
+dist/ubuntu-aarch64/nvim-gpui_0.7.3_arm64.deb
+```
 
 The package contains `nvim-gpui`, `gpvim`, `gpvimdiff`, the desktop entry, and
 the application icon set in standard hicolor sizes. The desktop entry uses the
@@ -390,7 +426,7 @@ NVIM_GPUI_UBUNTU_IMAGE=ubuntu:24.04 just pack-debian-aarch64
 ```
 
 The packages are linked against Ubuntu libraries rather than the Nix store,
-unlike the binaries produced by `just docker-build x86_64`. The release
+unlike the binaries produced by `just docker-build aarch64`. The release
 workflow runs these tasks on native Linux runners, so Docker is used only for
 the reproducible Ubuntu packaging environment and not for cross-architecture
 emulation.
@@ -407,8 +443,15 @@ just pack-fedora-aarch64
 ```
 
 The outputs are written to `dist/fedora-x86_64/` and
-`dist/fedora-aarch64/`. The release workflow also publishes both Fedora RPM
-architectures. The Fedora RPM uses Fedora's
+`dist/fedora-aarch64/`. On an Apple Silicon Mac, use
+`just pack-fedora-aarch64` for the native local build; the current 0.7.3 test
+package is:
+
+```text
+dist/fedora-aarch64/nvim-gpui-0.7.3-1.fc44.aarch64.rpm
+```
+
+The release workflow also publishes both Fedora RPM architectures. The Fedora RPM uses Fedora's
 `librime` and `brise` packages as weak recommendations; Fedora's Rime data
 package is named `brise`, not `librime-data`.
 
@@ -420,25 +463,28 @@ an optional local helper:
 | Event | Jobs | Result |
 | --- | --- | --- |
 | Pull request or push to `develop`, `master`, or `main` | macOS arm64, Linux x86_64, Linux arm64, Windows x86_64 | Formatting, Clippy, and tests; macOS also builds and smoke-tests its AppBundle and DMG. |
-| Push of a `v*` tag | macOS arm64/x86_64, Ubuntu/Debian x86_64/arm64, Fedora x86_64/arm64, Arch Linux x86_64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Debian `.deb` packages, Fedora RPM packages, an Arch Linux package, and Windows ZIP/installer packages. |
-| Successful completion of every release job | Publish job | Creates or updates the GitHub Release, attaches packages, and uploads `SHA256SUMS`. |
+| Push of a `v*` tag or manual `release-draft` dispatch | macOS arm64/x86_64, Ubuntu/Debian x86_64/arm64, Fedora x86_64/arm64, Arch Linux x86_64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Debian `.deb` packages, Fedora RPM packages, an Arch Linux package, and Windows ZIP/installer packages. |
+| Successful completion of every release job | Draft release job | Creates or updates an unpublished GitHub Draft Release, attaches packages, and uploads `SHA256SUMS`. |
 
-The release workflow is gated: a package is not published when any platform
-validation or packaging job fails. Re-running a failed workflow is safe; the
-publish step updates an existing release and replaces assets with the newly
-verified files.
+The release workflow is gated: a package is not attached to the Draft Release
+when any platform validation or packaging job fails. Re-running a failed
+workflow is safe; the draft step updates an existing draft and replaces assets
+with the newly verified files.
 
-The only intentional release-time manual steps are preparing the version and
-changelog, then pushing the tag:
+The intentional release-time manual steps are preparing the version and
+changelog, pushing the commit, and starting the draft workflow:
 
 ```sh
-just release-prepare 0.6.0
-# add or update ## [0.6.0] in CHANGELOG.md
-just release-check v0.6.0
-git add Cargo.toml Cargo.lock Casks/nvim-gpui.rb packaging/macos/Info.plist CHANGELOG.md
-git commit -m "release: prepare v0.6.0"
-git tag -a v0.6.0 -m "nvim-gpui v0.6.0"
-git push origin develop v0.6.0
+just release-prepare 0.7.3
+# add or update ## [0.7.3] in CHANGELOG.md
+just release-check v0.7.3
+git add Cargo.toml Cargo.lock Casks/nvim-gpui.rb \
+  packaging/macos/Info.plist packaging/fedora/nvim-gpui.spec \
+  CHANGELOG.md Justfile .github/workflows/release.yml doc/DEVELOP.md
+git commit -m "release: prepare v0.7.3"
+git push origin develop
+just release-draft v0.7.3
+just release-publish v0.7.3
 ```
 
 The release assets use the following target names:
@@ -483,7 +529,7 @@ In another terminal, start nvim-gpui with the mock endpoint:
 NVIM_GPUI_UPDATE_CHECK_ENDPOINT=http://127.0.0.1:8787/fake/releases just run
 ```
 
-The server returns stable release `v0.7.2` with a test asset by default. Use
+The server returns stable release `v0.7.3` with a test asset by default. Use
 `--version v0.7.1` to test the up-to-date state, or `--port` and `--path` to
 change the listening endpoint. When the variable is unset, update checks use
 the real GitHub API.
@@ -496,13 +542,16 @@ GUI windows, and platform packaging:
 | Path | Responsibility |
 | --- | --- |
 | `src/main.rs` | Process entry point, CLI parsing, and GPUI startup. |
-| `src/app.rs`, `src/app/` | Main application entity, redraw state, lifecycle, compositor, editor rendering, and titlebar/windows. |
+| `src/app.rs`, `src/app/` | GPUI root coordinator plus application state, Neovim session lifecycle, startup, workspace composition, titlebar, clipboard bridge, and event coordination. |
+| `src/editor.rs`, `src/editor/` | Main editor surface, protocol reducer, redraw commits, presentation snapshots, compositor layers, rendering, hit testing, editor input integration, and Kitty image presentation. |
 | `src/grid.rs`, `src/grid/` | Terminal cell model, shaping/cache, cursor, highlight resolution, and the custom grid element. |
 | `src/nvim.rs`, `src/nvim/` | Embedded/remote Neovim transport, MessagePack-RPC protocol, environment, session, and version handling. |
-| `src/gui.rs`, `src/gui/` | Standalone Settings and About windows. |
-| `src/input.rs` | System IME, Rime, and Neovim input routing. |
-| `src/rime.rs` | GPUI-independent native librime loading, session handling, context, and runtime discovery. |
-| `src/clipboard.rs`, `src/image_store.rs`, `src/logging.rs` | Clipboard bridge, Kitty image storage, and asynchronous application logging. |
+| `src/gui.rs`, `src/gui/` | Auxiliary Settings, About, debug, startup-error, and quit-confirmation windows/dialogs. |
+| `src/input.rs` | Framework-independent input routing, Neovim key encoding, Rime key encoding, and system IME state. |
+| `src/rime.rs` | GPUI-independent native librime loading, single-service session handling, context, deployment, and runtime discovery. |
+| `src/app/clipboard.rs` | Clipboard bridge for local paste and remote Neovim register requests. |
+| `src/editor/image_store.rs` | Kitty image transfer decoding, assets, placements, placeholders, and bounded image storage. |
+| `src/logging.rs` | Asynchronous application logging. |
 | `src/update_check.rs` | GitHub stable-release lookup and HTTP client adapter used by Settings. |
 | `src/settings.rs`, `src/platform.rs`, `src/helper.rs`, `src/widgets.rs` | Persistent settings, platform integration, CLI helper installation, and shared GUI widgets. |
 | `config/nvim-gpui/` | Isolated Neovim configuration used by the development shell. |
@@ -516,8 +565,8 @@ GUI windows, and platform packaging:
 | `assets/` | Icons, screenshots, and bundled Nerd Fonts. |
 | `.cache/`, `tmp/` | Ignored build outputs, runtime artifacts, Neovim state, and temporary files. |
 
-The Rust module roots such as `app.rs`, `grid.rs`, `nvim.rs`, and `gui.rs`
-remain public entry points for their respective module trees; implementation
+The Rust module roots such as `app.rs`, `editor.rs`, `grid.rs`, `nvim.rs`, and
+`gui.rs` remain entry points for their respective module trees; implementation
 details live in the adjacent directories after the refactor.
 
 The reusable native backend is in `src/rime.rs`; it does not depend on GPUI,
@@ -571,23 +620,35 @@ just run
 ## Architecture
 
 - `src/main.rs` parses process-level startup arguments and starts GPUI.
-- `src/app.rs` and `src/app/` own the application entity, lifecycle, windows,
-  layout, compositor state, settings integration, and Neovim event dispatch.
-- `src/clipboard.rs` owns GPUI system clipboard access, `nvim_paste` text
-  insertion, and the remote clipboard provider bridge.
+- `src/app.rs` and `src/app/` own the application coordinator, application
+  state, Neovim session lifecycle, startup, workspace composition, titlebar,
+  clipboard bridge, and event dispatch. `NvimGpui` remains the GPUI root
+  entity, rather than making `gui` responsible for application state.
+- `src/editor.rs` and `src/editor/` own the main editor surface. Its
+  `ProtocolState` reduces Neovim events into mutable protocol state; `Flush`
+  commits a redraw transaction, and the editor then invalidates its immutable
+  `PresentationSnapshot`. Rendering and hit testing consume that same snapshot
+  for a UI update.
 - `src/nvim.rs` and `src/nvim/` own embedded/remote MessagePack-RPC, versioned
   redraw decoding through `compat.rs`, environment selection, transport, and
-  child-process lifecycle.
+  child-process lifecycle, bounded command/event queues, request deadlines,
+  cancellation, and connection/session identifiers.
 - `src/grid.rs` and `src/grid/` contain the logical cell model and the single
   custom `GridElement`. The model retains one logical cell per terminal
-  position, coalesces ordinary neighboring text into shaped lines, and paints
-  Unicode/wide cells without creating one GPUI element per cell.
-- `src/gui.rs` and `src/gui/` contain the standalone Settings and About
-  windows; shared controls such as the path editor live in `src/widgets.rs`.
-- `src/input.rs` is the `InputRouter` boundary for Neovim, system IME, and the
-  native Rime backend in `src/rime.rs`.
-- `src/image_store.rs` owns Kitty Graphics Protocol transfers, placements,
-  placeholders, and bounded image-cache eviction.
+  position, uses row-level copy-on-write for redraw updates, coalesces ordinary
+  neighboring text into shaped lines, and paints Unicode/wide cells without
+  creating one GPUI element per cell.
+- `src/gui.rs` and `src/gui/` contain auxiliary Settings, About, debug,
+  startup-error, and quit-confirmation windows. They do not own the main
+  editor snapshot or application lifecycle; shared controls live in
+  `src/widgets.rs`.
+- `src/input.rs` is the framework-independent `InputRouter` boundary for
+  Neovim, system IME, and Rime. GPUI-facing editor input handling remains in
+  `src/editor/input.rs`, while native librime remains in `src/rime.rs`.
+- `src/app/clipboard.rs` owns GPUI system clipboard access, `nvim_paste` text
+  insertion, and the remote clipboard provider bridge.
+- `src/editor/image_store.rs` owns Kitty Graphics Protocol transfers,
+  placements, placeholders, and bounded image-cache eviction.
 - `src/platform.rs` contains macOS font registration, Dock icon setup, and
   platform-specific window behavior.
 - `src/settings.rs` persists user settings independently from Neovim.
@@ -617,9 +678,11 @@ following redraw areas into the application model:
 - `option_set`, including `guifont`, `guifontwide`, and `linespace`;
 - `set_title`, `set_icon`, and `ui_send` for image data.
 
-The client is intentionally still an early implementation. Mouse input,
-complete command-line/message rendering, richer Kitty composition, reconnect
-behavior, and broader redraw coverage remain future slices.
+The client is intentionally still an early implementation. Complete
+command-line/message rendering, richer Kitty composition and placement
+coverage, and broader redraw coverage remain future slices. Reconnect events
+are filtered by connection/session identifiers so late events from an old
+connection cannot update the replacement session.
 
 ## Graceful window close
 
@@ -726,8 +789,8 @@ Relevant regression tests include:
 
 - `input::tests::system_ime_state_round_trips_utf16_ranges`;
 - `input::tests::system_ime_owns_printable_keys_but_not_control_keys`;
-- `app::tests::ime_cursor_position_uses_the_registered_grid`; and
-- `app::tests::cursor_grid_is_committed_only_at_flush`.
+- `editor::tests::ime_cursor_position_uses_the_registered_grid`; and
+- `editor::tests::cursor_grid_is_committed_only_at_flush`.
 
 The current IME path is implemented and tested on macOS. Other platform
 backends are not yet supported by the project.

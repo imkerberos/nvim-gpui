@@ -4,16 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to validate and package, for example v0.7.3
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   NEOVIM_VERSION: 0.12.5
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   macos:
@@ -37,9 +44,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Validate release metadata
-        run: python3 scripts/release.py check "$GITHUB_REF_NAME"
+        run: python3 scripts/release.py check "$RELEASE_TAG"
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -83,10 +92,10 @@ jobs:
         run: |
           cp \
             ".cache/macos/nvim-gpui-${ARCH}.dmg" \
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-${ARCH}.dmg"
+            "nvim-gpui-${RELEASE_TAG}-darwin-${ARCH}.dmg"
           cp \
             ".cache/macos/nvim-gpui-${ARCH}.app.zip" \
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-${ARCH}.app.zip"
+            "nvim-gpui-${RELEASE_TAG}-darwin-${ARCH}.app.zip"
           cp \
             ".cache/macos/nvim-gpui-${ARCH}.dmg" \
             "nvim-gpui-latest-macos-${ARCH}.dmg"
@@ -97,10 +106,10 @@ jobs:
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}
+          name: nvim-gpui-${{ env.RELEASE_TAG }}-darwin-${{ matrix.arch }}
           path: |
-            nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}.dmg
-            nvim-gpui-${{ github.ref_name }}-darwin-${{ matrix.arch }}.app.zip
+            nvim-gpui-${{ env.RELEASE_TAG }}-darwin-${{ matrix.arch }}.dmg
+            nvim-gpui-${{ env.RELEASE_TAG }}-darwin-${{ matrix.arch }}.app.zip
             nvim-gpui-latest-macos-${{ matrix.arch }}.dmg
             nvim-gpui-latest-macos-${{ matrix.arch }}.app.zip
           if-no-files-found: error
@@ -124,9 +133,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Validate release metadata
-        run: python3 scripts/release.py check "$GITHUB_REF_NAME"
+        run: python3 scripts/release.py check "$RELEASE_TAG"
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -155,15 +166,15 @@ jobs:
           nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-debian-${{ matrix.arch }}
           package="$(find "dist/ubuntu-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.deb' -print -quit)"
           test -n "$package"
-          cp "$package" "nvim-gpui-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.deb"
+          cp "$package" "nvim-gpui-${RELEASE_TAG}-linux-${{ matrix.arch }}.deb"
           cp "$package" "nvim-gpui-latest-debian-${{ matrix.arch }}.deb"
 
       - name: Upload Linux package
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-linux-${{ matrix.arch }}
+          name: nvim-gpui-${{ env.RELEASE_TAG }}-linux-${{ matrix.arch }}
           path: |
-            nvim-gpui-${{ github.ref_name }}-linux-${{ matrix.arch }}.deb
+            nvim-gpui-${{ env.RELEASE_TAG }}-linux-${{ matrix.arch }}.deb
             nvim-gpui-latest-debian-${{ matrix.arch }}.deb
           if-no-files-found: error
 
@@ -183,24 +194,26 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Validate release metadata
-        run: python3 scripts/release.py check "$GITHUB_REF_NAME"
+        run: python3 scripts/release.py check "$RELEASE_TAG"
 
       - name: Build Fedora package
         run: |
           bash scripts/build-fedora-rpm.sh "${{ matrix.arch }}"
           package="$(find "dist/fedora-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
           test -n "$package"
-          cp "$package" "nvim-gpui-${GITHUB_REF_NAME}-fedora-${{ matrix.arch }}.rpm"
+          cp "$package" "nvim-gpui-${RELEASE_TAG}-fedora-${{ matrix.arch }}.rpm"
           cp "$package" "nvim-gpui-latest-fedora-${{ matrix.arch }}.rpm"
 
       - name: Upload Fedora package
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-fedora-${{ matrix.arch }}
+          name: nvim-gpui-${{ env.RELEASE_TAG }}-fedora-${{ matrix.arch }}
           path: |
-            nvim-gpui-${{ github.ref_name }}-fedora-${{ matrix.arch }}.rpm
+            nvim-gpui-${{ env.RELEASE_TAG }}-fedora-${{ matrix.arch }}.rpm
             nvim-gpui-latest-fedora-${{ matrix.arch }}.rpm
           if-no-files-found: error
 
@@ -212,24 +225,26 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Validate release metadata
-        run: python3 scripts/release.py check "$GITHUB_REF_NAME"
+        run: python3 scripts/release.py check "$RELEASE_TAG"
 
       - name: Build Arch Linux package
         run: |
           bash scripts/build-arch-package.sh
           package="$(find dist/arch-x86_64 -maxdepth 1 -type f -name 'nvim-gpui-*.pkg.tar.*' -print -quit)"
           test -n "$package"
-          cp "$package" "nvim-gpui-${GITHUB_REF_NAME}-arch-x86_64.pkg.tar.zst"
+          cp "$package" "nvim-gpui-${RELEASE_TAG}-arch-x86_64.pkg.tar.zst"
           cp "$package" "nvim-gpui-latest-arch-x86_64.pkg.tar.zst"
 
       - name: Upload Arch Linux package
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-arch-x86_64
+          name: nvim-gpui-${{ env.RELEASE_TAG }}-arch-x86_64
           path: |
-            nvim-gpui-${{ github.ref_name }}-arch-x86_64.pkg.tar.zst
+            nvim-gpui-${{ env.RELEASE_TAG }}-arch-x86_64.pkg.tar.zst
             nvim-gpui-latest-arch-x86_64.pkg.tar.zst
           if-no-files-found: error
 
@@ -241,10 +256,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Validate release metadata
         shell: pwsh
-        run: python scripts/release.py check $env:GITHUB_REF_NAME
+        run: python scripts/release.py check $env:RELEASE_TAG
 
       - name: Cache Cargo and Rime build data
         uses: actions/cache@v4
@@ -336,29 +353,29 @@ jobs:
             throw "just pack-windows failed with exit code $LASTEXITCODE"
           }
 
-          $zip = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          $zip = Join-Path $root "nvim-gpui-$env:RELEASE_TAG-windows-x86_64.zip"
           if (Test-Path $zip) {
             Remove-Item $zip -Force
           }
           Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $zip
           Copy-Item $zip (Join-Path $root 'nvim-gpui-latest-windows-x86_64.zip') -Force
 
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $version = $env:RELEASE_TAG.TrimStart('v')
           $installer = Join-Path $installerDir "nvim-gpui-$version-setup.exe"
           if (-not (Test-Path $installer)) {
             throw "Windows installer was not created: $installer"
           }
-          $releaseInstaller = Join-Path $root "nvim-gpui-$env:GITHUB_REF_NAME-windows-x86_64-setup.exe"
+          $releaseInstaller = Join-Path $root "nvim-gpui-$env:RELEASE_TAG-windows-x86_64-setup.exe"
           Copy-Item $installer $releaseInstaller -Force
           Copy-Item $installer (Join-Path $root 'nvim-gpui-latest-windows-x86_64-setup.exe') -Force
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: nvim-gpui-${{ github.ref_name }}-windows-x86_64
+          name: nvim-gpui-${{ env.RELEASE_TAG }}-windows-x86_64
           path: |
-            nvim-gpui-${{ github.ref_name }}-windows-x86_64.zip
-            nvim-gpui-${{ github.ref_name }}-windows-x86_64-setup.exe
+            nvim-gpui-${{ env.RELEASE_TAG }}-windows-x86_64.zip
+            nvim-gpui-${{ env.RELEASE_TAG }}-windows-x86_64-setup.exe
             nvim-gpui-latest-windows-x86_64.zip
             nvim-gpui-latest-windows-x86_64-setup.exe
           if-no-files-found: error
@@ -372,30 +389,32 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
-          pattern: nvim-gpui-${{ github.ref_name }}-*
+          pattern: nvim-gpui-${{ env.RELEASE_TAG }}-*
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Create Draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
+          python3 scripts/release.py notes "$RELEASE_TAG" > release-notes.md
           assets=(
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-aarch64.dmg"
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-x86_64.dmg"
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-aarch64.app.zip"
-            "nvim-gpui-${GITHUB_REF_NAME}-darwin-x86_64.app.zip"
-            "nvim-gpui-${GITHUB_REF_NAME}-linux-aarch64.deb"
-            "nvim-gpui-${GITHUB_REF_NAME}-linux-x86_64.deb"
-            "nvim-gpui-${GITHUB_REF_NAME}-fedora-aarch64.rpm"
-            "nvim-gpui-${GITHUB_REF_NAME}-fedora-x86_64.rpm"
-            "nvim-gpui-${GITHUB_REF_NAME}-arch-x86_64.pkg.tar.zst"
-            "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64.zip"
-            "nvim-gpui-${GITHUB_REF_NAME}-windows-x86_64-setup.exe"
+            "nvim-gpui-${RELEASE_TAG}-darwin-aarch64.dmg"
+            "nvim-gpui-${RELEASE_TAG}-darwin-x86_64.dmg"
+            "nvim-gpui-${RELEASE_TAG}-darwin-aarch64.app.zip"
+            "nvim-gpui-${RELEASE_TAG}-darwin-x86_64.app.zip"
+            "nvim-gpui-${RELEASE_TAG}-linux-aarch64.deb"
+            "nvim-gpui-${RELEASE_TAG}-linux-x86_64.deb"
+            "nvim-gpui-${RELEASE_TAG}-fedora-aarch64.rpm"
+            "nvim-gpui-${RELEASE_TAG}-fedora-x86_64.rpm"
+            "nvim-gpui-${RELEASE_TAG}-arch-x86_64.pkg.tar.zst"
+            "nvim-gpui-${RELEASE_TAG}-windows-x86_64.zip"
+            "nvim-gpui-${RELEASE_TAG}-windows-x86_64-setup.exe"
             "nvim-gpui-latest-macos-aarch64.dmg"
             "nvim-gpui-latest-macos-aarch64.app.zip"
             "nvim-gpui-latest-macos-x86_64.dmg"
@@ -409,18 +428,27 @@ jobs:
             "nvim-gpui-latest-windows-x86_64-setup.exe"
           )
           shasum -a 256 "${assets[@]}" > SHA256SUMS
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" \
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            if [[ "$draft" != "true" ]]; then
+              echo "refusing to modify already-published release $RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA" \
+              --draft
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md
+              --title "$RELEASE_TAG" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA" \
+              --draft
           fi
-          gh release upload "$GITHUB_REF_NAME" \
+          gh release upload "$RELEASE_TAG" \
             "${assets[@]}" \
             SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
