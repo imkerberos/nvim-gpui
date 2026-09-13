@@ -272,6 +272,7 @@ fn startup_keeps_grid_hidden_until_matching_resize_is_flushed() {
     });
     app.apply_nvim_event_for_test(NvimEvent::Flush);
     assert!(!app.editor.protocol.startup.nvim_grid_ready);
+    assert!(app.editor.protocol.startup.initial_frame_ready);
     assert_eq!(
         app.editor.protocol.presentation.grid.rows()[0].cells()[0].text,
         "initial"
@@ -339,6 +340,7 @@ fn startup_maximize_transition_restarts_the_final_grid_sync() {
         editor: EditorRuntime {
             protocol: ProtocolState::with_startup(StartupState {
                 nvim_grid_ready: false,
+                initial_frame_ready: true,
                 maximize_pending: true,
                 resize_target: Some((80, 24)),
                 flush_seen: true,
@@ -356,6 +358,7 @@ fn startup_maximize_transition_restarts_the_final_grid_sync() {
     assert!(app.editor.protocol.startup.resize_target.is_none());
     assert!(!app.editor.protocol.startup.flush_seen);
     assert!(!app.editor.protocol.startup.grid_content_seen);
+    assert!(app.editor.protocol.startup.initial_frame_ready);
     assert!(app.editor.protocol.startup.redraw_pending);
 }
 

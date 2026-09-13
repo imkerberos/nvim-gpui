@@ -282,6 +282,7 @@ impl EditorRuntime {
 impl EditorRuntime {
     pub(super) fn rime_candidate_popup(
         &self,
+        window: &Window,
         gui_font: &GuiFontSpec,
         gui_wide_font: &GuiFontSpec,
         cell_width: Pixels,
@@ -367,16 +368,24 @@ impl EditorRuntime {
             .map(|_| (cursor_top - f32::from(popup_height)).max(0.0))
             .unwrap_or(below_top);
 
-        let mut candidate_font = font(gui_font.family.clone());
-        if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
-            candidate_font.fallbacks =
-                Some(FontFallbacks::from_fonts(vec![nerd_font_family.clone()]));
-        }
-        let candidate_wide_font = if gui_wide_font.family == gui_font.family {
-            candidate_font.clone()
-        } else {
-            font(gui_wide_font.family.clone())
+        let candidate_font_for = |font_spec: &GuiFontSpec| {
+            let mut candidate_font = font(font_spec.family.clone());
+            let mut fallbacks = Vec::new();
+            if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
+                fallbacks.push(nerd_font_family.clone());
+            }
+            if let Some(fallback_family) = font_spec.fallback_family.as_ref() {
+                if !fallbacks.iter().any(|family| family == fallback_family) {
+                    fallbacks.push(fallback_family.clone());
+                }
+            }
+            if !fallbacks.is_empty() {
+                candidate_font.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
+            }
+            candidate_font
         };
+        let candidate_font = candidate_font_for(gui_font);
+        let candidate_wide_font = candidate_font_for(gui_wide_font);
 
         let mut popup = div()
             .absolute()
@@ -444,18 +453,11 @@ impl EditorRuntime {
         } else {
             ACCENT
         };
-        let previous_icon = if self.nerd_font_family.is_some() {
-            // Nerd Font: angle-up (U+F0D9).
-            "\u{f0d9}"
-        } else {
-            "‹"
-        };
-        let next_icon = if self.nerd_font_family.is_some() {
-            // Nerd Font: angle-down (U+F0DA).
-            "\u{f0da}"
-        } else {
-            "›"
-        };
+        // Nerd Font: angle-up (U+F0D9) and angle-down (U+F0DA).
+        let previous_icon = '\u{f0d9}';
+        let next_icon = '\u{f0da}';
+        let page_indicator_font_size =
+            px(f32::from(window.rem_size()) * 0.875 * SMALL_TEXT_ICON_SCALE);
         let page_indicator = div()
             .h(line_height)
             .flex()
@@ -463,7 +465,12 @@ impl EditorRuntime {
             .justify_end()
             .px_1()
             .text_sm()
-            .child(div().text_color(rgb(previous_color)).child(previous_icon))
+            .child(bundled_nerd_font_icon(
+                window,
+                previous_icon,
+                page_indicator_font_size,
+                previous_color,
+            ))
             .child(
                 div()
                     .mx_1()
@@ -474,7 +481,12 @@ impl EditorRuntime {
                     }))
                     .child(page_label),
             )
-            .child(div().text_color(rgb(next_color)).child(next_icon));
+            .child(bundled_nerd_font_icon(
+                window,
+                next_icon,
+                page_indicator_font_size,
+                next_color,
+            ));
         if horizontal {
             popup = popup.child(page_indicator.w(px(page_indicator_width)));
         } else {

@@ -3,8 +3,12 @@ use crate::widgets::{ACCENT, BACKGROUND, SURFACE, SURFACE_BRIGHT, TEXT, WARNING}
 use gpui::{div, prelude::*, px, rgb};
 
 /// Render the application-level connection failure overlay.
-pub(crate) fn startup_error_dialog(nvim_connected: bool, rpc_status: &str) -> Option<gpui::Div> {
-    if nvim_connected {
+pub(crate) fn startup_error_dialog(
+    nvim_connected: bool,
+    startup_pending: bool,
+    rpc_status: &str,
+) -> Option<gpui::Div> {
+    if nvim_connected || startup_pending {
         return None;
     }
 

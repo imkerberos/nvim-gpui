@@ -6,7 +6,10 @@ use crate::{
     input as input_core,
     input::InputTarget,
     settings,
-    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT},
+    widgets::{
+        bundled_nerd_font_icon, ACCENT, BACKGROUND, MUTED_TEXT, SMALL_TEXT_ICON_SCALE, SURFACE,
+        SURFACE_BRIGHT,
+    },
 };
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
@@ -38,7 +41,9 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use layout::parse_guifont_spec;
-pub(crate) use layout::{initial_window_size_for_grid, GuiFontSpec};
+pub(crate) use layout::{
+    initial_window_size_for_grid, system_monospace_families, system_unicode_families, GuiFontSpec,
+};
 pub(crate) use protocol::{
     GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
     RedrawCommit,
@@ -194,6 +199,9 @@ pub(crate) struct EditorRuntime {
     pub(crate) presentation: RenderRuntime,
     pub(crate) input: InputRuntime,
     pub(crate) cursor: CursorRuntime,
+    pub(crate) configured_grid_font_size: Option<f32>,
+    pub(crate) configured_grid_font: Option<String>,
+    pub(crate) configured_grid_wide_font: Option<String>,
     pub(crate) resolved_grid_font: Option<GuiFontSpec>,
     pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
@@ -209,6 +217,9 @@ impl Default for EditorRuntime {
             presentation: RenderRuntime::default(),
             input: InputRuntime::default(),
             cursor: CursorRuntime::default(),
+            configured_grid_font_size: None,
+            configured_grid_font: None,
+            configured_grid_wide_font: None,
             resolved_grid_font: None,
             resolved_grid_wide_font: None,
             shaping_cache: grid::ShapedLineCache::shared(),
@@ -221,6 +232,13 @@ impl Default for EditorRuntime {
 
 impl EditorRuntime {
     pub(crate) fn apply_runtime_settings(&mut self, settings: &settings::Settings) {
+        self.configured_grid_font_size = Some(settings.font_size as f32);
+        self.configured_grid_font =
+            (!settings.guifont.trim().is_empty()).then(|| settings.guifont.trim().to_owned());
+        self.configured_grid_wide_font = (!settings.guifontwide.trim().is_empty())
+            .then(|| settings.guifontwide.trim().to_owned());
+        self.resolved_grid_font = None;
+        self.resolved_grid_wide_font = None;
         self.nerd_font_family = self
             .bundled_nerd_font_registered
             .then(|| settings.nerd_font.family().to_owned());

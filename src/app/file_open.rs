@@ -140,15 +140,17 @@ impl NvimGpui {
 }
 
 impl Session {
-    fn queue_open_files(
-        &self,
+    pub(crate) fn queue_open_files(
+        &mut self,
         paths: Vec<PathBuf>,
     ) -> Vec<async_channel::Receiver<Result<rmpv::Value, String>>> {
         let Some(nvim) = self.nvim.as_ref() else {
             log::warn!(
                 target: "nvim_gpui::startup",
-                "ignoring platform file-open event because Neovim is unavailable"
+                "queueing {} platform file-open path(s) until Neovim is available",
+                paths.len()
             );
+            self.pending_file_opens.extend(paths);
             return Vec::new();
         };
 

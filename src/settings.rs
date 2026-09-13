@@ -10,6 +10,8 @@ use std::{env, fs, path::PathBuf};
 const SETTINGS_FILE_ENV: &str = "NVIM_GPUI_SETTINGS_FILE";
 pub const DEFAULT_IMAGE_CACHE_SIZE_MB: u32 = 128;
 pub const IMAGE_CACHE_SIZE_OPTIONS_MB: &[u32] = &[64, 128, 256, 512, 1024];
+pub const DEFAULT_FONT_SIZE: u32 = 14;
+pub const FONT_SIZE_OPTIONS: &[u32] = &[10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogLevel {
@@ -387,6 +389,9 @@ impl FallbackMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub font_size: u32,
+    pub guifont: String,
+    pub guifontwide: String,
     pub nerd_font: NerdFontChoice,
     pub fallback_mode: FallbackMode,
     pub startup_maximized: bool,
@@ -408,6 +413,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            font_size: DEFAULT_FONT_SIZE,
+            guifont: String::new(),
+            guifontwide: String::new(),
             nerd_font: NerdFontChoice::default(),
             fallback_mode: FallbackMode::default(),
             startup_maximized: false,
@@ -453,7 +461,10 @@ impl Settings {
 
     fn to_file_contents(&self) -> String {
         format!(
-            "nerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\ncheck_for_updates={}\nlast_update_check={}\n",
+            "font_size={}\nguifont={}\nguifontwide={}\nnerd_font={}\nfallback_mode={}\nstartup_maximized={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\ncheck_for_updates={}\nlast_update_check={}\n",
+            self.font_size,
+            self.guifont,
+            self.guifontwide,
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.startup_maximized,
@@ -481,6 +492,15 @@ fn parse_settings(contents: &str) -> Settings {
             continue;
         };
         match key.trim() {
+            "font_size" => {
+                if let Ok(value) = value.trim().parse::<u32>() {
+                    if FONT_SIZE_OPTIONS.contains(&value) {
+                        settings.font_size = value;
+                    }
+                }
+            }
+            "guifont" => settings.guifont = value.trim().to_owned(),
+            "guifontwide" => settings.guifontwide = value.trim().to_owned(),
             "nerd_font" => {
                 if let Some(value) = NerdFontChoice::parse(value.trim()) {
                     settings.nerd_font = value;
@@ -601,12 +621,15 @@ pub(crate) fn rime_user_data_directory() -> Option<PathBuf> {
 mod tests {
     use super::{
         parse_settings, FallbackMode, ImeBackend, LogLevel, NerdFontChoice, PasteShortcut,
-        RimeCandidateLayout, RimeToggleShortcut, Settings,
+        RimeCandidateLayout, RimeToggleShortcut, Settings, DEFAULT_FONT_SIZE,
     };
 
     #[test]
     fn defaults_are_conservative_and_use_a_128_mb_image_cache() {
         assert_eq!(Settings::default().image_cache_size_mb, 128);
+        assert_eq!(Settings::default().font_size, DEFAULT_FONT_SIZE);
+        assert!(Settings::default().guifont.is_empty());
+        assert!(Settings::default().guifontwide.is_empty());
         assert_eq!(Settings::default().nerd_font, NerdFontChoice::Symbols);
         assert_eq!(Settings::default().fallback_mode, FallbackMode::Auto);
         assert!(!Settings::default().startup_maximized);
@@ -642,9 +665,12 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "nerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\ncheck_for_updates=false\nlast_update_check=123\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nimage_cache_size_mb=1\n",
+            "font_size=18\nguifont=Iosevka Term\nguifontwide=PingFang SC\nnerd_font=symbols-mono\nfallback_mode=force\nstartup_maximized=true\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\ncheck_for_updates=false\nlast_update_check=123\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nfont_size=17\nimage_cache_size_mb=1\n",
         );
 
+        assert_eq!(settings.font_size, 18);
+        assert_eq!(settings.guifont, "Iosevka Term");
+        assert_eq!(settings.guifontwide, "PingFang SC");
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
         assert_eq!(settings.fallback_mode, FallbackMode::Force);
         assert!(settings.startup_maximized);
@@ -684,6 +710,9 @@ mod tests {
     #[test]
     fn new_runtime_settings_are_written_to_the_persistent_file() {
         let settings = Settings {
+            font_size: 18,
+            guifont: "Iosevka Term".to_owned(),
+            guifontwide: "PingFang SC".to_owned(),
             quit_on_window_close: false,
             allow_multiple_instances: false,
             log_level: LogLevel::Trace,
@@ -694,6 +723,9 @@ mod tests {
         assert!(contents.contains("quit_on_window_close=false\n"));
         assert!(contents.contains("allow_multiple_instances=false\n"));
         assert!(contents.contains("log_level=trace\n"));
+        assert!(contents.contains("font_size=18\n"));
+        assert!(contents.contains("guifont=Iosevka Term\n"));
+        assert!(contents.contains("guifontwide=PingFang SC\n"));
         assert!(contents.contains(&format!(
             "rime_toggle_shortcut={}\n",
             RimeToggleShortcut::default().key()

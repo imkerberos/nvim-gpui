@@ -401,6 +401,12 @@ impl KittyGraphicsParser {
             b'q' if params == b">" => events.push(KittyEvent::TerminalResponse(
                 "\x1bP>|kitty 0.40.0\x1b\\".to_owned(),
             )),
+            // Neovim sends DSR 5n during startup when stdout_tty is enabled.
+            // Reply with the terminal-OK status so it does not wait for a
+            // timeout before continuing startup.
+            b'n' if params == b"5" => {
+                events.push(KittyEvent::TerminalResponse("\x1b[0n".to_owned()))
+            }
             _ => {}
         }
     }
@@ -944,6 +950,16 @@ mod tests {
             vec![KittyEvent::TerminalResponse(
                 "\x1bP>|kitty 0.40.0\x1b\\".to_owned()
             )]
+        );
+    }
+
+    #[test]
+    fn responds_to_neovim_device_status_request() {
+        let mut store = ImageStore::new();
+
+        assert_eq!(
+            store.consume_ui_data("\x1b[5n", GridId(1)),
+            vec![KittyEvent::TerminalResponse("\x1b[0n".to_owned())]
         );
     }
 

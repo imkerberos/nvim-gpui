@@ -94,6 +94,7 @@ impl Render for NvimGpui {
         }
         if let Some(startup_error_dialog) = gui::startup_error_dialog(
             self.app.session.nvim.is_some(),
+            self.app.session.startup_pending(),
             &self.app.session.rpc_status,
         ) {
             workspace = workspace.child(startup_error_dialog);
@@ -106,6 +107,9 @@ impl Render for NvimGpui {
 impl NvimGpui {
     pub(crate) fn update_settings(&mut self, next: settings::Settings) {
         let ime_backend_changed = self.app.settings.ime_backend != next.ime_backend;
+        let font_settings_changed = self.app.settings.font_size != next.font_size
+            || self.app.settings.guifont != next.guifont
+            || self.app.settings.guifontwide != next.guifontwide;
         if self.app.settings.log_level != next.log_level {
             if let Some(logger) = self.app.logger.as_ref() {
                 crate::logging::set_level(logger, next.log_level);
@@ -113,6 +117,10 @@ impl NvimGpui {
         }
         self.app.settings = next;
         self.editor.apply_runtime_settings(&self.app.settings);
+        if font_settings_changed {
+            self.app.last_resize = None;
+            self.editor.input.ime_coordinates_dirty = true;
+        }
         if ime_backend_changed {
             self.editor
                 .apply_ime_backend_setting(self.app.settings.ime_backend);
@@ -120,7 +128,7 @@ impl NvimGpui {
         self.app.settings_save_error = self.app.settings.save().err();
     }
 
-    pub(crate) fn sync_nvim_size(&mut self, window: &mut Window) {
+    pub(crate) fn sync_nvim_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let gui_font = self.editor.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.editor.protocol.linespace);
@@ -135,6 +143,9 @@ impl NvimGpui {
             } else {
                 0.0
             };
+        if f32::from(viewport.width) <= 0.0 || available_height <= 0.0 {
+            return;
+        }
         let width = (f32::from(viewport.width) / f32::from(cell_width))
             .floor()
             .max(1.0) as u32;
@@ -145,7 +156,16 @@ impl NvimGpui {
             if !window.is_maximized() {
                 return;
             }
-            self.editor.complete_startup_maximize();
+            self.editor.protocol.startup.maximize_pending = false;
+            log::debug!(
+                target: "nvim_gpui::app",
+                "startup window maximized; measuring the initial Neovim grid"
+            );
+        }
+
+        if self.app.session.startup_connection.is_some() {
+            self.start_initial_nvim(size, cx);
+            return;
         }
 
         if !self.editor.protocol.startup.nvim_grid_ready {

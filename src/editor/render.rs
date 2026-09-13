@@ -42,6 +42,8 @@ impl EditorRuntime {
                 options.gui_wide_font.family.clone(),
                 px(options.gui_wide_font.size),
             )
+            .with_wide_font_fallback(options.gui_wide_font.fallback_family.clone())
+            .with_font_fallback(options.gui_font.fallback_family.clone())
             .with_nerd_fallback_font(
                 self.nerd_font_family.clone().unwrap_or_default(),
                 px(options.gui_font.size),
@@ -232,7 +234,7 @@ impl NvimGpui {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        self.sync_nvim_size(window);
+        self.sync_nvim_size(window, cx);
 
         let gui_font = self.editor.current_grid_font(window);
         let gui_wide_font = self.editor.current_grid_wide_font(window);
@@ -243,7 +245,9 @@ impl NvimGpui {
         let entity = cx.entity();
 
         let cell_width = gui_font.cell_width(window);
-        let grid_ready = self.editor.protocol.startup.nvim_grid_ready;
+        let grid_ready = self.editor.protocol.startup.nvim_grid_ready
+            || (self.editor.protocol.startup.initial_frame_ready
+                && !self.editor.protocol.startup.maximize_pending);
         let now = Instant::now();
         for animation in self.editor.presentation.viewport_animations.values_mut() {
             // Redraw processing can take longer than the animation duration,
@@ -507,6 +511,7 @@ impl NvimGpui {
             }
 
             if let Some(rime_popup) = self.editor.rime_candidate_popup(
+                window,
                 &gui_font,
                 &gui_wide_font,
                 cell_width,

@@ -7,7 +7,7 @@ use super::{
 use crate::app::{themed_titlebar_options, themed_window_decorations};
 use crate::gui::DebugWindow;
 use crate::{
-    nvim::{self, NvimProcess},
+    nvim::{self, ConnectionSpec},
     platform, settings, update_check, CliOptions, NvimConnection,
 };
 use gpui::{
@@ -61,33 +61,23 @@ pub(crate) fn run(
         app_settings.log_level.key(),
         app_settings.image_cache_size_mb
     );
-    let nvim = match options.connection {
+    let connection = match options.connection {
         NvimConnection::Embed => {
             let nvim_command = options
                 .nvim_command
                 .or_else(nvim::configured_nvim_command)
                 .unwrap_or_else(|| OsString::from("nvim"));
-            NvimProcess::spawn_with_command(
-                DEFAULT_GRID_WIDTH,
-                DEFAULT_GRID_HEIGHT,
-                nvim_command,
-                options.nvim_args,
-            )
+            ConnectionSpec::Embedded {
+                command: nvim_command,
+                args: options.nvim_args,
+            }
         }
-        NvimConnection::Remote(address) => NvimProcess::connect_with_timeout(
-            DEFAULT_GRID_WIDTH,
-            DEFAULT_GRID_HEIGHT,
-            &address,
-            options.connect_timeout,
-        ),
+        NvimConnection::Remote(address) => ConnectionSpec::Remote {
+            address,
+            connect_timeout: options.connect_timeout,
+        },
     };
-    if let Err(error) = &nvim {
-        log::error!(target: "nvim_gpui::startup", "Neovim initialization failed: {error}");
-        eprintln!("[nvim-gpui] Neovim initialization failed: {error}");
-        return false;
-    }
     let show_debug_window = options.debug_window;
-    let initial_theme = nvim.as_ref().ok().and_then(NvimProcess::startup_theme);
     let reopen_view = Rc::new(RefCell::new(None));
     let reopen_view_for_handler = reopen_view.clone();
     let (open_urls_tx, open_urls_rx) = async_channel::unbounded();
@@ -139,11 +129,10 @@ pub(crate) fn run(
             let update_http_client = cx.http_client();
             let nvim_view = cx.new(|cx| {
                 NvimGpui::new(
-                    nvim,
+                    connection,
                     cx,
                     nerd_font_registered,
                     app_settings.clone(),
-                    initial_theme,
                     startup_maximized,
                     logger,
                     update_http_client,
@@ -236,9 +225,10 @@ fn open_main_window(
             }
             should_close
         });
-        view.window.window_bounds_subscription =
-            Some(cx.observe_window_bounds(window, |view, window, _cx| view.sync_nvim_size(window)));
-        view.sync_nvim_size(window);
+        view.window.window_bounds_subscription = Some(
+            cx.observe_window_bounds(window, |view, window, cx| view.sync_nvim_size(window, cx)),
+        );
+        view.sync_nvim_size(window, cx);
         if let Some(focus_handle) = view.window.focus_handle.as_ref() {
             window.focus(focus_handle);
         }

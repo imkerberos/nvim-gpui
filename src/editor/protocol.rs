@@ -164,6 +164,9 @@ impl Default for ProtocolCursorState {
 #[derive(Debug, Clone)]
 pub(crate) struct StartupState {
     pub(crate) nvim_grid_ready: bool,
+    /// A committed Neovim frame exists and can be shown while a later resize
+    /// is still being synchronized.
+    pub(crate) initial_frame_ready: bool,
     pub(crate) resize_target: Option<(u32, u32)>,
     pub(crate) flush_seen: bool,
     pub(crate) grid_content_seen: bool,
@@ -175,6 +178,7 @@ impl Default for StartupState {
     fn default() -> Self {
         Self {
             nvim_grid_ready: true,
+            initial_frame_ready: false,
             resize_target: None,
             flush_seen: false,
             grid_content_seen: false,
@@ -714,6 +718,9 @@ impl ProtocolState {
                 self.pending_geometry_changed = false;
                 self.pending_cursor_timing_reset = false;
                 self.startup.flush_seen = true;
+                if self.startup.grid_content_seen {
+                    self.startup.initial_frame_ready = true;
+                }
                 self.update_startup_grid_ready();
                 ProtocolOutcome::Flushed(redraw)
             }

@@ -7,7 +7,8 @@ pub const SYMBOLS_NERD_FONT_MONO_FAMILY: &str = "Symbols Nerd Font Mono";
 #[cfg(target_os = "macos")]
 const APPLICATION_BUNDLE_IDENTIFIER: &str = "dev.nvim-gpui";
 
-const SYMBOLS_NERD_FONT: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFont-Regular.ttf");
+pub(crate) const SYMBOLS_NERD_FONT_DATA: &[u8] =
+    include_bytes!("../assets/fonts/SymbolsNerdFont-Regular.ttf");
 const SYMBOLS_NERD_FONT_MONO: &[u8] =
     include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
 #[cfg(target_os = "macos")]
@@ -20,13 +21,13 @@ const APPLICATION_ICON_ICNS: &[u8] =
 pub fn register_bundled_fonts(cx: &App) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        register_font_with_core_text(SYMBOLS_NERD_FONT)?;
+        register_font_with_core_text(SYMBOLS_NERD_FONT_DATA)?;
         register_font_with_core_text(SYMBOLS_NERD_FONT_MONO)?;
     }
 
     cx.text_system()
         .add_fonts(vec![
-            Cow::Borrowed(SYMBOLS_NERD_FONT),
+            Cow::Borrowed(SYMBOLS_NERD_FONT_DATA),
             Cow::Borrowed(SYMBOLS_NERD_FONT_MONO),
         ])
         .map_err(|error| format!("failed to register bundled Nerd Fonts: {error}"))

@@ -241,23 +241,52 @@ be selected with `NVIM_GPUI_RIME_RUNTIME=/path/to/rime-runtime`.
 
 ## Font configuration
 
-For reliable text and CJK alignment, set both `guifont` and `guifontwide` in
-your Neovim configuration. Replace the font names with fonts installed on
-your system:
+Font selection is available in Settings → `Font and image`. nvim-gpui uses the
+selected fonts as the primary fonts for its own grid renderer. Neovim's
+`guifont` and `guifontwide` options are kept as fallback families, so the same
+Neovim configuration can continue to work in both a terminal and nvim-gpui.
+
+The Settings controls are:
+
+- `Font size`: the shared grid size. The available values are 10, 11, 12, 13,
+  14, 15, 16, 18, 20, 22, 24, 28, and 32 px. It applies to the primary
+  regular font, the primary wide-character font, and bundled Nerd Font glyphs.
+- `guifont`: an enumerated system monospace font used as the primary regular
+  grid font. Choose `System default` to use the platform preference.
+- `guifontwide`: an enumerated Unicode-capable font used for wide characters.
+  The list tests actual glyph coverage; it does not decide whether a font is
+  suitable from `CJK` or another substring in its family name. Fonts such as
+  LXGW WenKai can therefore appear in the list.
+- `Nerd font`: choose between the bundled Symbols Nerd Font and Symbols Nerd
+  Font Mono. No Nerd Font installation is required.
+- `Fallback mode`: choose whether bundled Nerd Font glyphs are disabled,
+  selected automatically when the primary font lacks a glyph, or always used
+  for Nerd Font cells.
+
+For reliable text and CJK alignment, you can also set both `guifont` and
+`guifontwide` in your Neovim configuration. Replace the font names with fonts
+installed on your system:
 
 ```lua
-vim.opt.guifont = "Iosevka Term Slab:h16"
-vim.opt.guifontwide = "LXGW WenKai:h16"
+vim.opt.guifont = "Iosevka Term Slab"
+vim.opt.guifontwide = "LXGW WenKai"
 ```
 
-If these options are not set, nvim-gpui selects an installed platform font at
-runtime. The regular grid font prefers Menlo on macOS, Cascadia Mono or
-Consolas on Windows, and Ubuntu Mono, Noto Sans Mono, or DejaVu Sans Mono on
-Linux. Wide CJK cells
-prefer PingFang SC on macOS, Microsoft YaHei UI on Windows, and an installed
-Noto CJK font on Linux. If a preferred font is unavailable, the next installed
-candidate is used; explicit `guifont` and `guifontwide` values always take
-precedence.
+If these options are not set, nvim-gpui still selects an installed platform
+font at runtime. The default preference order is:
+
+| Platform | Primary regular font | Primary wide-character font |
+| --- | --- | --- |
+| macOS | Menlo, SF Mono, Monaco | PingFang SC, Hiragino Sans GB |
+| Windows | Cascadia Mono, Consolas, Courier New | Microsoft YaHei UI, Microsoft YaHei, SimSun |
+| Linux | Ubuntu Mono, Noto Sans Mono, DejaVu Sans Mono, Liberation Mono, Source Code Pro | Noto Sans Mono CJK SC, Noto Sans CJK SC, WenQuanYi Zen Hei |
+
+The first installed font that passes the relevant font check is selected. If
+none of the preferred fonts is available, nvim-gpui searches the installed
+font collection for a suitable regular or Unicode-capable family. An explicit
+Neovim `guifont` or `guifontwide` value is parsed as a family name and used as
+the fallback for the corresponding primary font; if `guifontwide` is absent,
+Neovim's `guifont` is also considered for wide-character fallback.
 
 ## GUI-specific theme
 

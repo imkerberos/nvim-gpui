@@ -3,18 +3,18 @@ use crate::app::NvimGpui;
 use crate::widgets::setting_checkbox;
 use crate::{
     app::{themed_titlebar, themed_titlebar_enabled},
-    editor::EditorRuntime,
+    editor::{system_monospace_families, system_unicode_families, EditorRuntime, GuiFontSpec},
     helper, settings, update_check,
     widgets::{
         setting_combo_box, setting_combo_option, setting_option_button, setting_row,
-        setting_section, setting_text_input, SettingTextInputConfig, SettingTextInputMouseEvent,
-        SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
-        WARNING,
+        setting_section, setting_text_input, settings_icon_set, SettingTextInputConfig,
+        SettingTextInputMouseEvent, SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE,
+        SURFACE_BRIGHT, TEXT, WARNING,
     },
 };
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontFallbacks, FontWeight,
-    KeyDownEvent, Render, SharedString, Subscription, Window,
+    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, Render,
+    SharedString, Subscription, Window,
 };
 use nvim_gpui::rime::RimeRuntimeResolver;
 use std::env;
@@ -32,11 +32,16 @@ pub(crate) struct SettingsWindow {
     rime_test_status: Option<RimeTestStatus>,
     rime_user_data_error: Option<String>,
     log_directory_error: Option<String>,
+    monospace_families: Option<Vec<String>>,
+    unicode_families: Option<Vec<String>>,
     open_combo: Option<SettingsCombo>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsCombo {
+    FontSize,
+    GuiFont,
+    GuiFontWide,
     NerdFont,
     FallbackMode,
     StartupMaximized,
@@ -110,6 +115,8 @@ impl SettingsWindow {
             rime_test_status: None,
             rime_user_data_error: None,
             log_directory_error: None,
+            monospace_families: None,
+            unicode_families: None,
             open_combo: None,
         }
     }
@@ -564,11 +571,115 @@ impl Render for SettingsWindow {
         self.ensure_rime_path_blur_subscriptions(window, cx);
         let (current, save_error, cli_install_error) = self.source.read(cx).app.settings_snapshot();
         let cli_available = helper::is_available_in_path();
-        let mut paste_shortcut_icon_font = window.text_style().font();
-        paste_shortcut_icon_font.fallbacks = Some(FontFallbacks::from_fonts(vec![current
-            .nerd_font
-            .family()
-            .to_owned()]));
+        let icons = settings_icon_set(window);
+
+        let mut font_size_options = div().w_full().flex().flex_col();
+        for font_size in settings::FONT_SIZE_OPTIONS {
+            let font_size = *font_size;
+            font_size_options = font_size_options.child(setting_combo_option(
+                ("settings-font-size", font_size),
+                format!("{font_size} px"),
+                current.font_size == font_size,
+                cx.listener(move |this, _, _, cx| {
+                    this.apply_setting(move |settings| settings.font_size = font_size, cx);
+                }),
+            ));
+        }
+        let font_size_options = setting_combo_box(
+            "settings-font-size-combo",
+            format!("{} px", current.font_size),
+            self.open_combo == Some(SettingsCombo::FontSize),
+            font_size_options,
+            icons.clone(),
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::FontSize, cx)),
+        );
+
+        let monospace_families = self
+            .monospace_families
+            .get_or_insert_with(|| system_monospace_families(window))
+            .clone();
+        let unicode_families = self
+            .unicode_families
+            .get_or_insert_with(|| system_unicode_families(window))
+            .clone();
+        let default_guifont = monospace_families
+            .first()
+            .cloned()
+            .unwrap_or_else(|| GuiFontSpec::system(window).family);
+        let default_guifontwide = unicode_families
+            .first()
+            .cloned()
+            .unwrap_or_else(|| GuiFontSpec::system_wide(window).family);
+
+        let mut guifont_options = div().w_full().flex().flex_col();
+        guifont_options = guifont_options.child(setting_combo_option(
+            "settings-guifont-system",
+            format!("System default ({default_guifont})"),
+            current.guifont.is_empty(),
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.guifont.clear(), cx);
+            }),
+        ));
+        for (index, family) in monospace_families.into_iter().enumerate() {
+            let selected = current.guifont == family;
+            guifont_options = guifont_options.child(setting_combo_option(
+                ("settings-guifont", index as u32),
+                family.clone(),
+                selected,
+                cx.listener(move |this, _, _, cx| {
+                    let family = family.clone();
+                    this.apply_setting(move |settings| settings.guifont = family, cx);
+                }),
+            ));
+        }
+        let guifont_label = if current.guifont.is_empty() {
+            format!("System default ({default_guifont})")
+        } else {
+            current.guifont.clone()
+        };
+        let guifont_options = setting_combo_box(
+            "settings-guifont-combo",
+            guifont_label,
+            self.open_combo == Some(SettingsCombo::GuiFont),
+            guifont_options,
+            icons.clone(),
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::GuiFont, cx)),
+        );
+
+        let mut guifontwide_options = div().w_full().flex().flex_col();
+        guifontwide_options = guifontwide_options.child(setting_combo_option(
+            "settings-guifontwide-system",
+            format!("System default ({default_guifontwide})"),
+            current.guifontwide.is_empty(),
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.guifontwide.clear(), cx);
+            }),
+        ));
+        for (index, family) in unicode_families.into_iter().enumerate() {
+            let selected = current.guifontwide == family;
+            guifontwide_options = guifontwide_options.child(setting_combo_option(
+                ("settings-guifontwide", index as u32),
+                family.clone(),
+                selected,
+                cx.listener(move |this, _, _, cx| {
+                    let family = family.clone();
+                    this.apply_setting(move |settings| settings.guifontwide = family, cx);
+                }),
+            ));
+        }
+        let guifontwide_label = if current.guifontwide.is_empty() {
+            format!("System default ({default_guifontwide})")
+        } else {
+            current.guifontwide.clone()
+        };
+        let guifontwide_options = setting_combo_box(
+            "settings-guifontwide-combo",
+            guifontwide_label,
+            self.open_combo == Some(SettingsCombo::GuiFontWide),
+            guifontwide_options,
+            icons.clone(),
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::GuiFontWide, cx)),
+        );
 
         let mut nerd_font_options = div().w_full().flex().flex_col();
         for (id, choice) in [
@@ -592,7 +703,7 @@ impl Render for SettingsWindow {
             current.nerd_font.label(),
             self.open_combo == Some(SettingsCombo::NerdFont),
             nerd_font_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::NerdFont, cx)),
         );
 
@@ -616,7 +727,7 @@ impl Render for SettingsWindow {
             current.fallback_mode.label(),
             self.open_combo == Some(SettingsCombo::FallbackMode),
             fallback_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::FallbackMode, cx)),
         );
 
@@ -637,7 +748,7 @@ impl Render for SettingsWindow {
             format!("{} MB", current.image_cache_size_mb),
             self.open_combo == Some(SettingsCombo::ImageCacheSize),
             cache_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::ImageCacheSize, cx)),
         );
 
@@ -660,7 +771,7 @@ impl Render for SettingsWindow {
             current.ime_backend.label(),
             self.open_combo == Some(SettingsCombo::ImeBackend),
             ime_backend_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::ImeBackend, cx)),
         );
 
@@ -689,7 +800,7 @@ impl Render for SettingsWindow {
             current.rime_candidate_layout.label(),
             self.open_combo == Some(SettingsCombo::RimeCandidateLayout),
             rime_layout_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::RimeCandidateLayout, cx)),
         );
 
@@ -769,7 +880,6 @@ impl Render for SettingsWindow {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
-                    .font(paste_shortcut_icon_font.clone())
                     .text_color(rgb(MUTED_TEXT))
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(TEXT)))
@@ -777,7 +887,7 @@ impl Render for SettingsWindow {
                         cx.stop_propagation();
                         this.set_paste_shortcut(settings::PasteShortcut::Disabled, cx);
                     }))
-                    .child(""),
+                    .child(icons.clear()),
             );
 
         let rime_toggle_shortcut_label: SharedString = if self.recording_rime_toggle_shortcut {
@@ -856,7 +966,6 @@ impl Render for SettingsWindow {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
-                    .font(paste_shortcut_icon_font.clone())
                     .text_color(rgb(MUTED_TEXT))
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(TEXT)))
@@ -864,7 +973,7 @@ impl Render for SettingsWindow {
                         cx.stop_propagation();
                         this.set_rime_toggle_shortcut(settings::RimeToggleShortcut::Disabled, cx);
                     }))
-                    .child(""),
+                    .child(icons.clear()),
             );
 
         let bundled_rime_runtime = Self::uses_bundled_rime_runtime();
@@ -1111,7 +1220,7 @@ impl Render for SettingsWindow {
             },
             self.open_combo == Some(SettingsCombo::StartupMaximized),
             startup_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::StartupMaximized, cx)),
         );
 
@@ -1141,7 +1250,7 @@ impl Render for SettingsWindow {
             },
             self.open_combo == Some(SettingsCombo::UpdateChecks),
             update_check_options,
-            paste_shortcut_icon_font.clone(),
+            icons.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::UpdateChecks, cx)),
         );
 
@@ -1265,7 +1374,7 @@ impl Render for SettingsWindow {
             current.log_level.label(),
             self.open_combo == Some(SettingsCombo::LogLevel),
             log_options,
-            paste_shortcut_icon_font,
+            icons,
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::LogLevel, cx)),
         );
         let log_directory_label = crate::logging::log_directory()
@@ -1409,6 +1518,21 @@ impl Render for SettingsWindow {
                 "Font and image",
                 div()
                     .w_full()
+                    .child(setting_row(
+                        "Font size",
+                        "Shared size for guifont, guifontwide, and Nerd Font glyphs.",
+                        font_size_options,
+                    ))
+                    .child(setting_row(
+                        "guifont",
+                        "Primary monospace font used by nvim-gpui; Neovim's guifont is the fallback.",
+                        guifont_options,
+                    ))
+                    .child(setting_row(
+                        "guifontwide",
+                        "Primary Unicode font used by nvim-gpui; Neovim's guifontwide is the fallback.",
+                        guifontwide_options,
+                    ))
                     .child(setting_row(
                         "Nerd font",
                         "Font used for bundled Nerd Font fallback glyphs.",

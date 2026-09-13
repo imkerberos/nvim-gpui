@@ -147,6 +147,7 @@ impl EditorRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_startup_maximize(&mut self) {
         self.protocol.startup.maximize_pending = false;
         self.protocol.startup.resize_target = None;

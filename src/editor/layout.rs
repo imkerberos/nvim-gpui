@@ -10,6 +10,7 @@ use gpui::{font, px, size, Pixels, Window};
 pub(crate) struct GuiFontSpec {
     pub(crate) family: String,
     pub(crate) size: f32,
+    pub(crate) fallback_family: Option<String>,
 }
 
 impl Default for GuiFontSpec {
@@ -17,6 +18,7 @@ impl Default for GuiFontSpec {
         Self {
             family: DEFAULT_GRID_FONT_FAMILY.to_owned(),
             size: DEFAULT_GRID_FONT_SIZE,
+            fallback_family: None,
         }
     }
 }
@@ -47,6 +49,7 @@ impl GuiFontSpec {
         Self {
             family,
             size: DEFAULT_GRID_FONT_SIZE,
+            fallback_family: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl GuiFontSpec {
         Self {
             family,
             size: DEFAULT_GRID_FONT_SIZE,
+            fallback_family: None,
         }
     }
 
@@ -96,13 +100,31 @@ impl EditorRuntime {
             return font.clone();
         }
 
-        let font = self
+        let fallback = self
             .protocol
             .guifont
             .as_deref()
             .filter(|spec| !spec.trim().is_empty())
-            .map(parse_guifont_spec)
+            .map(parse_guifont_spec);
+        let font_size = self.configured_grid_font_size.unwrap_or_else(|| {
+            fallback
+                .as_ref()
+                .map(|font| font.size)
+                .unwrap_or(DEFAULT_GRID_FONT_SIZE)
+        });
+        let mut font = self
+            .configured_grid_font
+            .as_deref()
+            .map(|family| GuiFontSpec {
+                family: family.to_owned(),
+                size: font_size,
+                fallback_family: fallback.as_ref().map(|font| font.family.clone()),
+            })
             .unwrap_or_else(|| GuiFontSpec::system(window));
+        if self.configured_grid_font.is_none() {
+            font.size = font_size;
+            font.fallback_family = fallback.map(|fallback| fallback.family);
+        }
         self.resolved_grid_font = Some(font.clone());
         font
     }
@@ -112,26 +134,108 @@ impl EditorRuntime {
             return font.clone();
         }
 
-        let font = if let Some(spec) = self
+        let fallback = self
             .protocol
             .guifontwide
             .as_deref()
             .filter(|spec| !spec.trim().is_empty())
-        {
-            parse_guifont_spec(spec)
-        } else if self
-            .protocol
-            .guifont
+            .or_else(|| {
+                self.protocol
+                    .guifont
+                    .as_deref()
+                    .filter(|spec| !spec.trim().is_empty())
+            })
+            .map(parse_guifont_spec);
+        let font_size = self.configured_grid_font_size.unwrap_or_else(|| {
+            fallback
+                .as_ref()
+                .map(|font| font.size)
+                .unwrap_or(DEFAULT_GRID_FONT_SIZE)
+        });
+        let mut font = self
+            .configured_grid_wide_font
             .as_deref()
-            .is_some_and(|spec| !spec.trim().is_empty())
-        {
-            self.current_grid_font(window)
-        } else {
-            GuiFontSpec::system_wide(window)
-        };
+            .map(|family| GuiFontSpec {
+                family: family.to_owned(),
+                size: font_size,
+                fallback_family: fallback.as_ref().map(|font| font.family.clone()),
+            })
+            .unwrap_or_else(|| GuiFontSpec::system_wide(window));
+        if self.configured_grid_wide_font.is_none() {
+            font.size = font_size;
+            font.fallback_family = fallback.map(|fallback| fallback.family);
+        }
         self.resolved_grid_wide_font = Some(font.clone());
         font
     }
+}
+
+pub(crate) fn system_monospace_families(window: &Window) -> Vec<String> {
+    let font_size = px(DEFAULT_GRID_FONT_SIZE);
+    let mut families = window
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .filter(|family| !family.starts_with('.') && is_monospace_family(window, family, font_size))
+        .collect::<Vec<_>>();
+    order_system_font_families(&mut families, PREFERRED_SYSTEM_MONOSPACE_FONTS);
+    families
+}
+
+pub(crate) fn system_unicode_families(window: &Window) -> Vec<String> {
+    let font_size = px(DEFAULT_GRID_FONT_SIZE);
+    let mut families = window
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .filter(|family| {
+            !family.starts_with('.') && supports_unicode_family(window, family, font_size)
+        })
+        .collect::<Vec<_>>();
+    order_system_font_families(&mut families, PREFERRED_SYSTEM_WIDE_FONTS);
+    families
+}
+
+const UNICODE_FONT_SAMPLE: &[char] = &['中', '文', '日', '本', '한', '🙂'];
+
+fn supports_unicode_family(window: &Window, family: &str, font_size: Pixels) -> bool {
+    let text_system = window.text_system();
+    let requested_font = font(family.to_owned());
+    let font_id = text_system.resolve_font(&requested_font);
+
+    // `resolve_font` silently falls back when a family cannot be loaded. Do
+    // not let that fallback make an unrelated font look like a Unicode font.
+    let Some(resolved_font) = text_system.get_font_for_id(font_id) else {
+        return false;
+    };
+    if !resolved_font
+        .family
+        .eq_ignore_ascii_case(requested_font.family.as_ref())
+    {
+        return false;
+    }
+
+    // Test glyph coverage directly. Family names and naming conventions are
+    // not reliable indicators of whether a font contains CJK or other wide
+    // Unicode characters (for example, LXGW WenKai).
+    UNICODE_FONT_SAMPLE.iter().any(|&character| {
+        text_system
+            .typographic_bounds(font_id, font_size, character)
+            .is_ok()
+    })
+}
+
+fn order_system_font_families(families: &mut Vec<String>, preferred: &[&str]) {
+    families.sort_by_key(|family| {
+        (
+            preferred
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(family))
+                .unwrap_or(usize::MAX),
+            family.to_ascii_lowercase(),
+        )
+    });
+    families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
 }
 
 pub(crate) fn is_monospace_family(window: &Window, family: &str, font_size: Pixels) -> bool {
@@ -169,7 +273,11 @@ pub(crate) fn parse_guifont_spec(spec: &str) -> GuiFontSpec {
         .filter(|size| *size > 0.0)
         .unwrap_or(DEFAULT_GRID_FONT_SIZE);
 
-    GuiFontSpec { family, size }
+    GuiFontSpec {
+        family,
+        size,
+        fallback_family: None,
+    }
 }
 
 pub(crate) fn line_height_from_metrics(

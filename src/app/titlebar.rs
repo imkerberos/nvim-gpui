@@ -74,6 +74,7 @@ pub(crate) fn themed_titlebar(
 
     let title_area = div()
         .flex_1()
+        .min_w_0()
         .h_full()
         .flex()
         .items_center()
@@ -85,9 +86,17 @@ pub(crate) fn themed_titlebar(
         }))
         .text_color(rgb(foreground))
         .window_control_area(WindowControlArea::Drag)
-        .child(img(logo_image()).w(px(20.0)).h(px(20.0)))
-        .child(div().w(px(6.0)))
-        .child(title);
+        .child(img(logo_image()).w(px(20.0)).h(px(20.0)).flex_shrink_0())
+        .child(div().w(px(6.0)).flex_shrink_0())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(title),
+        );
 
     #[cfg(target_os = "macos")]
     let title_area = title_area.on_mouse_down(MouseButton::Left, |event, window, _cx| {
@@ -131,6 +140,7 @@ pub(crate) fn themed_titlebar(
             .h_full()
             .flex()
             .items_center()
+            .flex_shrink_0()
             .pr(px(8.0))
             .child(titlebar_button("Settings", foreground, move |cx| {
                 gui::open_settings_window(settings_source.clone(), cx);
@@ -210,6 +220,7 @@ fn window_control_button(
     let button = div()
         .id(label)
         .w(px(46.0))
+        .flex_shrink_0()
         .h_full()
         .flex()
         .items_center()
@@ -395,6 +406,7 @@ fn rime_indicator(
         .id("titlebar-rime-indicator")
         .relative()
         .w(px(28.0))
+        .flex_shrink_0()
         .h(px(24.0))
         .flex()
         .items_center()

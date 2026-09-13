@@ -4,7 +4,7 @@ use super::{
 };
 use crate::editor::ProtocolState;
 use crate::input::{InputRouter, InputRouterConfig};
-use crate::nvim::{DisconnectReason, NvimEvent, NvimProcess, NvimTheme, SessionId};
+use crate::nvim::{ConnectionSpec, DisconnectReason, NvimEvent, NvimProcess, NvimTheme, SessionId};
 #[cfg(test)]
 use crate::{editor::GridPlacement, grid};
 use crate::{settings, update_check};
@@ -32,24 +32,14 @@ const UNNAMED_BUFFER_LABEL: &str = "[No Name]";
 impl NvimGpui {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        nvim: Result<NvimProcess, String>,
+        connection: ConnectionSpec,
         cx: &mut Context<Self>,
         nerd_font_registered: bool,
         app_settings: settings::Settings,
-        initial_theme: Option<NvimTheme>,
         startup_maximized: bool,
         logger: Option<flexi_logger::LoggerHandle>,
         update_http_client: Arc<dyn gpui::http_client::HttpClient>,
     ) -> Self {
-        let nvim_available = nvim.is_ok();
-        match &nvim {
-            Ok(_) => log::info!(target: "nvim_gpui::app", "Neovim connection initialized"),
-            Err(error) => log::error!(
-                target: "nvim_gpui::app",
-                "Neovim connection unavailable: {error}"
-            ),
-        }
-        let initial_theme = initial_theme.unwrap_or_default();
         let mut this = Self {
             window: WindowRuntime {
                 focus_handle: Some(cx.focus_handle()),
@@ -57,11 +47,8 @@ impl NvimGpui {
             },
             app: AppState {
                 session: Session {
-                    rpc_status: match &nvim {
-                        Ok(_) => "rpc: connecting".to_owned(),
-                        Err(error) => format!("rpc: {error}"),
-                    },
-                    nvim: nvim.ok(),
+                    rpc_status: "rpc: starting".to_owned(),
+                    startup_connection: Some(connection),
                     ..Session::default()
                 },
                 settings: app_settings,
@@ -73,30 +60,14 @@ impl NvimGpui {
         };
 
         this.editor.bundled_nerd_font_registered = nerd_font_registered;
-        this.editor.protocol.theme = initial_theme;
-        this.editor.protocol.presentation.grid_size =
-            Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
-        this.editor.protocol.startup.nvim_grid_ready = !nvim_available;
-        this.editor.protocol.startup.redraw_pending = nvim_available;
-        this.editor.protocol.startup.maximize_pending = nvim_available && startup_maximized;
+        // Keep the default protocol grid hidden until the real window size is
+        // known and Neovim has been attached with that size.
+        this.editor.protocol.startup.nvim_grid_ready = false;
+        this.editor.protocol.startup.maximize_pending = startup_maximized;
         this.editor.apply_runtime_settings(&this.app.settings);
         // librime deployment can rebuild a large data set. Start the backend
         // away from the UI thread so the first window remains responsive.
         this.start_rime_initialization(cx);
-
-        if this
-            .app
-            .session
-            .nvim
-            .as_ref()
-            .is_some_and(NvimProcess::is_remote)
-        {
-            this.start_remote_clipboard_bridge(cx);
-        }
-        if let Some(nvim) = this.app.session.nvim.as_ref() {
-            this.app.session.session_id = Some(nvim.session_id());
-            this.start_event_task(nvim.events(), nvim.session_id(), cx);
-        }
 
         this
     }
@@ -415,6 +386,97 @@ impl NvimGpui {
         self.start_event_task(events, session_id, cx);
         self.start_remote_clipboard_bridge(cx);
         self.editor.protocol.startup.redraw_pending = true;
+    }
+
+    pub(crate) fn start_initial_nvim(&mut self, size: (u32, u32), cx: &mut Context<Self>) {
+        if self.app.session.startup_task.is_some() {
+            return;
+        }
+        let Some(connection) = self.app.session.startup_connection.take() else {
+            return;
+        };
+
+        self.editor.protocol.startup.resize_target = Some(size);
+        self.app.session.rpc_status = "rpc: connecting".to_owned();
+        log::info!(
+            target: "nvim_gpui::startup",
+            "starting Neovim with initial grid: {}x{}",
+            size.0,
+            size.1
+        );
+
+        let task = cx.background_spawn(async move {
+            NvimProcess::connect_from_spec(&connection, size.0, size.1)
+        });
+        self.app.session.startup_task = Some(cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.app.session.startup_task = None;
+                match result {
+                    Ok(nvim) => this.install_initial_nvim(nvim, size, cx),
+                    Err(error) => {
+                        log::error!(
+                            target: "nvim_gpui::startup",
+                            "Neovim initialization failed: {error}"
+                        );
+                        eprintln!("[nvim-gpui] Neovim initialization failed: {error}");
+                        this.app.session.rpc_status = format!("rpc: {error}");
+                        this.editor.protocol.startup.maximize_pending = false;
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn install_initial_nvim(
+        &mut self,
+        nvim: NvimProcess,
+        size: (u32, u32),
+        cx: &mut Context<Self>,
+    ) {
+        let events = nvim.events();
+        let session_id = nvim.session_id();
+        let initial_theme = nvim.startup_theme().unwrap_or_default();
+        let protocol = nvim.protocol().cloned();
+
+        self.reset_nvim_session(initial_theme);
+        self.editor.protocol.presentation.grid_size = None;
+        self.editor.protocol.startup.resize_target = Some(size);
+        self.app.last_resize = Some(size);
+        self.app.session.nvim = Some(nvim);
+        self.app.session.session_id = Some(session_id);
+        self.app.session.api_level = protocol.as_ref().map(|protocol| protocol.version.api_level);
+        self.app.session.nvim_version = protocol.map(|protocol| protocol.version);
+        self.app.session.rpc_status = "rpc: connecting".to_owned();
+        log::info!(
+            target: "nvim_gpui::app",
+            "Neovim connection initialized with grid: {}x{}",
+            size.0,
+            size.1
+        );
+        self.start_event_task(events, session_id, cx);
+        self.start_remote_clipboard_bridge(cx);
+
+        let requests = self.app.session.take_pending_file_opens();
+        if !requests.is_empty() {
+            cx.spawn(async move |_weak, _cx| {
+                for request in requests {
+                    match request.recv().await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => log::error!(
+                            target: "nvim_gpui::startup",
+                            "Neovim could not open a queued platform file: {error}"
+                        ),
+                        Err(error) => log::warn!(
+                            target: "nvim_gpui::startup",
+                            "queued file-open request response was lost: {error}"
+                        ),
+                    }
+                }
+            })
+            .detach();
+        }
     }
 
     fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {

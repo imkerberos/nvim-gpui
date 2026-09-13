@@ -1,7 +1,8 @@
-use crate::nvim::{NvimProcess, NvimVersion, SessionId};
+use crate::nvim::{ConnectionSpec, NvimProcess, NvimVersion, SessionId};
 use crate::settings;
 use crate::update_check;
 use gpui::Task;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// State owned by the application coordinator rather than by an auxiliary
@@ -40,6 +41,9 @@ impl AppState {
 /// State for the current Neovim connection.
 pub(crate) struct Session {
     pub(crate) nvim: Option<NvimProcess>,
+    pub(crate) startup_connection: Option<ConnectionSpec>,
+    pub(crate) startup_task: Option<Task<()>>,
+    pub(crate) pending_file_opens: Vec<PathBuf>,
     pub(crate) session_id: Option<SessionId>,
     pub(crate) rpc_status: String,
     pub(crate) api_level: Option<u64>,
@@ -54,6 +58,9 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             nvim: None,
+            startup_connection: None,
+            startup_task: None,
+            pending_file_opens: Vec::new(),
             session_id: None,
             rpc_status: "rpc: starting".to_owned(),
             api_level: None,
@@ -67,6 +74,25 @@ impl Default for Session {
 }
 
 impl Session {
+    pub(crate) fn startup_pending(&self) -> bool {
+        self.startup_connection.is_some() || self.startup_task.is_some()
+    }
+
+    pub(crate) fn take_pending_file_opens(
+        &mut self,
+    ) -> Vec<async_channel::Receiver<Result<rmpv::Value, String>>> {
+        let paths = std::mem::take(&mut self.pending_file_opens);
+        if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
+            log::info!(
+                target: "nvim_gpui::startup",
+                "discarding {} queued local file-open path(s) for remote Neovim",
+                paths.len()
+            );
+            return Vec::new();
+        }
+        self.queue_open_files(paths)
+    }
+
     pub(crate) fn request_startup_redraw(&self) {
         let Some(nvim) = self.nvim.as_ref() else {
             return;
