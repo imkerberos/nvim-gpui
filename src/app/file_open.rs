@@ -1,4 +1,4 @@
-use super::NvimGpui;
+use super::{NvimGpui, Session};
 use crate::nvim::NvimProcess;
 use gpui::{Context, Window};
 use std::{
@@ -26,10 +26,11 @@ impl NvimGpui {
                     continue;
                 }
 
-                let requests = match weak.update(cx, |this, _cx| this.queue_open_files(paths)) {
-                    Ok(requests) => requests,
-                    Err(_) => break,
-                };
+                let requests =
+                    match weak.update(cx, |this, _cx| this.app.session.queue_open_files(paths)) {
+                        Ok(requests) => requests,
+                        Err(_) => break,
+                    };
                 for request in requests {
                     match request.recv().await {
                         Ok(Ok(_)) => {}
@@ -93,7 +94,7 @@ impl NvimGpui {
             return;
         }
 
-        let requests = self.queue_open_files(paths.paths().to_vec());
+        let requests = self.app.session.queue_open_files(paths.paths().to_vec());
         if requests.is_empty() {
             return;
         }
@@ -136,12 +137,14 @@ impl NvimGpui {
         }));
         cx.notify();
     }
+}
 
+impl Session {
     fn queue_open_files(
-        &mut self,
+        &self,
         paths: Vec<PathBuf>,
     ) -> Vec<async_channel::Receiver<Result<rmpv::Value, String>>> {
-        let Some(nvim) = self.app.session.nvim.as_ref() else {
+        let Some(nvim) = self.nvim.as_ref() else {
             log::warn!(
                 target: "nvim_gpui::startup",
                 "ignoring platform file-open event because Neovim is unavailable"

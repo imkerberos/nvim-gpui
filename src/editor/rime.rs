@@ -9,7 +9,7 @@ use std::{
 use crate::settings;
 use nvim_gpui::rime::{RimeConfig, RimeRuntimeResolver, RimeService};
 
-impl NvimGpui {
+impl EditorRuntime {
     pub(crate) fn test_rime_configuration_with_settings(
         app_settings: settings::Settings,
     ) -> Result<(), String> {
@@ -20,6 +20,98 @@ impl NvimGpui {
         })
     }
 
+    pub(crate) fn reset_rime_composition(&mut self) {
+        self.input.rime_context = None;
+        if let Some(service) = self.input.rime_service.as_ref() {
+            if let Err(error) = service.clear_composition() {
+                log::debug!(
+                    target: "nvim_gpui::rime",
+                    "could not clear Rime composition: {error}"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn disable_rime(&mut self, reason: &str) {
+        self.reset_rime_composition();
+        self.input.rime_service = None;
+        self.input.rime_menu_open = false;
+        self.input.rime_menu_message = None;
+        self.input.input_router.disable_rime();
+        self.protocol.disable_rime();
+        log::warn!(target: "nvim_gpui::rime", "Rime disabled: {reason}");
+    }
+
+    pub(crate) fn toggle_rime(&mut self) -> bool {
+        if self.input.rime_service.is_none() {
+            log::debug!(
+                target: "nvim_gpui::rime",
+                "Rime toggle ignored because the backend is unavailable"
+            );
+            return false;
+        }
+
+        self.input.rime_menu_open = false;
+        self.input.rime_menu_message = None;
+        let context = self.input.input_router.rime_toggle_context();
+        let enabled = !self.input.input_router.rime_enabled_for(context);
+        self.input
+            .input_router
+            .set_rime_enabled_for(context, enabled);
+        self.protocol.set_rime_enabled_for(context, enabled);
+        self.reset_rime_composition();
+        self.input.system_ime.clear();
+        log::info!(
+            target: "nvim_gpui::rime",
+            "Rime {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+        true
+    }
+
+    pub(crate) fn open_rime_menu(&mut self) -> bool {
+        if self.input.rime_service.is_none() {
+            return false;
+        }
+        self.input.rime_menu_open = true;
+        self.input.rime_menu_message = None;
+        true
+    }
+
+    pub(crate) fn close_rime_menu(&mut self) -> bool {
+        if !self.input.rime_menu_open && self.input.rime_menu_message.is_none() {
+            return false;
+        }
+        self.input.rime_menu_open = false;
+        self.input.rime_menu_message = None;
+        true
+    }
+
+    pub(crate) fn apply_ime_backend_setting(&mut self, backend: settings::ImeBackend) {
+        let rime_enabled =
+            backend == settings::ImeBackend::Rime && self.input.rime_service.is_some();
+        if rime_enabled {
+            // Selecting Rime enables the Insert-mode route. Other text
+            // contexts intentionally remain English until toggled there.
+            self.protocol
+                .set_rime_enabled_for(InputContext::Insert, true);
+            self.input
+                .input_router
+                .set_rime_enabled_for(InputContext::Insert, true);
+        } else {
+            self.protocol.disable_rime();
+            self.input.input_router.disable_rime();
+        }
+        if !rime_enabled {
+            self.reset_rime_composition();
+            self.input.rime_menu_open = false;
+            self.input.rime_menu_message = None;
+        }
+        self.input.system_ime.clear();
+    }
+}
+
+impl NvimGpui {
     pub(crate) fn start_rime_initialization(&mut self, cx: &mut Context<Self>) {
         if self.editor.input.rime_init_task.is_some() {
             return;
@@ -51,99 +143,6 @@ impl NvimGpui {
                 cx.notify();
             });
         }));
-    }
-
-    pub(crate) fn apply_ime_backend_setting(&mut self) {
-        let rime_enabled = self.app.settings.ime_backend == settings::ImeBackend::Rime
-            && self.editor.input.rime_service.is_some();
-        if rime_enabled {
-            // Selecting Rime enables the Insert-mode route. Other text
-            // contexts intentionally remain English until toggled there.
-            self.editor
-                .protocol
-                .set_rime_enabled_for(InputContext::Insert, true);
-            self.editor
-                .input
-                .input_router
-                .set_rime_enabled_for(InputContext::Insert, true);
-        } else {
-            self.editor.protocol.disable_rime();
-            self.editor.input.input_router.disable_rime();
-        }
-        if !rime_enabled {
-            self.reset_rime_composition();
-            self.editor.input.rime_menu_open = false;
-            self.editor.input.rime_menu_message = None;
-        }
-        self.editor.input.system_ime.clear();
-    }
-
-    pub(crate) fn reset_rime_composition(&mut self) {
-        self.editor.input.rime_context = None;
-        if let Some(service) = self.editor.input.rime_service.as_ref() {
-            if let Err(error) = service.clear_composition() {
-                log::debug!(
-                    target: "nvim_gpui::rime",
-                    "could not clear Rime composition: {error}"
-                );
-            }
-        }
-    }
-
-    pub(crate) fn disable_rime(&mut self, reason: &str) {
-        self.reset_rime_composition();
-        self.editor.input.rime_service = None;
-        self.editor.input.rime_menu_open = false;
-        self.editor.input.rime_menu_message = None;
-        self.editor.input.input_router.disable_rime();
-        self.editor.protocol.disable_rime();
-        log::warn!(target: "nvim_gpui::rime", "Rime disabled: {reason}");
-    }
-
-    pub(crate) fn toggle_rime(&mut self, cx: &mut Context<Self>) {
-        if self.editor.input.rime_service.is_none() {
-            log::debug!(
-                target: "nvim_gpui::rime",
-                "Rime toggle ignored because the backend is unavailable"
-            );
-            return;
-        }
-
-        self.editor.input.rime_menu_open = false;
-        self.editor.input.rime_menu_message = None;
-        let context = self.editor.input.input_router.rime_toggle_context();
-        let enabled = !self.editor.input.input_router.rime_enabled_for(context);
-        self.editor
-            .input
-            .input_router
-            .set_rime_enabled_for(context, enabled);
-        self.editor.protocol.set_rime_enabled_for(context, enabled);
-        self.reset_rime_composition();
-        self.editor.input.system_ime.clear();
-        log::info!(
-            target: "nvim_gpui::rime",
-            "Rime {}",
-            if enabled { "enabled" } else { "disabled" }
-        );
-        cx.notify();
-    }
-
-    pub(crate) fn open_rime_menu(&mut self, cx: &mut Context<Self>) {
-        if self.editor.input.rime_service.is_none() {
-            return;
-        }
-        self.editor.input.rime_menu_open = true;
-        self.editor.input.rime_menu_message = None;
-        cx.notify();
-    }
-
-    pub(crate) fn close_rime_menu(&mut self, cx: &mut Context<Self>) {
-        if !self.editor.input.rime_menu_open && self.editor.input.rime_menu_message.is_none() {
-            return;
-        }
-        self.editor.input.rime_menu_open = false;
-        self.editor.input.rime_menu_message = None;
-        cx.notify();
     }
 
     fn send_rime_commit(&mut self, text: String, cx: &mut Context<Self>) -> Result<(), String> {
@@ -211,7 +210,7 @@ impl NvimGpui {
                 self.send_rime_commit(text, cx)?;
             }
             if reset_on_unconsumed {
-                self.reset_rime_composition();
+                self.editor.reset_rime_composition();
             }
             cx.notify();
             return Ok(false);
@@ -244,7 +243,7 @@ impl NvimGpui {
                 keystroke.key_char,
                 keystroke.modifiers
             );
-            self.reset_rime_composition();
+            self.editor.reset_rime_composition();
             return Ok(false);
         };
         self.handle_rime_keycode(keycode, modifiers, true, cx)
@@ -291,7 +290,7 @@ impl NvimGpui {
                     "Rime did not consume modifier transition: key={key}, pressed={is_pressed}"
                 ),
                 Err(error) => {
-                    self.disable_rime(&error);
+                    self.editor.disable_rime(&error);
                     break;
                 }
             }
@@ -302,7 +301,7 @@ impl NvimGpui {
         if self.editor.input.rime_deploy_task.is_some() {
             return;
         }
-        self.reset_rime_composition();
+        self.editor.reset_rime_composition();
         let Some(service) = self.editor.input.rime_service.take() else {
             self.editor.input.rime_menu_message = Some("Rime backend is unavailable".to_owned());
             self.editor.input.rime_menu_open = true;

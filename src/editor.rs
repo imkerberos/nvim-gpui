@@ -36,7 +36,9 @@ mod rime;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use layout::{initial_window_size_for_grid, parse_guifont_spec, GuiFontSpec};
+#[cfg(test)]
+pub(crate) use layout::parse_guifont_spec;
+pub(crate) use layout::{initial_window_size_for_grid, GuiFontSpec};
 pub(crate) use protocol::{
     GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
     RedrawCommit,
@@ -213,6 +215,24 @@ impl Default for EditorRuntime {
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
             bundled_nerd_font_registered: false,
+        }
+    }
+}
+
+impl EditorRuntime {
+    pub(crate) fn apply_runtime_settings(&mut self, settings: &settings::Settings) {
+        self.nerd_font_family = self
+            .bundled_nerd_font_registered
+            .then(|| settings.nerd_font.family().to_owned());
+        self.shaping_cache.borrow_mut().clear();
+        self.glyph_coverage_cache.borrow_mut().clear();
+        for image in self
+            .protocol
+            .presentation
+            .image_store
+            .set_cache_size_mb(settings.image_cache_size_mb)
+        {
+            self.presentation.image_sources.remove(&image);
         }
     }
 }

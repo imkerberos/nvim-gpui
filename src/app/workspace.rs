@@ -5,11 +5,9 @@ use super::{
     THEMED_TITLEBAR_HEIGHT,
 };
 use crate::{
-    editor::{parse_guifont_spec, GuiFontSpec},
-    grid, gui,
+    gui,
     input::{key_to_nvim_input, should_route_key_to_neovim, InputTarget},
     settings,
-    widgets::{BACKGROUND, TEXT},
 };
 use gpui::{div, prelude::*, px, rgb, Context, IntoElement, KeyDownEvent, Render, Window};
 
@@ -17,8 +15,8 @@ impl Render for NvimGpui {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_window_title(&self.window.window_title);
 
-        let theme_background = self.theme_background();
-        let theme_foreground = self.theme_foreground();
+        let theme_background = self.editor.theme_background();
+        let theme_foreground = self.editor.theme_foreground();
         let entity = cx.entity();
         let mut workspace = div()
             .size_full()
@@ -106,149 +104,24 @@ impl Render for NvimGpui {
 }
 
 impl NvimGpui {
-    pub(crate) fn apply_runtime_settings(&mut self) {
-        self.editor.nerd_font_family = self
-            .editor
-            .bundled_nerd_font_registered
-            .then(|| self.app.settings.nerd_font.family().to_owned());
-        self.editor.shaping_cache.borrow_mut().clear();
-        self.editor.glyph_coverage_cache.borrow_mut().clear();
-        for image in self
-            .editor
-            .protocol
-            .presentation
-            .image_store
-            .set_cache_size_mb(self.app.settings.image_cache_size_mb)
-        {
-            self.editor.presentation.image_sources.remove(&image);
-        }
-    }
-
     pub(crate) fn update_settings(&mut self, next: settings::Settings) {
         let ime_backend_changed = self.app.settings.ime_backend != next.ime_backend;
         if self.app.settings.log_level != next.log_level {
-            if let Some(logger) = self.logger.as_ref() {
+            if let Some(logger) = self.app.logger.as_ref() {
                 crate::logging::set_level(logger, next.log_level);
             }
         }
         self.app.settings = next;
-        self.apply_runtime_settings();
+        self.editor.apply_runtime_settings(&self.app.settings);
         if ime_backend_changed {
-            self.apply_ime_backend_setting();
+            self.editor
+                .apply_ime_backend_setting(self.app.settings.ime_backend);
         }
         self.app.settings_save_error = self.app.settings.save().err();
     }
 
-    pub(crate) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
-        if let Some(font) = &self.editor.resolved_grid_font {
-            return font.clone();
-        }
-
-        let font = self
-            .editor
-            .protocol
-            .guifont
-            .as_deref()
-            .filter(|spec| !spec.trim().is_empty())
-            .map(parse_guifont_spec)
-            .unwrap_or_else(|| GuiFontSpec::system(window));
-        self.editor.resolved_grid_font = Some(font.clone());
-        font
-    }
-
-    pub(crate) fn current_grid_wide_font(&mut self, window: &Window) -> GuiFontSpec {
-        if let Some(font) = &self.editor.resolved_grid_wide_font {
-            return font.clone();
-        }
-
-        let font = if let Some(spec) = self
-            .editor
-            .protocol
-            .guifontwide
-            .as_deref()
-            .filter(|spec| !spec.trim().is_empty())
-        {
-            parse_guifont_spec(spec)
-        } else if self
-            .editor
-            .protocol
-            .guifont
-            .as_deref()
-            .is_some_and(|spec| !spec.trim().is_empty())
-        {
-            self.current_grid_font(window)
-        } else {
-            GuiFontSpec::system_wide(window)
-        };
-        self.editor.resolved_grid_wide_font = Some(font.clone());
-        font
-    }
-
-    pub(crate) fn current_cursor_mode(&self) -> grid::CursorModeInfo {
-        if !self.editor.protocol.cursor.cursor_style_enabled {
-            return grid::CursorModeInfo::default();
-        }
-        self.editor
-            .protocol
-            .cursor
-            .cursor_modes
-            .get(self.editor.protocol.cursor.cursor_mode_index)
-            .copied()
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn theme_background(&self) -> u32 {
-        self.editor
-            .protocol
-            .theme
-            .normal_background
-            .or(self.editor.protocol.theme.default_background)
-            .unwrap_or(BACKGROUND)
-    }
-
-    pub(crate) fn theme_foreground(&self) -> u32 {
-        self.editor
-            .protocol
-            .theme
-            .normal_foreground
-            .or(self.editor.protocol.theme.default_foreground)
-            .unwrap_or(TEXT)
-    }
-
-    pub(super) fn update_startup_grid_ready(&mut self) {
-        if self.editor.protocol.startup.nvim_grid_ready
-            || !self.editor.protocol.startup.flush_seen
-            || !self.editor.protocol.startup.grid_content_seen
-        {
-            return;
-        }
-
-        let Some(target) = self.editor.protocol.startup.resize_target else {
-            return;
-        };
-        let committed_size = (
-            self.editor.protocol.presentation.grid.width() as u32,
-            self.editor.protocol.presentation.grid.height() as u32,
-        );
-        if committed_size == target {
-            self.editor.protocol.startup.nvim_grid_ready = true;
-        }
-    }
-
-    pub(crate) fn complete_startup_maximize(&mut self) {
-        self.editor.protocol.startup.maximize_pending = false;
-        self.editor.protocol.startup.resize_target = None;
-        self.editor.protocol.startup.flush_seen = false;
-        self.editor.protocol.startup.grid_content_seen = false;
-        self.editor.protocol.startup.redraw_pending = true;
-        log::debug!(
-            target: "nvim_gpui::app",
-            "startup window maximized; waiting for the final Neovim grid"
-        );
-    }
-
     pub(crate) fn sync_nvim_size(&mut self, window: &mut Window) {
-        let gui_font = self.current_grid_font(window);
+        let gui_font = self.editor.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.editor.protocol.linespace);
         let viewport = window.viewport_size();
@@ -272,7 +145,7 @@ impl NvimGpui {
             if !window.is_maximized() {
                 return;
             }
-            self.complete_startup_maximize();
+            self.editor.complete_startup_maximize();
         }
 
         if !self.editor.protocol.startup.nvim_grid_ready {
@@ -280,7 +153,7 @@ impl NvimGpui {
                 self.editor.protocol.startup.redraw_pending = true;
             }
             self.editor.protocol.startup.resize_target = Some(size);
-            self.update_startup_grid_ready();
+            self.editor.update_startup_grid_ready();
             if self.editor.protocol.startup.nvim_grid_ready
                 && !self.editor.protocol.startup.redraw_pending
             {
@@ -316,26 +189,7 @@ impl NvimGpui {
 
         if resize_succeeded && self.editor.protocol.startup.redraw_pending {
             self.editor.protocol.startup.redraw_pending = false;
-            self.request_startup_redraw();
-        }
-    }
-
-    pub(super) fn request_startup_redraw(&self) {
-        let Some(nvim) = self.app.session.nvim.as_ref() else {
-            return;
-        };
-        match nvim.request(
-            "nvim_command",
-            rmpv::Value::Array(vec![rmpv::Value::from("redraw!")]),
-        ) {
-            Ok(_) => log::debug!(
-                target: "nvim_gpui::app",
-                "requested a complete redraw after Neovim startup/reconnect"
-            ),
-            Err(error) => log::warn!(
-                target: "nvim_gpui::app",
-                "could not request a complete redraw after Neovim startup/reconnect: {error}"
-            ),
+            self.app.session.request_startup_redraw();
         }
     }
 
@@ -418,7 +272,9 @@ impl NvimGpui {
                 .matches(&event.keystroke)
             && self.editor.input.rime_service.is_some()
         {
-            self.toggle_rime(cx);
+            if self.editor.toggle_rime() {
+                cx.notify();
+            }
             window.prevent_default();
             cx.stop_propagation();
             return;
@@ -451,7 +307,7 @@ impl NvimGpui {
                 }
                 Ok(false) => target = InputTarget::Neovim,
                 Err(error) => {
-                    self.disable_rime(&error);
+                    self.editor.disable_rime(&error);
                     target = InputTarget::Neovim;
                 }
             }

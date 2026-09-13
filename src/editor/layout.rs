@@ -1,3 +1,4 @@
+use super::EditorRuntime;
 use crate::app::{
     DEFAULT_GRID_CELL_WIDTH, DEFAULT_GRID_FONT_FAMILY, DEFAULT_GRID_FONT_SIZE,
     DEFAULT_GRID_LINE_HEIGHT, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
@@ -86,6 +87,50 @@ impl GuiFontSpec {
             .ch_advance(window.text_system().resolve_font(&font), font_size)
             .map(|advance| advance.max(px(1.0)))
             .unwrap_or_else(|_| px(self.size * 0.6))
+    }
+}
+
+impl EditorRuntime {
+    pub(crate) fn current_grid_font(&mut self, window: &Window) -> GuiFontSpec {
+        if let Some(font) = &self.resolved_grid_font {
+            return font.clone();
+        }
+
+        let font = self
+            .protocol
+            .guifont
+            .as_deref()
+            .filter(|spec| !spec.trim().is_empty())
+            .map(parse_guifont_spec)
+            .unwrap_or_else(|| GuiFontSpec::system(window));
+        self.resolved_grid_font = Some(font.clone());
+        font
+    }
+
+    pub(crate) fn current_grid_wide_font(&mut self, window: &Window) -> GuiFontSpec {
+        if let Some(font) = &self.resolved_grid_wide_font {
+            return font.clone();
+        }
+
+        let font = if let Some(spec) = self
+            .protocol
+            .guifontwide
+            .as_deref()
+            .filter(|spec| !spec.trim().is_empty())
+        {
+            parse_guifont_spec(spec)
+        } else if self
+            .protocol
+            .guifont
+            .as_deref()
+            .is_some_and(|spec| !spec.trim().is_empty())
+        {
+            self.current_grid_font(window)
+        } else {
+            GuiFontSpec::system_wide(window)
+        };
+        self.resolved_grid_wide_font = Some(font.clone());
+        font
     }
 }
 

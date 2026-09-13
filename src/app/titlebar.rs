@@ -405,10 +405,18 @@ fn rime_indicator(
         .cursor_pointer()
         .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(IME_ACTIVE)))
         .on_click(move |_, _, cx| {
-            toggle_source.update(cx, |view, cx| view.toggle_rime(cx));
+            toggle_source.update(cx, |view, cx| {
+                if view.editor.toggle_rime() {
+                    cx.notify();
+                }
+            });
         })
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
-            open_menu_source.update(cx, |view, cx| view.open_rime_menu(cx));
+            open_menu_source.update(cx, |view, cx| {
+                if view.editor.open_rime_menu() {
+                    cx.notify();
+                }
+            });
             window.prevent_default();
         })
         .child(label);
@@ -430,7 +438,11 @@ fn rime_indicator(
             .bg(rgb(SURFACE))
             .text_color(rgb(TEXT))
             .on_mouse_down_out(move |_, _, cx| {
-                close_source.update(cx, |view, cx| view.close_rime_menu(cx));
+                close_source.update(cx, |view, cx| {
+                    if view.editor.close_rime_menu() {
+                        cx.notify();
+                    }
+                });
             })
             .child(rime_menu_item(
                 "titlebar-rime-deploy",

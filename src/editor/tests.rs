@@ -239,7 +239,7 @@ fn mouse_position_converts_window_pixels_to_grid_cells() {
     let position = point(px(35.9), px(titlebar + 45.9));
 
     assert_eq!(
-        NvimGpui::nvim_mouse_position(position, px(10.0), px(15.0)),
+        super::input::nvim_mouse_position(position, px(10.0), px(15.0)),
         (3, 3)
     );
 }
@@ -350,7 +350,7 @@ fn startup_maximize_transition_restarts_the_final_grid_sync() {
         ..Default::default()
     };
 
-    app.complete_startup_maximize();
+    app.editor.complete_startup_maximize();
 
     assert!(!app.editor.protocol.startup.maximize_pending);
     assert!(app.editor.protocol.startup.resize_target.is_none());
@@ -468,7 +468,7 @@ fn nvim_mode_info_and_mode_change_select_the_cursor_style() {
     });
     app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.current_cursor_mode(), mode);
+    assert_eq!(app.editor.current_cursor_mode(), mode);
     assert_eq!(app.editor.protocol.state.mode, "I");
 }
 
@@ -526,7 +526,7 @@ fn ime_cursor_position_uses_the_registered_grid() {
 
     app.editor.input.ime_input_grid = Some(2);
     assert_eq!(
-        app.ime_cursor_position(),
+        app.editor.ime_cursor_position(),
         Some(CursorVisualPosition {
             row: 0,
             col: 1,
@@ -536,7 +536,7 @@ fn ime_cursor_position_uses_the_registered_grid() {
 
     app.editor.input.ime_input_grid = Some(1);
     assert_eq!(
-        app.ime_cursor_position(),
+        app.editor.ime_cursor_position(),
         Some(CursorVisualPosition {
             row: 1,
             col: 3,
@@ -671,13 +671,13 @@ fn theme_changes_become_visible_at_flush() {
         },
     });
 
-    assert_eq!(app.theme_background(), crate::widgets::BACKGROUND);
-    assert_eq!(app.theme_foreground(), crate::widgets::TEXT);
+    assert_eq!(app.editor.theme_background(), crate::widgets::BACKGROUND);
+    assert_eq!(app.editor.theme_foreground(), crate::widgets::TEXT);
 
     app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    assert_eq!(app.theme_background(), 0xe0e0e0);
-    assert_eq!(app.theme_foreground(), 0x202020);
+    assert_eq!(app.editor.theme_background(), 0xe0e0e0);
+    assert_eq!(app.editor.theme_foreground(), 0x202020);
 }
 
 #[test]
@@ -895,7 +895,7 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
             .text,
         "│"
     );
-    let layers = app.visible_grid_layers();
+    let layers = app.editor.visible_grid_layers();
     assert_eq!(
         layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
         vec![2, 3]
@@ -909,7 +909,8 @@ fn multigrid_layers_keep_window_positions_and_visibility() {
     app.apply_nvim_event_for_test(NvimEvent::WinHide { grid: 3 });
     app.apply_nvim_event_for_test(NvimEvent::Flush);
     assert_eq!(
-        app.visible_grid_layers()
+        app.editor
+            .visible_grid_layers()
             .iter()
             .map(|(grid, _, _)| *grid)
             .collect::<Vec<_>>(),
@@ -985,7 +986,7 @@ fn multigrid_keeps_zindex_and_viewport_state_in_protocol_order() {
     });
     app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    let layers = app.visible_grid_layers();
+    let layers = app.editor.visible_grid_layers();
     assert_eq!(
         layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
         vec![4, 3, 2]
@@ -1060,7 +1061,7 @@ fn legacy_float_position_is_resolved_from_anchor_grid() {
         compindex: -1,
     });
 
-    let placement = app.grid_placement(3);
+    let placement = app.editor.grid_placement(3);
     assert_eq!((placement.row, placement.col), (7, 10));
 
     app.apply_nvim_event_for_test(NvimEvent::GridResized {
@@ -1069,7 +1070,7 @@ fn legacy_float_position_is_resolved_from_anchor_grid() {
         height: 4,
     });
 
-    let placement = app.grid_placement(3);
+    let placement = app.editor.grid_placement(3);
     assert_eq!((placement.row, placement.col), (6, 8));
 }
 
@@ -1187,7 +1188,10 @@ fn viewport_margins_define_the_inner_render_area() {
         ..Default::default()
     };
 
-    assert_eq!(NvimGpui::viewport_rect(placement, 100, 40), (3, 1, 93, 37));
+    assert_eq!(
+        super::render::viewport_rect(placement, 100, 40),
+        (3, 1, 93, 37)
+    );
 }
 
 #[test]
@@ -1216,7 +1220,7 @@ fn message_grid_position_makes_native_cmdline_grid_visible() {
     });
     app.apply_nvim_event_for_test(NvimEvent::Flush);
 
-    let layers = app.visible_grid_layers();
+    let layers = app.editor.visible_grid_layers();
     assert_eq!(
         layers.iter().map(|(grid, _, _)| *grid).collect::<Vec<_>>(),
         vec![3]
@@ -1293,7 +1297,7 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
     );
     app.editor.protocol.cursor.cursor_grid = 2;
 
-    let layers = app.visible_image_layers();
+    let layers = app.editor.visible_image_layers();
     assert_eq!(layers.len(), 1);
     assert_eq!(
         (
@@ -1312,7 +1316,7 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
         .presentation
         .other_grids
         .insert(2, Rc::new(hidden_model));
-    assert!(app.visible_image_layers().is_empty());
+    assert!(app.editor.visible_image_layers().is_empty());
 }
 
 #[test]

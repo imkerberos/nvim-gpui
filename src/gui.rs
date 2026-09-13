@@ -45,7 +45,7 @@ pub(crate) fn dialog_overlay(id: &'static str, panel: impl IntoElement) -> gpui:
 }
 
 pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
-    let existing = source.read(cx).settings_window_handle();
+    let existing = source.read(cx).window.settings_window_handle();
     if let Some(handle) = existing {
         if handle
             .update(cx, |_, window, _| window.activate_window())
@@ -70,11 +70,13 @@ pub(crate) fn open_settings_window(source: Entity<NvimGpui>, cx: &mut App) {
             |_, cx| cx.new(|cx| SettingsWindow::new(source.clone(), cx)),
         )
         .expect("failed to open nvim-gpui settings window");
-    source.update(cx, |view, _| view.set_settings_window_handle(handle.into()));
+    source.update(cx, |view, _| {
+        view.window.set_settings_window_handle(handle.into())
+    });
 }
 
 pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
-    let existing = source.read(cx).about_window_handle();
+    let existing = source.read(cx).window.about_window_handle();
     if let Some(handle) = existing {
         if handle
             .update(cx, |_, window, _| window.activate_window())
@@ -98,5 +100,7 @@ pub(crate) fn open_about_window(source: Entity<NvimGpui>, cx: &mut App) {
             |_, cx| cx.new(|_| AboutWindow),
         )
         .expect("failed to open nvim-gpui about window");
-    source.update(cx, |view, _| view.set_about_window_handle(handle.into()));
+    source.update(cx, |view, _| {
+        view.window.set_about_window_handle(handle.into())
+    });
 }

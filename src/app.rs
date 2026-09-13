@@ -11,9 +11,8 @@ mod state;
 mod titlebar;
 mod workspace;
 
-use crate::{editor::EditorRuntime, settings as app_settings, update_check};
+use crate::editor::EditorRuntime;
 use gpui::{AnyWindowHandle, FocusHandle, Subscription, Task};
-use std::sync::Arc;
 
 pub(crate) use crate::editor::initial_window_size_for_grid;
 pub(crate) use startup::run;
@@ -126,53 +125,27 @@ impl Default for WindowRuntime {
     }
 }
 
+impl WindowRuntime {
+    pub(crate) fn settings_window_handle(&self) -> Option<AnyWindowHandle> {
+        self.settings_window
+    }
+
+    pub(crate) fn set_settings_window_handle(&mut self, handle: AnyWindowHandle) {
+        self.settings_window = Some(handle);
+    }
+
+    pub(crate) fn about_window_handle(&self) -> Option<AnyWindowHandle> {
+        self.about_window
+    }
+
+    pub(crate) fn set_about_window_handle(&mut self, handle: AnyWindowHandle) {
+        self.about_window = Some(handle);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NvimGpui {
     pub(crate) app: AppState,
     pub(crate) editor: EditorRuntime,
     pub(crate) window: WindowRuntime,
-    pub(crate) update_http_client: Option<Arc<dyn gpui::http_client::HttpClient>>,
-    pub(crate) update_status: update_check::Status,
-    pub(crate) update_check_task: Option<Task<()>>,
-    pub(crate) logger: Option<flexi_logger::LoggerHandle>,
-}
-
-impl NvimGpui {
-    pub(crate) fn settings_snapshot(
-        &self,
-    ) -> (app_settings::Settings, Option<String>, Option<String>) {
-        (
-            self.app.settings.clone(),
-            self.app.settings_save_error.clone(),
-            self.app.cli_install_error.clone(),
-        )
-    }
-
-    pub(crate) fn update_status(&self) -> update_check::Status {
-        self.update_status.clone()
-    }
-
-    pub(crate) fn settings_value(&self) -> app_settings::Settings {
-        self.app.settings.clone()
-    }
-
-    pub(crate) fn set_cli_install_error(&mut self, error: Option<String>) {
-        self.app.cli_install_error = error;
-    }
-
-    pub(crate) fn settings_window_handle(&self) -> Option<AnyWindowHandle> {
-        self.window.settings_window
-    }
-
-    pub(crate) fn set_settings_window_handle(&mut self, handle: AnyWindowHandle) {
-        self.window.settings_window = Some(handle);
-    }
-
-    pub(crate) fn about_window_handle(&self) -> Option<AnyWindowHandle> {
-        self.window.about_window
-    }
-
-    pub(crate) fn set_about_window_handle(&mut self, handle: AnyWindowHandle) {
-        self.window.about_window = Some(handle);
-    }
 }

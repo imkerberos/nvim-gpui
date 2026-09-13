@@ -1,6 +1,8 @@
 use crate::nvim::{NvimProcess, NvimVersion, SessionId};
 use crate::settings;
+use crate::update_check;
 use gpui::Task;
+use std::sync::Arc;
 
 /// State owned by the application coordinator rather than by an auxiliary
 /// window. Editor protocol and presentation state live in `EditorRuntime`.
@@ -11,6 +13,28 @@ pub(crate) struct AppState {
     pub(crate) last_resize: Option<(u32, u32)>,
     pub(crate) settings_save_error: Option<String>,
     pub(crate) cli_install_error: Option<String>,
+    pub(crate) update_status: update_check::Status,
+    pub(crate) update_http_client: Option<Arc<dyn gpui::http_client::HttpClient>>,
+    pub(crate) update_check_task: Option<Task<()>>,
+    pub(crate) logger: Option<flexi_logger::LoggerHandle>,
+}
+
+impl AppState {
+    pub(crate) fn settings_snapshot(&self) -> (settings::Settings, Option<String>, Option<String>) {
+        (
+            self.settings.clone(),
+            self.settings_save_error.clone(),
+            self.cli_install_error.clone(),
+        )
+    }
+
+    pub(crate) fn settings_value(&self) -> settings::Settings {
+        self.settings.clone()
+    }
+
+    pub(crate) fn set_cli_install_error(&mut self, error: Option<String>) {
+        self.cli_install_error = error;
+    }
 }
 
 /// State for the current Neovim connection.
@@ -38,6 +62,27 @@ impl Default for Session {
             reconnect_task: None,
             reconnect_attempt: 0,
             clipboard_task: None,
+        }
+    }
+}
+
+impl Session {
+    pub(crate) fn request_startup_redraw(&self) {
+        let Some(nvim) = self.nvim.as_ref() else {
+            return;
+        };
+        match nvim.request(
+            "nvim_command",
+            rmpv::Value::Array(vec![rmpv::Value::from("redraw!")]),
+        ) {
+            Ok(_) => log::debug!(
+                target: "nvim_gpui::app",
+                "requested a complete redraw after Neovim startup/reconnect"
+            ),
+            Err(error) => log::warn!(
+                target: "nvim_gpui::app",
+                "could not request a complete redraw after Neovim startup/reconnect: {error}"
+            ),
         }
     }
 }

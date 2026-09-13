@@ -25,7 +25,7 @@ impl NvimGpui {
     }
 
     fn process_nvim_event(&mut self, event: NvimEvent) -> Option<DisconnectReason> {
-        let previous_cursor = self.current_cursor_screen_position();
+        let previous_cursor = self.editor.current_cursor_screen_position();
         let outcome = self.editor.protocol.apply(event);
         self.apply_protocol_outcome(outcome, previous_cursor)
     }
@@ -74,7 +74,7 @@ impl NvimGpui {
             }
             ProtocolOutcome::Flushed(redraw) => {
                 self.apply_redraw_commit(redraw, previous_cursor);
-                self.invalidate_presentation_snapshot();
+                self.editor.invalidate_presentation_snapshot();
                 self.editor.input.ime_coordinates_dirty = true;
             }
             ProtocolOutcome::Error(error) => {
@@ -111,10 +111,10 @@ impl NvimGpui {
         for grid in redraw.destroyed_grids {
             self.editor.presentation.viewport_animations.remove(&grid);
         }
-        self.apply_viewport_commits(redraw.grid_commits);
+        self.editor.apply_viewport_commits(redraw.grid_commits);
         self.apply_kitty_events(redraw.kitty_events);
         if self.editor.input.input_router.target() != InputTarget::Rime {
-            self.reset_rime_composition();
+            self.editor.reset_rime_composition();
         }
         if self.editor.input.input_router.target() != InputTarget::SystemIme {
             self.editor.input.system_ime.clear();
@@ -136,8 +136,8 @@ impl NvimGpui {
         // The old animation code needs the committed cursor position. Keep
         // its retargeting behavior in the application bridge until the animation
         // itself is extracted from `grid_state`.
-        if previous_cursor != self.current_cursor_screen_position() {
-            self.update_cursor_animation_from(previous_cursor);
+        if previous_cursor != self.editor.current_cursor_screen_position() {
+            self.editor.update_cursor_animation_from(previous_cursor);
         }
     }
 
@@ -255,7 +255,7 @@ mod tests {
         app.apply_nvim_event_for_test(NvimEvent::UiSend {
             data: "\x1b[>q".to_owned(),
         });
-        app.discard_pending_redraw();
+        app.editor.discard_pending_redraw();
 
         assert!(app.editor.protocol.presentation.pending_ui_data.is_empty());
         assert!(app

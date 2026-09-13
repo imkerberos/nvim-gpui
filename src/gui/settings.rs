@@ -3,6 +3,7 @@ use crate::app::NvimGpui;
 use crate::widgets::setting_checkbox;
 use crate::{
     app::{themed_titlebar, themed_titlebar_enabled},
+    editor::EditorRuntime,
     helper, settings, update_check,
     widgets::{
         setting_combo_box, setting_combo_option, setting_option_button, setting_row,
@@ -154,7 +155,7 @@ impl SettingsWindow {
     ) {
         self.commit_rime_path_edit(cx);
         self.source.update(cx, |view, cx| {
-            let mut next = view.settings_value();
+            let mut next = view.app.settings_value();
             update(&mut next);
             view.update_settings(next);
             cx.notify();
@@ -236,7 +237,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         self.commit_rime_path_edit(cx);
-        let value = Self::rime_path_value(&self.source.read(cx).settings_value(), field);
+        let value = Self::rime_path_value(&self.source.read(cx).app.settings_value(), field);
         let mut input = SettingTextInputState::new(value);
         input.move_to(cursor.unwrap_or(input.value.len()), false);
         self.rime_path_editing = Some(RimePathEdit { field, input });
@@ -250,7 +251,7 @@ impl SettingsWindow {
             return;
         };
         self.source.update(cx, |view, cx| {
-            let mut next = view.settings_value();
+            let mut next = view.app.settings_value();
             Self::set_rime_path_value(&mut next, edit.field, edit.input.value);
             view.update_settings(next);
             cx.notify();
@@ -296,7 +297,7 @@ impl SettingsWindow {
         if matches!(self.rime_test_status, Some(RimeTestStatus::Testing)) {
             return;
         }
-        let settings = self.source.read(cx).settings_value();
+        let settings = self.source.read(cx).app.settings_value();
         if let Some(reason) = Self::rime_test_block_reason(&settings) {
             self.rime_test_status = Some(RimeTestStatus::Blocked(reason));
             cx.notify();
@@ -306,7 +307,7 @@ impl SettingsWindow {
         cx.notify();
 
         let task = cx.background_spawn(async move {
-            NvimGpui::test_rime_configuration_with_settings(settings)
+            EditorRuntime::test_rime_configuration_with_settings(settings)
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -533,7 +534,7 @@ impl SettingsWindow {
 
     fn set_paste_shortcut(&mut self, shortcut: settings::PasteShortcut, cx: &mut Context<Self>) {
         self.source.update(cx, |view, cx| {
-            let mut next = view.settings_value();
+            let mut next = view.app.settings_value();
             next.paste_shortcut = shortcut;
             view.update_settings(next);
             cx.notify();
@@ -548,7 +549,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         self.source.update(cx, |view, cx| {
-            let mut next = view.settings_value();
+            let mut next = view.app.settings_value();
             next.rime_toggle_shortcut = shortcut;
             view.update_settings(next);
             cx.notify();
@@ -561,7 +562,7 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_rime_path_blur_subscriptions(window, cx);
-        let (current, save_error, cli_install_error) = self.source.read(cx).settings_snapshot();
+        let (current, save_error, cli_install_error) = self.source.read(cx).app.settings_snapshot();
         let cli_available = helper::is_available_in_path();
         let mut paste_shortcut_icon_font = window.text_style().font();
         paste_shortcut_icon_font.fallbacks = Some(FontFallbacks::from_fonts(vec![current
@@ -903,7 +904,7 @@ impl Render for SettingsWindow {
             current.rime_library_auto_detect,
             move |cx| {
                 rime_source.update(cx, |view, cx| {
-                    let mut next = view.settings_value();
+                    let mut next = view.app.settings_value();
                     next.rime_library_dir.clear();
                     next.rime_library_auto_detect = true;
                     view.update_settings(next);
@@ -1144,7 +1145,7 @@ impl Render for SettingsWindow {
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::UpdateChecks, cx)),
         );
 
-        let update_status = self.source.read(cx).update_status();
+        let update_status = self.source.read(cx).app.update_status.clone();
         let update_status_label = match &update_status {
             update_check::Status::NeverChecked => "Not checked yet.".to_owned(),
             update_check::Status::Checking => "Checking for updates…".to_owned(),
@@ -1343,7 +1344,7 @@ impl Render for SettingsWindow {
                     cx.spawn(async move |cx| {
                         let result = task.await;
                         let _ = source.update(cx, |view, cx| {
-                            view.set_cli_install_error(result.err());
+                            view.app.set_cli_install_error(result.err());
                             cx.notify();
                         });
                     })

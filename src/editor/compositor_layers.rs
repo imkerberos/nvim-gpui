@@ -2,7 +2,7 @@ use super::*;
 use crate::editor::image_store;
 use std::collections::HashSet;
 
-impl NvimGpui {
+impl EditorRuntime {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn visible_grid_layers(&self) -> Vec<(u64, Rc<grid::GridModel>, GridPlacement)> {
@@ -17,10 +17,9 @@ impl NvimGpui {
     pub(crate) fn visible_image_layers(&self) -> Vec<ImageLayer> {
         let mut layers = Vec::new();
 
-        for placement in self.editor.protocol.presentation.image_store.placements() {
+        for placement in self.protocol.presentation.image_store.placements() {
             if placement.is_virtual_placeholder()
                 || self
-                    .editor
                     .protocol
                     .presentation
                     .image_store
@@ -45,7 +44,6 @@ impl NvimGpui {
         // visible grid in that common case. Build the lookup once as well so
         // placeholder cells do not rescan every image placement individually.
         if !self
-            .editor
             .protocol
             .presentation
             .image_store
@@ -62,14 +60,12 @@ impl NvimGpui {
         }
 
         let virtual_image_sizes = self
-            .editor
             .protocol
             .presentation
             .image_store
             .virtual_placements()
             .filter_map(|placement| {
-                self.editor
-                    .protocol
+                self.protocol
                     .presentation
                     .image_store
                     .asset(placement.key.image)
@@ -80,10 +76,9 @@ impl NvimGpui {
                     ))
             })
             .collect::<HashMap<_, _>>();
-        let mut models = vec![(1, self.editor.protocol.presentation.grid.as_ref())];
+        let mut models = vec![(1, self.protocol.presentation.grid.as_ref())];
         models.extend(
-            self.editor
-                .protocol
+            self.protocol
                 .presentation
                 .other_grids
                 .iter()
@@ -138,7 +133,7 @@ impl NvimGpui {
                     // signal instead of treating a partial placeholder as a
                     // complete preview.
                     let source_row = row.saturating_sub(1);
-                    if self.editor.protocol.cursor.cursor_grid == *grid
+                    if self.protocol.cursor.cursor_grid == *grid
                         && model
                             .cursor()
                             .is_some_and(|cursor| cursor.row == source_row)

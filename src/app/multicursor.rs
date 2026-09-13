@@ -43,7 +43,7 @@ impl NvimGpui {
                 }
                 this.editor.cursor.multicursor_namespace_task = None;
                 match result {
-                    Ok(namespaces) => this.install_multicursor_namespaces(namespaces),
+                    Ok(namespaces) => this.editor.install_multicursor_namespaces(namespaces),
                     Err(error) => log::warn!(
                         target: "nvim_gpui::multicursor",
                         "could not decode Neovim namespaces: {error}"
@@ -53,39 +53,34 @@ impl NvimGpui {
             });
         }));
     }
+}
 
+impl crate::editor::EditorRuntime {
     fn install_multicursor_namespaces(&mut self, namespaces: HashMap<String, u64>) {
-        self.editor.protocol.cursor.multicursor_namespace_ids = namespaces;
+        self.protocol.cursor.multicursor_namespace_ids = namespaces;
         let known_ids = self
-            .editor
             .protocol
             .cursor
             .multicursor_namespace_ids
             .values()
             .copied()
             .collect::<HashSet<_>>();
-        let unresolved =
-            std::mem::take(&mut self.editor.protocol.cursor.unresolved_multicursor_positions);
+        let unresolved = std::mem::take(&mut self.protocol.cursor.unresolved_multicursor_positions);
         for (key, position) in unresolved {
             if known_ids.contains(&key.ns_id) {
-                self.editor
-                    .protocol
+                self.protocol
                     .cursor
                     .multicursor_positions
                     .insert(key, position);
-                if let Some(pending) = self
-                    .editor
-                    .protocol
-                    .cursor
-                    .pending_multicursor_positions
-                    .as_mut()
-                {
+                if let Some(pending) = self.protocol.cursor.pending_multicursor_positions.as_mut() {
                     pending.insert(key, position);
                 }
             }
         }
     }
+}
 
+impl NvimGpui {
     pub(super) fn schedule_multicursor_reconcile(&mut self, cx: &mut Context<Self>) {
         if self.editor.cursor.multicursor_reconcile_task.is_some() {
             self.editor.cursor.multicursor_reconcile_dirty = true;
@@ -143,7 +138,7 @@ impl NvimGpui {
                     return;
                 }
                 this.editor.cursor.multicursor_reconcile_task = None;
-                this.reconcile_multicursor_marks(&live_marks);
+                this.editor.reconcile_multicursor_marks(&live_marks);
                 let rerun = std::mem::take(&mut this.editor.cursor.multicursor_reconcile_dirty);
                 if rerun {
                     this.schedule_multicursor_reconcile(cx);
@@ -152,34 +147,25 @@ impl NvimGpui {
             });
         }));
     }
+}
 
+impl crate::editor::EditorRuntime {
     fn reconcile_multicursor_marks(&mut self, live_marks: &HashMap<u64, HashSet<u64>>) {
         let known_ids = self
-            .editor
             .protocol
             .cursor
             .multicursor_namespace_ids
             .values()
             .copied()
             .collect::<HashSet<_>>();
-        self.editor
-            .protocol
-            .cursor
-            .multicursor_positions
-            .retain(|key, _| {
-                !known_ids.contains(&key.ns_id)
-                    || live_marks
-                        .get(&key.ns_id)
-                        .map(|mark_ids| mark_ids.contains(&key.mark_id))
-                        .unwrap_or(true)
-            });
-        if let Some(pending) = self
-            .editor
-            .protocol
-            .cursor
-            .pending_multicursor_positions
-            .as_mut()
-        {
+        self.protocol.cursor.multicursor_positions.retain(|key, _| {
+            !known_ids.contains(&key.ns_id)
+                || live_marks
+                    .get(&key.ns_id)
+                    .map(|mark_ids| mark_ids.contains(&key.mark_id))
+                    .unwrap_or(true)
+        });
+        if let Some(pending) = self.protocol.cursor.pending_multicursor_positions.as_mut() {
             pending.retain(|key, _| {
                 !known_ids.contains(&key.ns_id)
                     || live_marks

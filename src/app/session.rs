@@ -65,10 +65,10 @@ impl NvimGpui {
                     ..Session::default()
                 },
                 settings: app_settings,
+                update_http_client: Some(update_http_client),
+                logger,
                 ..AppState::default()
             },
-            update_http_client: Some(update_http_client),
-            logger,
             ..Self::default()
         };
 
@@ -79,7 +79,7 @@ impl NvimGpui {
         this.editor.protocol.startup.nvim_grid_ready = !nvim_available;
         this.editor.protocol.startup.redraw_pending = nvim_available;
         this.editor.protocol.startup.maximize_pending = nvim_available && startup_maximized;
-        this.apply_runtime_settings();
+        this.editor.apply_runtime_settings(&this.app.settings);
         // librime deployment can rebuild a large data set. Start the backend
         // away from the UI thread so the first window remains responsive.
         this.start_rime_initialization(cx);
@@ -110,17 +110,17 @@ impl NvimGpui {
     }
 
     pub(crate) fn start_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.update_check_task.is_some() {
+        if self.app.update_check_task.is_some() {
             return;
         }
 
         self.app.settings.last_update_check = update_check::unix_timestamp();
         self.app.settings_save_error = self.app.settings.save().err();
-        self.update_status = update_check::Status::Checking;
+        self.app.update_status = update_check::Status::Checking;
         cx.notify();
 
-        let Some(http) = self.update_http_client.clone() else {
-            self.update_status = update_check::Status::Failed(
+        let Some(http) = self.app.update_http_client.clone() else {
+            self.app.update_status = update_check::Status::Failed(
                 "update checks are unavailable in this application context".to_owned(),
             );
             cx.notify();
@@ -129,7 +129,7 @@ impl NvimGpui {
 
         log::debug!(target: "nvim_gpui::update_check", "checking for updates");
         let request = cx.background_spawn(async move { update_check::check_latest(http).await });
-        self.update_check_task = Some(cx.spawn(async move |weak, cx| {
+        self.app.update_check_task = Some(cx.spawn(async move |weak, cx| {
             let status = request
                 .await
                 .unwrap_or_else(update_check::Status::Failed);
@@ -137,8 +137,8 @@ impl NvimGpui {
                 if matches!(&status, update_check::Status::Available { .. }) {
                     log::info!(target: "nvim_gpui::update_check", "a newer nvim-gpui release is available");
                 }
-                view.update_status = status;
-                view.update_check_task = None;
+                view.app.update_status = status;
+                view.app.update_check_task = None;
                 cx.notify();
             });
         }));
@@ -333,7 +333,7 @@ impl NvimGpui {
     }
 
     pub(crate) fn handle_disconnect(&mut self, reason: DisconnectReason, cx: &mut Context<Self>) {
-        self.discard_pending_redraw();
+        self.editor.discard_pending_redraw();
         // Invalidate the disconnected connection before scheduling any
         // replacement. Late events and responses from its workers must not
         // be allowed to mutate state while reconnecting.
@@ -438,7 +438,7 @@ impl NvimGpui {
         self.editor.resolved_grid_wide_font = None;
         self.editor.shaping_cache.borrow_mut().clear();
         self.editor.glyph_coverage_cache.borrow_mut().clear();
-        self.invalidate_presentation_snapshot();
+        self.editor.invalidate_presentation_snapshot();
         self.editor.input.mouse_option = "nvi".to_owned();
         self.editor.input.mouse_enabled = true;
         self.editor.input.mouse_capture = None;
@@ -450,7 +450,7 @@ impl NvimGpui {
         self.editor.protocol.mouse_option = "nvi".to_owned();
         self.editor.protocol.mouse_enabled = true;
         self.editor.protocol.nvim_mode = "n".to_owned();
-        self.reset_rime_composition();
+        self.editor.reset_rime_composition();
         self.editor.input.rime_menu_open = false;
         self.editor.input.rime_menu_message = None;
         self.editor.input.system_ime.clear();

@@ -109,7 +109,7 @@ impl EntityInputHandler for NvimGpui {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<gpui::Pixels>> {
-        let cursor = self.ime_cursor_position()?;
+        let cursor = self.editor.ime_cursor_position()?;
         log::trace!(
             target: "nvim_gpui::ime",
             "IME bounds requested: grid={:?}, range={range_utf16:?}, row={}, col={}",
@@ -117,7 +117,7 @@ impl EntityInputHandler for NvimGpui {
             cursor.row,
             cursor.col
         );
-        let font_spec = self.current_grid_font(window);
+        let font_spec = self.editor.current_grid_font(window);
         let cell_width = font_spec.cell_width(window);
         let line_height = font_spec.line_height(window, self.editor.protocol.linespace);
         let origin = gpui::point(
@@ -133,7 +133,7 @@ impl EntityInputHandler for NvimGpui {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let font_spec = self.current_grid_font(window);
+        let font_spec = self.editor.current_grid_font(window);
         let cell_width = font_spec.cell_width(window);
         let column = (f32::from(point.x) / f32::from(cell_width))
             .max(0.0)
@@ -163,7 +163,7 @@ impl NvimGpui {
         invalidate_coordinates: bool,
         composition: Option<&grid::ImeComposition>,
     ) -> GridElement {
-        let owns_composition = self.composition_grid() == Some(grid);
+        let owns_composition = self.editor.composition_grid() == Some(grid);
         let element = if owns_composition {
             element.with_ime_composition(composition.cloned())
         } else {
@@ -194,44 +194,40 @@ impl NvimGpui {
             }
         })
     }
+}
 
+impl EditorRuntime {
     fn composition_grid(&self) -> Option<u64> {
-        match self.editor.input.input_router.target() {
-            InputTarget::SystemIme => self.editor.input.ime_input_grid,
+        match self.input.input_router.target() {
+            InputTarget::SystemIme => self.input.ime_input_grid,
             InputTarget::Rime => self
-                .editor
                 .input
                 .rime_context
                 .as_ref()
                 .filter(|context| !context.preedit.is_empty())
-                .map(|_| self.editor.protocol.cursor.cursor_grid),
+                .map(|_| self.protocol.cursor.cursor_grid),
             InputTarget::Neovim => None,
         }
     }
 
     fn system_ime_composition(&self) -> Option<grid::ImeComposition> {
-        let marked_range = self.editor.input.system_ime.marked_range_utf8()?;
+        let marked_range = self.input.system_ime.marked_range_utf8()?;
         let cursor = self.ime_cursor_position()?;
-        (!self.editor.input.system_ime.is_empty()).then(|| {
-            let text = self.editor.input.system_ime.text().to_owned();
+        (!self.input.system_ime.is_empty()).then(|| {
+            let text = self.input.system_ime.text().to_owned();
             grid::ImeComposition {
                 row: cursor.row,
                 col: cursor.col,
-                grid_width: self
-                    .editor
-                    .protocol
-                    .display_options
-                    .text_cell_width(&text)
-                    .max(1),
+                grid_width: self.protocol.display_options.text_cell_width(&text).max(1),
                 text: text.into(),
                 marked_range,
-                selected_range: self.editor.input.system_ime.selected_range_utf8(),
+                selected_range: self.input.system_ime.selected_range_utf8(),
             }
         })
     }
 
     fn rime_composition(&self) -> Option<grid::ImeComposition> {
-        let context = self.editor.input.rime_context.as_ref()?;
+        let context = self.input.rime_context.as_ref()?;
         if context.preedit.is_empty() {
             return None;
         }
@@ -242,12 +238,7 @@ impl NvimGpui {
         Some(grid::ImeComposition {
             row: cursor.row,
             col: cursor.col,
-            grid_width: self
-                .editor
-                .protocol
-                .display_options
-                .text_cell_width(&text)
-                .max(1),
+            grid_width: self.protocol.display_options.text_cell_width(&text).max(1),
             text: text.into(),
             marked_range: 0..text_len,
             selected_range: cursor_pos..cursor_pos,
@@ -255,7 +246,7 @@ impl NvimGpui {
     }
 
     pub(super) fn active_ime_composition(&self) -> Option<grid::ImeComposition> {
-        match self.editor.input.input_router.target() {
+        match self.input.input_router.target() {
             InputTarget::SystemIme => self.system_ime_composition(),
             InputTarget::Rime => self.rime_composition(),
             InputTarget::Neovim => None,
@@ -270,7 +261,7 @@ impl NvimGpui {
     ) -> grid::CursorVisualPosition {
         let selected_start = composition.selected_range.start.min(composition.text.len());
         let prefix = &composition.text[..selected_start];
-        let offset = grid::ime_text_cell_offset(prefix, self.editor.protocol.display_options);
+        let offset = grid::ime_text_cell_offset(prefix, self.protocol.display_options);
         let screen_row = screen_position
             .row
             .saturating_sub(local_position.row)
@@ -286,31 +277,32 @@ impl NvimGpui {
             width: 1,
         }
     }
+}
 
+impl EditorRuntime {
     pub(super) fn rime_candidate_popup(
         &self,
         gui_font: &GuiFontSpec,
         gui_wide_font: &GuiFontSpec,
         cell_width: Pixels,
         line_height: Pixels,
+        layout: settings::RimeCandidateLayout,
     ) -> Option<gpui::Div> {
-        if self.editor.input.input_router.target() != InputTarget::Rime {
+        if self.input.input_router.target() != InputTarget::Rime {
             return None;
         }
-        let context = self.editor.input.rime_context.as_ref()?;
+        let context = self.input.rime_context.as_ref()?;
         if context.candidates.is_empty() {
             return None;
         }
         let position = self.current_cursor_screen_position()?;
         let popup_background = self
-            .editor
             .protocol
             .theme
             .normal_float_background
             .unwrap_or(SURFACE);
         let popup_foreground = self.theme_foreground();
-        let horizontal =
-            self.app.settings.rime_candidate_layout == settings::RimeCandidateLayout::Horizontal;
+        let horizontal = layout == settings::RimeCandidateLayout::Horizontal;
         let page = context.page_no.saturating_add(1);
         let page_label = page.to_string();
         let cell_width_px = f32::from(cell_width);
@@ -320,23 +312,17 @@ impl NvimGpui {
             .enumerate()
             .map(|(index, candidate)| {
                 let marker_width = self
-                    .editor
                     .protocol
                     .display_options
                     .text_cell_width(candidate_marker(index));
                 let text_width = self
-                    .editor
                     .protocol
                     .display_options
                     .text_cell_width(&candidate.text);
                 let mut width = 8.0 + (marker_width + 1 + text_width) as f32 * cell_width_px;
                 if let Some(comment) = candidate.comment.as_deref() {
                     width += 8.0
-                        + self
-                            .editor
-                            .protocol
-                            .display_options
-                            .text_cell_width(comment) as f32
+                        + self.protocol.display_options.text_cell_width(comment) as f32
                             * cell_width_px;
                 }
                 width
@@ -361,13 +347,11 @@ impl NvimGpui {
         };
         let popup_height = px((row_count as f32 + 1.0) * f32::from(line_height));
         let viewport_width = self
-            .editor
             .protocol
             .presentation
             .grid_size
             .map(|(width, _)| width as f32 * f32::from(cell_width));
         let viewport_height = self
-            .editor
             .protocol
             .presentation
             .grid_size
@@ -384,7 +368,7 @@ impl NvimGpui {
             .unwrap_or(below_top);
 
         let mut candidate_font = font(gui_font.family.clone());
-        if let Some(nerd_font_family) = self.editor.nerd_font_family.as_ref() {
+        if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
             candidate_font.fallbacks =
                 Some(FontFallbacks::from_fonts(vec![nerd_font_family.clone()]));
         }
@@ -426,7 +410,7 @@ impl NvimGpui {
                 .child(format!("{} ", candidate_marker(index)));
             row = row.child(candidate_text(
                 &candidate.text,
-                self.editor.protocol.display_options,
+                self.protocol.display_options,
                 &candidate_font,
                 &candidate_wide_font,
                 px(gui_font.size),
@@ -439,7 +423,7 @@ impl NvimGpui {
                         .text_color(rgb(if selected { BACKGROUND } else { MUTED_TEXT }))
                         .child(candidate_text(
                             comment,
-                            self.editor.protocol.display_options,
+                            self.protocol.display_options,
                             &candidate_font,
                             &candidate_wide_font,
                             px(gui_font.size),
@@ -460,13 +444,13 @@ impl NvimGpui {
         } else {
             ACCENT
         };
-        let previous_icon = if self.editor.nerd_font_family.is_some() {
+        let previous_icon = if self.nerd_font_family.is_some() {
             // Nerd Font: angle-up (U+F0D9).
             "\u{f0d9}"
         } else {
             "‹"
         };
-        let next_icon = if self.editor.nerd_font_family.is_some() {
+        let next_icon = if self.nerd_font_family.is_some() {
             // Nerd Font: angle-down (U+F0DA).
             "\u{f0da}"
         } else {
@@ -535,19 +519,19 @@ fn candidate_text(
     )
 }
 
-impl NvimGpui {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(super) fn nvim_mouse_position(
-        position: gpui::Point<Pixels>,
-        cell_width: Pixels,
-        line_height: Pixels,
-    ) -> (u64, u64) {
-        let (row, col) =
-            compositor::CompositorFrame::point_in_grid_space(position, cell_width, line_height);
-        (row.max(0.0).floor() as u64, col.max(0.0).floor() as u64)
-    }
+#[cfg(test)]
+#[allow(dead_code)]
+pub(super) fn nvim_mouse_position(
+    position: gpui::Point<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+) -> (u64, u64) {
+    let (row, col) =
+        compositor::CompositorFrame::point_in_grid_space(position, cell_width, line_height);
+    (row.max(0.0).floor() as u64, col.max(0.0).floor() as u64)
+}
 
+impl EditorRuntime {
     fn mouse_target_at(
         &mut self,
         position: gpui::Point<Pixels>,
@@ -555,7 +539,7 @@ impl NvimGpui {
     ) -> Option<compositor::MouseTarget> {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.editor.protocol.linespace);
+        let line_height = gui_font.line_height(window, self.protocol.linespace);
         let presentation = self.presentation_snapshot();
         let target = presentation
             .compositor
@@ -571,7 +555,7 @@ impl NvimGpui {
     ) -> Option<compositor::MouseTarget> {
         let gui_font = self.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
-        let line_height = gui_font.line_height(window, self.editor.protocol.linespace);
+        let line_height = gui_font.line_height(window, self.protocol.linespace);
         let presentation = self.presentation_snapshot();
         let target =
             presentation
@@ -608,7 +592,9 @@ impl NvimGpui {
         }
         Some(target)
     }
+}
 
+impl NvimGpui {
     fn send_mouse(
         &mut self,
         button: &str,
@@ -658,7 +644,7 @@ impl NvimGpui {
         if let Some(focus_handle) = self.window.focus_handle.as_ref() {
             window.focus(focus_handle);
         }
-        let target = self.mouse_target_at(event.position, window);
+        let target = self.editor.mouse_target_at(event.position, window);
         self.editor.input.mouse_capture = target.map(|target| target.grid_id);
         self.send_mouse(
             input::nvim_mouse_button(event.button),
@@ -685,8 +671,11 @@ impl NvimGpui {
             .input
             .mouse_capture
             .take()
-            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
-            .or_else(|| self.mouse_target_at(event.position, window));
+            .and_then(|grid_id| {
+                self.editor
+                    .mouse_target_for_grid(grid_id, event.position, window)
+            })
+            .or_else(|| self.editor.mouse_target_at(event.position, window));
         self.send_mouse(
             input::nvim_mouse_button(event.button),
             "release",
@@ -715,8 +704,11 @@ impl NvimGpui {
             .editor
             .input
             .mouse_capture
-            .and_then(|grid_id| self.mouse_target_for_grid(grid_id, event.position, window))
-            .or_else(|| self.mouse_target_at(event.position, window));
+            .and_then(|grid_id| {
+                self.editor
+                    .mouse_target_for_grid(grid_id, event.position, window)
+            })
+            .or_else(|| self.editor.mouse_target_at(event.position, window));
         self.send_mouse(button, action, event.modifiers, target);
         window.prevent_default();
     }
@@ -731,7 +723,7 @@ impl NvimGpui {
             return;
         }
 
-        let gui_font = self.current_grid_font(window);
+        let gui_font = self.editor.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.editor.protocol.linespace);
         let mut delta = input::scroll_delta_to_lines(event.delta, line_height);
@@ -751,7 +743,7 @@ impl NvimGpui {
         self.editor.input.scroll_remainder.x -= x_steps as f32;
         self.editor.input.scroll_remainder.y -= y_steps as f32;
         let modifier = input::nvim_mouse_modifiers(event.modifiers);
-        let presentation = self.presentation_snapshot();
+        let presentation = self.editor.presentation_snapshot();
         let target = presentation
             .compositor
             .hit_test(event.position, cell_width, line_height);

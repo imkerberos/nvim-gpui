@@ -179,30 +179,30 @@ impl CompositorFrame {
     }
 }
 
-impl NvimGpui {
+impl EditorRuntime {
     pub(crate) fn presentation_snapshot(&mut self) -> Rc<PresentationSnapshot> {
-        if let Some(snapshot) = &self.editor.presentation.presentation_snapshot {
+        if let Some(snapshot) = &self.presentation.presentation_snapshot {
             return Rc::clone(snapshot);
         }
 
         let snapshot = Rc::new(PresentationSnapshot {
             compositor: self.compositor_frame(),
             image_layers: self.visible_image_layers(),
-            image_sources: self.editor.presentation.image_sources.clone(),
+            image_sources: self.presentation.image_sources.clone(),
         });
-        self.editor.presentation.presentation_snapshot = Some(Rc::clone(&snapshot));
+        self.presentation.presentation_snapshot = Some(Rc::clone(&snapshot));
         snapshot
     }
 
     pub(crate) fn invalidate_presentation_snapshot(&mut self) {
-        self.editor.presentation.presentation_snapshot = None;
+        self.presentation.presentation_snapshot = None;
     }
 
     /// Build the committed multigrid state in the order in which the current
     /// renderer paints it. This is deliberately pure data construction; the
     /// GPUI element tree will consume it in a later compositor step.
     pub(crate) fn compositor_frame(&self) -> CompositorFrame {
-        let main_model = Rc::clone(&self.editor.protocol.presentation.grid);
+        let main_model = Rc::clone(&self.protocol.presentation.grid);
         let main_width = main_model.width() as u64;
         let main_height = main_model.height() as u64;
         let main_placement = GridPlacement {
@@ -222,9 +222,8 @@ impl NvimGpui {
             main_placement,
         )];
 
-        for (grid_id, model) in &self.editor.protocol.presentation.other_grids {
+        for (grid_id, model) in &self.protocol.presentation.other_grids {
             let Some(placement) = self
-                .editor
                 .protocol
                 .presentation
                 .grid_placements
@@ -325,7 +324,7 @@ mod tests {
             },
         );
 
-        let frame = app.compositor_frame();
+        let frame = app.editor.compositor_frame();
 
         assert_eq!(
             frame
@@ -374,7 +373,7 @@ mod tests {
             },
         );
 
-        let frame = app.compositor_frame();
+        let frame = app.editor.compositor_frame();
 
         assert_eq!(
             frame
@@ -472,7 +471,7 @@ mod tests {
             },
         );
 
-        let frame = app.compositor_frame();
+        let frame = app.editor.compositor_frame();
         let titlebar = if cfg!(any(
             target_os = "linux",
             target_os = "macos",
@@ -499,10 +498,10 @@ mod tests {
     #[test]
     fn presentation_snapshot_only_publishes_after_flush() {
         let mut app = NvimGpui::default();
-        let initial = app.presentation_snapshot();
+        let initial = app.editor.presentation_snapshot();
         let initial_width = initial.compositor.layers[0].content_rect.width;
 
-        assert!(Rc::ptr_eq(&initial, &app.presentation_snapshot()));
+        assert!(Rc::ptr_eq(&initial, &app.editor.presentation_snapshot()));
 
         app.apply_nvim_event_for_test(NvimEvent::GridResized {
             grid: 1,
@@ -511,7 +510,7 @@ mod tests {
         });
 
         assert_eq!(
-            app.presentation_snapshot().compositor.layers[0]
+            app.editor.presentation_snapshot().compositor.layers[0]
                 .content_rect
                 .width,
             initial_width
@@ -520,7 +519,7 @@ mod tests {
         app.apply_nvim_event_for_test(NvimEvent::Flush);
 
         assert_eq!(
-            app.presentation_snapshot().compositor.layers[0]
+            app.editor.presentation_snapshot().compositor.layers[0]
                 .content_rect
                 .width,
             12
@@ -550,7 +549,7 @@ mod tests {
             },
         );
 
-        let frame = app.compositor_frame();
+        let frame = app.editor.compositor_frame();
         let titlebar = if cfg!(any(
             target_os = "linux",
             target_os = "macos",
@@ -590,7 +589,7 @@ mod tests {
             },
         );
 
-        let frame = app.compositor_frame();
+        let frame = app.editor.compositor_frame();
         let titlebar = if cfg!(any(
             target_os = "linux",
             target_os = "macos",
