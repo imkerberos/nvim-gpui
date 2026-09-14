@@ -75,6 +75,8 @@ pub(crate) struct ImageLayer {
     pub(crate) column: usize,
     pub(crate) columns: u32,
     pub(crate) rows: u32,
+    pub(crate) pixel_width: Option<u32>,
+    pub(crate) pixel_height: Option<u32>,
     pub(crate) z_index: i32,
 }
 

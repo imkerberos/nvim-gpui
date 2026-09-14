@@ -82,6 +82,11 @@ pub struct ImagePlacement {
     pub anchor: GridAnchor,
     pub columns: u32,
     pub rows: u32,
+    /// Native pixel dimensions used when a placement omits the `c`/`r`
+    /// destination rectangle. Kitty then displays the image at its natural
+    /// pixel size; this is the mode used by image.nvim's normal backend.
+    pub pixel_width: Option<u32>,
+    pub pixel_height: Option<u32>,
     pub z_index: i32,
     /// `U=1` placements are located by placeholder cells, not by the Kitty
     /// cursor. Their anchor is `GridId(0)` until the grid is scanned.
@@ -292,6 +297,9 @@ struct Transfer {
     width: Option<u32>,
     height: Option<u32>,
     encoded_payload: Vec<u8>,
+    display: bool,
+    placement_controls: Option<HashMap<String, String>>,
+    placement_grid: GridId,
 }
 
 #[derive(Debug, Default)]
@@ -437,11 +445,16 @@ impl KittyGraphicsParser {
 
         let action = controls.get("a").map(String::as_str);
         match action {
-            // Kitty treats a transfer frame with no `a` control as the
-            // default transmit action. Snacks uses this compact form for
-            // local file transfers (`t=f`).
-            Some("T") | None if controls.contains_key("t") => {
-                self.handle_transfer_start(&controls, payload, store, events)
+            // Kitty's default action is transmit (`a=t`). image.nvim emits
+            // this explicitly, while some clients omit `a` and rely on the
+            // protocol default for file transfers (`t=f`).
+            Some("t") => self.handle_transfer_start(&controls, payload, grid, false, store, events),
+            // `a=T` transmits and displays in one command. Keep the display
+            // request until the final chunk has been received, as required
+            // by the protocol.
+            Some("T") => self.handle_transfer_start(&controls, payload, grid, true, store, events),
+            None if controls.contains_key("t") => {
+                self.handle_transfer_start(&controls, payload, grid, false, store, events)
             }
             None if self.transfer.is_some() => {
                 self.handle_transfer_continuation(&controls, payload, store, events)
@@ -456,6 +469,8 @@ impl KittyGraphicsParser {
         &mut self,
         controls: &HashMap<String, String>,
         payload: &[u8],
+        grid: GridId,
+        display: bool,
         store: &mut ImageStore,
         events: &mut Vec<KittyEvent>,
     ) {
@@ -469,12 +484,23 @@ impl KittyGraphicsParser {
             width: parse_control_u32(controls, "s"),
             height: parse_control_u32(controls, "v"),
             encoded_payload: payload.to_vec(),
+            display,
+            placement_controls: display.then(|| controls.clone()),
+            placement_grid: grid,
         };
         let more = parse_control_u32(controls, "m") == Some(1);
         if more {
             self.transfer = Some(transfer);
         } else {
+            let display = transfer.display;
+            let placement_controls = transfer.placement_controls.clone();
+            let placement_grid = transfer.placement_grid;
             self.finish_transfer(transfer, store, events);
+            if display {
+                if let Some(placement_controls) = placement_controls.as_ref() {
+                    self.handle_place(placement_controls, placement_grid, store);
+                }
+            }
         }
     }
 
@@ -495,7 +521,15 @@ impl KittyGraphicsParser {
         if parse_control_u32(controls, "m") == Some(1) {
             self.transfer = Some(transfer);
         } else {
+            let display = transfer.display;
+            let placement_controls = transfer.placement_controls.clone();
+            let placement_grid = transfer.placement_grid;
             self.finish_transfer(transfer, store, events);
+            if display {
+                if let Some(placement_controls) = placement_controls.as_ref() {
+                    self.handle_place(placement_controls, placement_grid, store);
+                }
+            }
         }
     }
 
@@ -555,6 +589,13 @@ impl KittyGraphicsParser {
         }
         let placement = parse_control_u32(controls, "p").unwrap_or(0);
         let virtual_placeholder = parse_control_u32(controls, "U") == Some(1);
+        let has_cell_dimensions = controls.contains_key("c") || controls.contains_key("r");
+        let pixel_width = (!has_cell_dimensions)
+            .then(|| parse_control_u32(controls, "w"))
+            .flatten();
+        let pixel_height = (!has_cell_dimensions)
+            .then(|| parse_control_u32(controls, "h"))
+            .flatten();
         store.place(ImagePlacement {
             key: PlacementKey { image, placement },
             anchor: if virtual_placeholder {
@@ -572,6 +613,8 @@ impl KittyGraphicsParser {
             },
             columns: parse_control_u32(controls, "c").unwrap_or(1).max(1),
             rows: parse_control_u32(controls, "r").unwrap_or(1).max(1),
+            pixel_width,
+            pixel_height,
             z_index: controls
                 .get("z")
                 .and_then(|value| value.parse::<i32>().ok())
@@ -797,6 +840,8 @@ mod tests {
             },
             columns: 4,
             rows: 5,
+            pixel_width: None,
+            pixel_height: None,
             z_index: -1,
             virtual_placeholder: false,
         });
@@ -809,6 +854,8 @@ mod tests {
             },
             columns: 2,
             rows: 2,
+            pixel_width: None,
+            pixel_height: None,
             z_index: 0,
             virtual_placeholder: false,
         });
@@ -829,7 +876,7 @@ mod tests {
         let mut store = ImageStore::new();
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
         let events = store.consume_ui_data(
-            &format!("\x1b_Ga=T,f=100,t=d,i=7,m=0;{png}\x1b\\\x1b_Ga=p,U=1,i=7,p=9,c=3,r=2\x1b\\"),
+            &format!("\x1b_Ga=t,f=100,t=d,i=7,m=0;{png}\x1b\\\x1b_Ga=p,U=1,i=7,p=9,c=3,r=2\x1b\\"),
             GridId(1),
         );
 
@@ -850,6 +897,59 @@ mod tests {
                 placement: 9
             })
             .is_some());
+    }
+
+    #[test]
+    fn parses_transmit_and_display_action() {
+        let mut store = ImageStore::new();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
+        let events = store.consume_ui_data(
+            &format!("\x1b_Ga=T,f=100,t=d,i=8,p=11,c=4,r=3,m=0;{png}\x1b\\"),
+            GridId(1),
+        );
+
+        assert!(events.contains(&KittyEvent::AssetUpdated {
+            image: ImageId(8),
+            format: super::ImageFormatKind::Png,
+        }));
+        assert_eq!(
+            store
+                .placement(PlacementKey {
+                    image: ImageId(8),
+                    placement: 11,
+                })
+                .map(|placement| (placement.columns, placement.rows)),
+            Some((4, 3))
+        );
+    }
+
+    #[test]
+    fn parses_normal_pixel_placement() {
+        let mut store = ImageStore::new();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGUExURf8AAP///0EdNBEAAAABYktHRAH/Ai3eAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==";
+        store.consume_ui_data(
+            &format!(
+                "\x1b_Ga=t,f=100,t=d,i=13,m=0;{png}\x1b\\\x1b_Ga=p,i=13,p=17,x=0,y=0,w=198,h=108\x1b\\"
+            ),
+            GridId(1),
+        );
+
+        assert_eq!(
+            store
+                .placement(PlacementKey {
+                    image: ImageId(13),
+                    placement: 17,
+                })
+                .map(|placement| {
+                    (
+                        placement.columns,
+                        placement.rows,
+                        placement.pixel_width,
+                        placement.pixel_height,
+                    )
+                }),
+            Some((1, 1, Some(198), Some(108)))
+        );
     }
 
     #[test]

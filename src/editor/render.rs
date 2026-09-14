@@ -135,10 +135,18 @@ fn image_surface(
                 .top(px(
                     (image_layer.row as f32 - top as f32) * f32::from(options.line_height)
                 ))
-                .w(px(
-                    image_layer.columns as f32 * f32::from(options.cell_width)
-                ))
-                .h(px(image_layer.rows as f32 * f32::from(options.line_height)))
+                .w(px(image_layer
+                    .pixel_width
+                    .map(|width| width as f32)
+                    .unwrap_or(
+                        image_layer.columns as f32 * f32::from(options.cell_width),
+                    )))
+                .h(px(image_layer
+                    .pixel_height
+                    .map(|height| height as f32)
+                    .unwrap_or(
+                        image_layer.rows as f32 * f32::from(options.line_height),
+                    )))
                 .object_fit(gpui::ObjectFit::Fill),
         );
     }

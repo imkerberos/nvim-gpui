@@ -1266,6 +1266,8 @@ fn image_layer_recovers_from_a_covered_first_placeholder_cell() {
             },
             columns: 3,
             rows: 2,
+            pixel_width: None,
+            pixel_height: None,
             z_index: 0,
             virtual_placeholder: true,
         });

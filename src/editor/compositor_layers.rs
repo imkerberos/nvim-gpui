@@ -36,6 +36,8 @@ impl EditorRuntime {
                 column: placement.anchor.column as usize,
                 columns: placement.columns,
                 rows: placement.rows,
+                pixel_width: placement.pixel_width,
+                pixel_height: placement.pixel_height,
                 z_index: placement.z_index,
             });
         }
@@ -150,6 +152,8 @@ impl EditorRuntime {
                         column,
                         columns,
                         rows,
+                        pixel_width: None,
+                        pixel_height: None,
                         z_index,
                     });
                 }
