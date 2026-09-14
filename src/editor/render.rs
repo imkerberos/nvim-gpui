@@ -511,6 +511,7 @@ impl NvimGpui {
             }
 
             if let Some(rime_popup) = self.editor.rime_candidate_popup(
+                window,
                 &gui_font,
                 &gui_wide_font,
                 cell_width,

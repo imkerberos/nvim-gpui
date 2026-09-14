@@ -11,7 +11,7 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, Image, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, Window,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, TextRun, Window,
 };
 use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{

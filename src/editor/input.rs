@@ -282,6 +282,7 @@ impl EditorRuntime {
 impl EditorRuntime {
     pub(super) fn rime_candidate_popup(
         &self,
+        window: &Window,
         gui_font: &GuiFontSpec,
         gui_wide_font: &GuiFontSpec,
         cell_width: Pixels,
@@ -306,24 +307,58 @@ impl EditorRuntime {
         let page = context.page_no.saturating_add(1);
         let page_label = page.to_string();
         let cell_width_px = f32::from(cell_width);
+
+        let candidate_font_for = |font_spec: &GuiFontSpec| {
+            let mut candidate_font = font(font_spec.family.clone());
+            let mut fallbacks = Vec::new();
+            if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
+                fallbacks.push(nerd_font_family.clone());
+            }
+            if let Some(fallback_family) = font_spec.fallback_family.as_ref() {
+                if !fallbacks.iter().any(|family| family == fallback_family) {
+                    fallbacks.push(fallback_family.clone());
+                }
+            }
+            if !fallbacks.is_empty() {
+                candidate_font.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
+            }
+            candidate_font
+        };
+        let candidate_font = candidate_font_for(gui_font);
+        let candidate_wide_font = candidate_font_for(gui_wide_font);
+
         let candidate_widths = context
             .candidates
             .iter()
             .enumerate()
             .map(|(index, candidate)| {
-                let marker_width = self
-                    .protocol
-                    .display_options
-                    .text_cell_width(candidate_marker(index));
-                let text_width = self
-                    .protocol
-                    .display_options
-                    .text_cell_width(&candidate.text);
-                let mut width = 8.0 + (marker_width + 1 + text_width) as f32 * cell_width_px;
+                let marker_width = measured_text_width(
+                    window,
+                    &format!("{} ", candidate_marker(index)),
+                    &candidate_font,
+                    px(gui_font.size),
+                );
+                let text_width = measured_candidate_text_width(
+                    window,
+                    &candidate.text,
+                    self.protocol.display_options,
+                    &candidate_font,
+                    &candidate_wide_font,
+                    px(gui_font.size),
+                    px(gui_wide_font.size),
+                );
+                let mut width = 8.0 + marker_width + text_width;
                 if let Some(comment) = candidate.comment.as_deref() {
                     width += 8.0
-                        + self.protocol.display_options.text_cell_width(comment) as f32
-                            * cell_width_px;
+                        + measured_candidate_text_width(
+                            window,
+                            comment,
+                            self.protocol.display_options,
+                            &candidate_font,
+                            &candidate_wide_font,
+                            px(gui_font.size),
+                            px(gui_wide_font.size),
+                        );
                 }
                 width
             })
@@ -339,7 +374,13 @@ impl EditorRuntime {
                 .unwrap_or_default()
                 .max(page_indicator_width)
         };
-        let popup_width = px(content_width.max(12.0 * cell_width_px));
+        // `w` uses border-box sizing in GPUI, while the measured candidate
+        // rows describe the space they need inside the popup. Account for
+        // the popup's `p_1` (4px on each side) and `border_1` (1px on each
+        // side), otherwise the last glyph can still be clipped at the
+        // content-box edge.
+        const POPUP_HORIZONTAL_INSETS: f32 = 10.0;
+        let popup_width = px(content_width.max(12.0 * cell_width_px) + POPUP_HORIZONTAL_INSETS);
         let row_count = if horizontal {
             1
         } else {
@@ -366,25 +407,6 @@ impl EditorRuntime {
             .filter(|height| below_top + f32::from(popup_height) > *height)
             .map(|_| (cursor_top - f32::from(popup_height)).max(0.0))
             .unwrap_or(below_top);
-
-        let candidate_font_for = |font_spec: &GuiFontSpec| {
-            let mut candidate_font = font(font_spec.family.clone());
-            let mut fallbacks = Vec::new();
-            if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
-                fallbacks.push(nerd_font_family.clone());
-            }
-            if let Some(fallback_family) = font_spec.fallback_family.as_ref() {
-                if !fallbacks.iter().any(|family| family == fallback_family) {
-                    fallbacks.push(fallback_family.clone());
-                }
-            }
-            if !fallbacks.is_empty() {
-                candidate_font.fallbacks = Some(FontFallbacks::from_fonts(fallbacks));
-            }
-            candidate_font
-        };
-        let candidate_font = candidate_font_for(gui_font);
-        let candidate_wide_font = candidate_font_for(gui_wide_font);
 
         let mut popup = div()
             .absolute()
@@ -540,6 +562,49 @@ fn candidate_text(
             )
         },
     )
+}
+
+fn measured_text_width(window: &Window, text: &str, font: &gpui::Font, font_size: Pixels) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: rgb(0).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(text.to_owned().into(), font_size, &[run], None)
+            .width,
+    )
+}
+
+fn measured_candidate_text_width(
+    window: &Window,
+    text: &str,
+    display_options: grid::DisplayOptions,
+    normal_font: &gpui::Font,
+    wide_font: &gpui::Font,
+    normal_size: Pixels,
+    wide_size: Pixels,
+) -> f32 {
+    text.graphemes(true)
+        .map(|grapheme| {
+            let is_wide = display_options.text_cell_width(grapheme) > 1;
+            measured_text_width(
+                window,
+                grapheme,
+                if is_wide { wide_font } else { normal_font },
+                if is_wide { wide_size } else { normal_size },
+            )
+        })
+        .sum()
 }
 
 #[cfg(test)]
