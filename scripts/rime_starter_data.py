@@ -230,7 +230,7 @@ def download_starter_data(cache_dir: Path) -> Path:
     return assembled
 
 
-def restrict_default_schema(content: str, schema: str) -> str:
+def restrict_default_schemas(content: str, schemas: list[str]) -> str:
     lines = content.splitlines(keepends=True)
     start = next(
         (
@@ -255,17 +255,23 @@ def restrict_default_schema(content: str, schema: str) -> str:
         fail("default.yaml schema_list has no switcher section")
 
     newline = "\r\n" if "\r\n" in content else "\n"
-    replacement = [f"schema_list:{newline}", f"  - schema: {schema}{newline}"]
+    replacement = [f"schema_list:{newline}"] + [
+        f"  - schema: {schema}{newline}" for schema in schemas
+    ]
     return "".join(lines[:start] + replacement + lines[end:])
 
 
 def prepare(source: Path, output: Path) -> None:
     manifest = load_manifest()
     starter = manifest.get("starter", {})
-    schema = starter.get("schema")
+    schemas = starter.get("schemas")
     files = starter.get("files")
-    if not isinstance(schema, str) or not schema:
-        fail("starter manifest has no schema")
+    if (
+        not isinstance(schemas, list)
+        or not schemas
+        or not all(isinstance(schema, str) and schema for schema in schemas)
+    ):
+        fail("starter manifest has no valid schemas")
     if not isinstance(files, list) or not files or not all(
         isinstance(item, str) for item in files
     ):
@@ -284,7 +290,9 @@ def prepare(source: Path, output: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if relative_name == "default.yaml":
             destination.write_text(
-                restrict_default_schema(source_file.read_text(encoding="utf-8"), schema),
+                restrict_default_schemas(
+                    source_file.read_text(encoding="utf-8"), schemas
+                ),
                 encoding="utf-8",
             )
         else:
@@ -292,7 +300,7 @@ def prepare(source: Path, output: Path) -> None:
         destination.chmod(destination.stat().st_mode & ~0o222)
 
     print(f"prepared Rime starter data: {output}")
-    print(f"  schema: {schema}")
+    print(f"  schemas: {', '.join(schemas)}")
     print(f"  files: {len(files)}")
 
 

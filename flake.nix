@@ -77,10 +77,9 @@
               export NVIM_GPUI_SNACKS="${pkgs.vimPlugins.snacks-nvim}"
               export NVIM_GPUI_TREESITTER="${treesitterMarkdown}"
               export NVIM_GPUI_IMAGEMAGICK="${pkgs.imagemagick}"
-              # This is a build-only starter-data input. Runtime builders copy
-              # it into the application artifact; user data never comes from
-              # this Nix package.
-              export NVIM_GPUI_RIME_STARTER_DATA="''${NVIM_GPUI_RIME_STARTER_DATA:-${rimeStarterData}}"
+              # Runtime builders download the pinned official starter-data
+              # archives by default. Set NVIM_GPUI_RIME_STARTER_DATA when a
+              # complete local or custom data directory is desired.
               export PATH="$PWD/target/debug:$PWD/bin:$PATH"
               export NVIM_GPUI_NVIM="''${NVIM_GPUI_NVIM:-$(command -v nvim)}"
               export SNACKS_KITTY="''${SNACKS_KITTY:-1}"

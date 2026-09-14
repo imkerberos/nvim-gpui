@@ -1,9 +1,17 @@
-# Files copied from a Rime data package into the application-private starter
-# runtime. The list intentionally contains one general-purpose schema rather
-# than the complete collection of schemas and dictionaries.
+# Files copied from Rime data packages into the application-private starter
+# runtime. Keep this list curated rather than embedding the complete collection
+# of schemas and dictionaries.
 
 [starter]
-schema = "luna_pinyin"
+schemas = [
+  "luna_pinyin",
+  "double_pinyin",
+  "double_pinyin_abc",
+  "double_pinyin_flypy",
+  "double_pinyin_mspy",
+  "double_pinyin_pyjj",
+  "double_pinyin_st",
+]
 files = [
   "default.yaml",
   "key_bindings.yaml",
@@ -11,6 +19,12 @@ files = [
   "luna_pinyin.dict.yaml",
   "stroke.schema.yaml",
   "stroke.dict.yaml",
+  "double_pinyin.schema.yaml",
+  "double_pinyin_abc.schema.yaml",
+  "double_pinyin_flypy.schema.yaml",
+  "double_pinyin_mspy.schema.yaml",
+  "double_pinyin_pyjj.schema.yaml",
+  "double_pinyin_st.schema.yaml",
   "pinyin.yaml",
   "punctuation.yaml",
   "symbols.yaml",
@@ -40,6 +54,19 @@ name = "rime-stroke"
 url = "https://github.com/rime/rime-stroke/archive/e6c7608925009636577ff7469eecc870f1de18f3.tar.gz"
 sha256 = "81bbc9757efab6d02f685dd9a2b8034a5f6f6dc84ac2a210801d9e614a871627"
 files = ["stroke.schema.yaml", "stroke.dict.yaml"]
+
+[[download.archives]]
+name = "rime-double-pinyin"
+url = "https://github.com/rime/rime-double-pinyin/archive/01a13287cbd27819be1c34fa1ddc1b3643d5001b.tar.gz"
+sha256 = "606fcc81195a04be52f15746dc4652454156e75e17417008772670859e31b208"
+files = [
+  "double_pinyin.schema.yaml",
+  "double_pinyin_abc.schema.yaml",
+  "double_pinyin_flypy.schema.yaml",
+  "double_pinyin_mspy.schema.yaml",
+  "double_pinyin_pyjj.schema.yaml",
+  "double_pinyin_st.schema.yaml",
+]
 
 [[download.archives]]
 name = "rime-essay"

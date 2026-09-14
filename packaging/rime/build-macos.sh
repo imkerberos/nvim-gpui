@@ -18,13 +18,13 @@ Build the pinned librime source revision and stage an application-private
 runtime. Run this command inside the repository's Nix development shell.
 
 options:
-  --data-source DIR  starter rime-data directory to embed in runtime/data
+  --data-source DIR  local starter rime-data directory (default: download pinned archives)
   --output DIR       staged runtime output (default: .cache/rime-runtime)
   --work-dir DIR     source and build cache (default: .cache/rime-build/macos)
   --help             show this help
 
 environment:
-  NVIM_GPUI_RIME_STARTER_DATA  default value for --data-source
+  NVIM_GPUI_RIME_STARTER_DATA  local starter data override
   NVIM_GPUI_RIME_RUNTIME_OUTPUT default value for --output
   NVIM_GPUI_RIME_BUILD_DIR      default value for --work-dir
   NVIM_GPUI_RIME_BUILD_UNIVERSAL=0 to build only the host architecture
@@ -100,10 +100,11 @@ with open(sys.argv[1], "rb") as stream:
 PY
 )"
 
-[[ -n "$data_source" ]] || fail "starter data is required; pass --data-source DIR"
-data_source="$(resolve_repo_path "$data_source")"
-[[ -d "$data_source" ]] || fail "starter data directory does not exist: $data_source"
-data_source="$(cd "$data_source" && pwd -P)"
+if [[ -n "$data_source" ]]; then
+  data_source="$(resolve_repo_path "$data_source")"
+  [[ -d "$data_source" ]] || fail "starter data directory does not exist: $data_source"
+  data_source="$(cd "$data_source" && pwd -P)"
+fi
 
 output="$(resolve_repo_path "$output")"
 work_dir="$(resolve_repo_path "$work_dir")"
@@ -221,11 +222,20 @@ if [[ -d "$dist_lib/rime-plugins" ]]; then
 fi
 
 # Keep starter data independent from the librime source tree. The selector
-# copies one general-purpose schema and its dependency closure instead of
-# embedding the complete collection of Rime schemas and dictionaries.
-python3 "$repo_root/scripts/rime_starter_data.py" \
-  --source "$data_source" \
+# copies the curated schema set and its dependency closure instead of embedding
+# the complete collection of Rime schemas and dictionaries. Use the pinned
+# official archives by default because a system package may have an older or
+# incomplete schema set.
+starter_data_arguments=(
+  python3 "$repo_root/scripts/rime_starter_data.py"
   --output "$artifact_dir/data"
+)
+if [[ -n "$data_source" ]]; then
+  starter_data_arguments+=(--source "$data_source")
+else
+  starter_data_arguments+=(--download --cache-dir "$work_dir/rime-data")
+fi
+"${starter_data_arguments[@]}"
 
 while IFS= read -r -d '' binary; do
   dependencies="$(otool -L "$binary")"

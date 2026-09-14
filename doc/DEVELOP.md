@@ -908,11 +908,12 @@ data is fixed at the nvim-gpui application-support directory's `rime/`
 subdirectory and can be opened from Settings. The old user-data setting and
 `NVIM_GPUI_RIME_USER_DIR` environment override are ignored.
 
-The Nix development shell exposes nixpkgs' `rime-data` only as the default
-starter-data build input through `NVIM_GPUI_RIME_STARTER_DATA`. The builders
-run `scripts/rime_starter_data.py`, which selects the luna-pinyin schema and
-its required dictionaries/configuration from that package instead of copying
-all available schemas. The selected data is copied into the staged artifact;
+The Nix development shell includes nixpkgs' `rime-data` as an optional local
+starter-data source. By default, the macOS and Windows builders download the
+pinned official archives listed in `packaging/rime/starter-data.toml`. They run
+`scripts/rime_starter_data.py`, which selects the luna-pinyin and curated
+double-pinyin schemas plus their required dictionaries/configuration instead of
+copying all available schemas. The selected data is copied into the staged artifact;
 the application never uses the Nix store path at runtime.
 
 A staged runtime has this contract:
@@ -960,7 +961,7 @@ Studio/LLVM toolchain required by librime. The builder pins the same librime
 revision as macOS, invokes librime's official dependency and library build
 targets, uses static third-party dependencies, and stages `rime.dll` with the
 starter data. If `NVIM_GPUI_RIME_STARTER_DATA` is not set, it downloads the
-four pinned official Rime data archives listed in
+five pinned official Rime data archives listed in
 `packaging/rime/starter-data.toml`, verifies their SHA-256 digests, and caches
 them below the librime build directory. Set `NVIM_GPUI_RIME_STARTER_DATA` to a
 local data directory for an offline or custom build. Set
