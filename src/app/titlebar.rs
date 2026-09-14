@@ -6,7 +6,9 @@ use crate::app::{
 };
 use crate::{
     gui,
-    widgets::{logo_image, titlebar_button, IME_ACTIVE, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT},
+    widgets::{
+        titlebar_button, titlebar_logo_image, IME_ACTIVE, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
+    },
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use gpui::svg;
@@ -86,7 +88,12 @@ pub(crate) fn themed_titlebar(
         }))
         .text_color(rgb(foreground))
         .window_control_area(WindowControlArea::Drag)
-        .child(img(logo_image()).w(px(20.0)).h(px(20.0)).flex_shrink_0())
+        .child(
+            img(titlebar_logo_image())
+                .w(px(20.0))
+                .h(px(20.0))
+                .flex_shrink_0(),
+        )
         .child(div().w(px(6.0)).flex_shrink_0())
         .child(
             div()
