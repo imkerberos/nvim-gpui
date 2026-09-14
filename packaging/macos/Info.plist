@@ -100,28 +100,6 @@
 			</array>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.text</string>
-				<string>public.plain-text</string>
-				<string>public.source-code</string>
-				<string>public.script</string>
-				<string>public.shell-script</string>
-				<string>public.c-source</string>
-				<string>public.c-plus-plus-source</string>
-				<string>public.objective-c-source</string>
-				<string>public.swift-source</string>
-				<string>public.python-script</string>
-				<string>public.ruby-script</string>
-				<string>public.perl-script</string>
-				<string>public.php-script</string>
-				<string>public.javascript</string>
-				<string>public.json</string>
-				<string>public.xml</string>
-				<string>public.html</string>
-				<string>public.css</string>
-				<string>public.sql</string>
-			</array>
 		</dict>
 	</array>
 	<key>CFBundleIdentifier</key>
