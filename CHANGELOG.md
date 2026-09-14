@@ -2,6 +2,33 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.7.4] - 2026-09-14
+
+### Added
+
+- Settings now exposes a shared font-size control and enumerated `guifont` and
+  `guifontwide` choices, with platform-aware defaults and Neovim font
+  fallbacks.
+- Startup grid sizing is derived from the selected fonts for local and remote
+  Neovim sessions, including maximized startup.
+- Bundled Symbols Nerd Font families are available without a system Nerd Font
+  installation.
+
+### Improved
+
+- Neovim startup and session state are initialized after the final window/grid
+  size is known, preserving useful startup diagnostics and reducing initial
+  flicker.
+- Terminal device-status requests now receive the expected DSR response so
+  Neovim startup does not wait for a timeout.
+
+### Fixed
+
+- Bundled Nerd Font icons now render in Settings and Rime page indicators on
+  macOS, Linux, and Windows.
+- Font enumeration accepts Unicode-capable fonts based on actual glyph
+  coverage instead of family-name heuristics.
+
 ## [0.7.3] - 2026-09-12
 
 ### Improved
