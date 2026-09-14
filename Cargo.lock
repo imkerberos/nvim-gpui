@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "nvim-gpui"
-version = "0.7.4"
+version = "0.7.5-dev"
 dependencies = [
  "async-channel 2.5.0",
  "base64",
