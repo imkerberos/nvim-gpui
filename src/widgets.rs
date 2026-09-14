@@ -1,15 +1,11 @@
 use gpui::{
-    deferred, div, fill, img, point, prelude::*, px, relative, rgb, AlignItems, App, Bounds,
-    ClickEvent, CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
+    deferred, div, fill, point, prelude::*, px, relative, rgb, AlignItems, App, Bounds, ClickEvent,
+    CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, Font, GlobalElementId,
     HitboxBehavior, Image, InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ShapedLine, SharedString, Stateful,
     Style, TextRun, Window,
 };
-use std::{cell::RefCell, collections::HashMap, io::Cursor, ops::Range, rc::Rc, sync::Arc};
-use swash::{
-    scale::{image::Content, Render, ScaleContext, Source},
-    FontRef,
-};
+use std::{ops::Range, rc::Rc, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(crate) const BACKGROUND: u32 = 0x1e1e2e;
@@ -22,155 +18,6 @@ pub(crate) const IME_ACTIVE: u32 = 0xa6e3a1;
 pub(crate) const WARNING: u32 = 0xf9e2af;
 
 const MAX_VISIBLE_TEXT_INPUT_CHARS: usize = 48;
-
-const SETTINGS_COMBO_CLOSED_GLYPH: char = '\u{eb6e}';
-const SETTINGS_COMBO_OPEN_GLYPH: char = '\u{eb71}';
-const SETTINGS_CLEAR_GLYPH: char = '\u{ee23}';
-const SETTINGS_CONTENT_FONT_SCALE: f32 = 0.875;
-pub(crate) const SMALL_TEXT_ICON_SCALE: f32 = 0.8;
-
-#[derive(Clone)]
-pub(crate) struct SettingsIconSet {
-    combo_closed: Arc<Image>,
-    combo_open: Arc<Image>,
-    clear: Arc<Image>,
-    logical_size: f32,
-}
-
-impl SettingsIconSet {
-    fn combo(&self, open: bool) -> impl IntoElement {
-        img(if open {
-            self.combo_open.clone()
-        } else {
-            self.combo_closed.clone()
-        })
-        .h(px(self.logical_size))
-        .flex_shrink_0()
-    }
-
-    pub(crate) fn clear(&self) -> impl IntoElement {
-        img(self.clear.clone())
-            .h(px(self.logical_size))
-            .flex_shrink_0()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SettingsIconCacheKey {
-    glyph: char,
-    pixel_size: u32,
-    color: u32,
-}
-
-struct SettingsIconCache {
-    scale_context: ScaleContext,
-    images: HashMap<SettingsIconCacheKey, Arc<Image>>,
-}
-
-impl Default for SettingsIconCache {
-    fn default() -> Self {
-        Self {
-            scale_context: ScaleContext::new(),
-            images: HashMap::new(),
-        }
-    }
-}
-
-thread_local! {
-    static SETTINGS_ICON_CACHE: RefCell<SettingsIconCache> = RefCell::new(SettingsIconCache::default());
-}
-
-pub(crate) fn settings_icon_set(window: &Window) -> SettingsIconSet {
-    let logical_size =
-        f32::from(window.rem_size()) * SETTINGS_CONTENT_FONT_SCALE * SMALL_TEXT_ICON_SCALE;
-    let pixel_size = (logical_size * window.scale_factor()).round().max(1.0) as u32;
-    let color = MUTED_TEXT;
-
-    SettingsIconSet {
-        combo_closed: rasterized_settings_icon(SETTINGS_COMBO_CLOSED_GLYPH, pixel_size, color),
-        combo_open: rasterized_settings_icon(SETTINGS_COMBO_OPEN_GLYPH, pixel_size, color),
-        clear: rasterized_settings_icon(SETTINGS_CLEAR_GLYPH, pixel_size, color),
-        logical_size,
-    }
-}
-
-pub(crate) fn bundled_nerd_font_icon(
-    window: &Window,
-    glyph: char,
-    logical_size: Pixels,
-    color: u32,
-) -> impl IntoElement {
-    let pixel_size = (f32::from(logical_size) * window.scale_factor())
-        .round()
-        .max(1.0) as u32;
-    img(rasterized_settings_icon(glyph, pixel_size, color))
-        .h(logical_size)
-        .flex_shrink_0()
-}
-
-fn rasterized_settings_icon(glyph: char, pixel_size: u32, color: u32) -> Arc<Image> {
-    SETTINGS_ICON_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let key = SettingsIconCacheKey {
-            glyph,
-            pixel_size,
-            color,
-        };
-        if let Some(image) = cache.images.get(&key) {
-            return image.clone();
-        }
-
-        let bytes =
-            rasterize_settings_icon(&mut cache.scale_context, glyph, pixel_size as f32, color)
-                .unwrap_or_default();
-        let image = Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes));
-        cache.images.insert(key, image.clone());
-        image
-    })
-}
-
-fn rasterize_settings_icon(
-    scale_context: &mut ScaleContext,
-    glyph: char,
-    pixel_size: f32,
-    color: u32,
-) -> Option<Vec<u8>> {
-    let font = FontRef::from_index(crate::platform::SYMBOLS_NERD_FONT_DATA, 0)?;
-    let glyph_id = font.charmap().map(glyph);
-    if glyph_id == 0 {
-        log::error!(target: "nvim_gpui::settings", "bundled Nerd Font has no glyph for U+{:04X}", glyph as u32);
-        return None;
-    }
-
-    let mut scaler = scale_context
-        .builder(font)
-        .size(pixel_size)
-        .hint(true)
-        .build();
-    let mut renderer = Render::new(&[Source::Outline]);
-    renderer.format(swash::zeno::Format::Alpha);
-    let rendered = renderer.render(&mut scaler, glyph_id)?;
-    let Content::Mask = rendered.content else {
-        log::error!(target: "nvim_gpui::settings", "bundled Nerd Font glyph U+{:04X} did not produce an alpha mask", glyph as u32);
-        return None;
-    };
-
-    let red = ((color >> 16) & 0xff) as u8;
-    let green = ((color >> 8) & 0xff) as u8;
-    let blue = (color & 0xff) as u8;
-    let rgba = rendered
-        .data
-        .into_iter()
-        .flat_map(|alpha| [red, green, blue, alpha])
-        .collect::<Vec<_>>();
-    let bitmap =
-        image::RgbaImage::from_raw(rendered.placement.width, rendered.placement.height, rgba)?;
-    let mut encoded = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(bitmap)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .ok()?;
-    Some(encoded.into_inner())
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SettingTextInputState {
@@ -861,7 +708,7 @@ pub(crate) fn setting_combo_box(
     label: impl Into<SharedString>,
     open: bool,
     options: impl IntoElement,
-    icons: SettingsIconSet,
+    icon_font: Font,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let id = id.into();
@@ -885,7 +732,12 @@ pub(crate) fn setting_combo_box(
             .hover(|style| style.border_color(rgb(ACCENT)))
             .on_click(on_click)
             .child(div().flex_1().child(label))
-            .child(icons.combo(open)),
+            .child(
+                div()
+                    .font(icon_font)
+                    .text_color(rgb(MUTED_TEXT))
+                    .child(if open { "" } else { "" }),
+            ),
     );
 
     if open {
@@ -1071,26 +923,7 @@ pub(crate) fn titlebar_button(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn bundled_settings_icons_rasterize_to_png() {
-        let mut scale_context = ScaleContext::new();
-
-        for glyph in [
-            SETTINGS_COMBO_CLOSED_GLYPH,
-            SETTINGS_COMBO_OPEN_GLYPH,
-            SETTINGS_CLEAR_GLYPH,
-            '\u{f0d9}',
-            '\u{f0da}',
-        ] {
-            let png = rasterize_settings_icon(&mut scale_context, glyph, 16.0, MUTED_TEXT)
-                .expect("bundled Settings icon should rasterize");
-
-            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-            image::load_from_memory(&png).expect("bundled Settings icon should be valid PNG");
-        }
-    }
+    use super::TextInputDisplay;
 
     #[test]
     fn text_input_display_keeps_long_value_cursor_context() {

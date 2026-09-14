@@ -3491,7 +3491,6 @@ dependencies = [
  "raw-window-handle",
  "rmpv",
  "semver",
- "swash",
  "unicode-segmentation",
  "unicode-width",
  "url",

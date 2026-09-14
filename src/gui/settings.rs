@@ -7,13 +7,13 @@ use crate::{
     helper, settings, update_check,
     widgets::{
         setting_combo_box, setting_combo_option, setting_option_button, setting_row,
-        setting_section, setting_text_input, settings_icon_set, SettingTextInputConfig,
-        SettingTextInputMouseEvent, SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE,
-        SURFACE_BRIGHT, TEXT, WARNING,
+        setting_section, setting_text_input, SettingTextInputConfig, SettingTextInputMouseEvent,
+        SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
+        WARNING,
     },
 };
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, Render,
+    div, font, prelude::*, px, rgb, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, Render,
     SharedString, Subscription, Window,
 };
 use nvim_gpui::rime::RimeRuntimeResolver;
@@ -571,7 +571,7 @@ impl Render for SettingsWindow {
         self.ensure_rime_path_blur_subscriptions(window, cx);
         let (current, save_error, cli_install_error) = self.source.read(cx).app.settings_snapshot();
         let cli_available = helper::is_available_in_path();
-        let icons = settings_icon_set(window);
+        let icon_font = font(crate::platform::SYMBOLS_NERD_FONT_FAMILY);
 
         let mut font_size_options = div().w_full().flex().flex_col();
         for font_size in settings::FONT_SIZE_OPTIONS {
@@ -590,7 +590,7 @@ impl Render for SettingsWindow {
             format!("{} px", current.font_size),
             self.open_combo == Some(SettingsCombo::FontSize),
             font_size_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::FontSize, cx)),
         );
 
@@ -642,7 +642,7 @@ impl Render for SettingsWindow {
             guifont_label,
             self.open_combo == Some(SettingsCombo::GuiFont),
             guifont_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::GuiFont, cx)),
         );
 
@@ -677,7 +677,7 @@ impl Render for SettingsWindow {
             guifontwide_label,
             self.open_combo == Some(SettingsCombo::GuiFontWide),
             guifontwide_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::GuiFontWide, cx)),
         );
 
@@ -703,7 +703,7 @@ impl Render for SettingsWindow {
             current.nerd_font.label(),
             self.open_combo == Some(SettingsCombo::NerdFont),
             nerd_font_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::NerdFont, cx)),
         );
 
@@ -727,7 +727,7 @@ impl Render for SettingsWindow {
             current.fallback_mode.label(),
             self.open_combo == Some(SettingsCombo::FallbackMode),
             fallback_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::FallbackMode, cx)),
         );
 
@@ -748,7 +748,7 @@ impl Render for SettingsWindow {
             format!("{} MB", current.image_cache_size_mb),
             self.open_combo == Some(SettingsCombo::ImageCacheSize),
             cache_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::ImageCacheSize, cx)),
         );
 
@@ -771,7 +771,7 @@ impl Render for SettingsWindow {
             current.ime_backend.label(),
             self.open_combo == Some(SettingsCombo::ImeBackend),
             ime_backend_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::ImeBackend, cx)),
         );
 
@@ -800,7 +800,7 @@ impl Render for SettingsWindow {
             current.rime_candidate_layout.label(),
             self.open_combo == Some(SettingsCombo::RimeCandidateLayout),
             rime_layout_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::RimeCandidateLayout, cx)),
         );
 
@@ -880,6 +880,7 @@ impl Render for SettingsWindow {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
+                    .font(icon_font.clone())
                     .text_color(rgb(MUTED_TEXT))
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(TEXT)))
@@ -887,7 +888,7 @@ impl Render for SettingsWindow {
                         cx.stop_propagation();
                         this.set_paste_shortcut(settings::PasteShortcut::Disabled, cx);
                     }))
-                    .child(icons.clear()),
+                    .child(""),
             );
 
         let rime_toggle_shortcut_label: SharedString = if self.recording_rime_toggle_shortcut {
@@ -966,6 +967,7 @@ impl Render for SettingsWindow {
                     .items_center()
                     .justify_center()
                     .rounded_sm()
+                    .font(icon_font.clone())
                     .text_color(rgb(MUTED_TEXT))
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(SURFACE_BRIGHT)).text_color(rgb(TEXT)))
@@ -973,7 +975,7 @@ impl Render for SettingsWindow {
                         cx.stop_propagation();
                         this.set_rime_toggle_shortcut(settings::RimeToggleShortcut::Disabled, cx);
                     }))
-                    .child(icons.clear()),
+                    .child(""),
             );
 
         let bundled_rime_runtime = Self::uses_bundled_rime_runtime();
@@ -1220,7 +1222,7 @@ impl Render for SettingsWindow {
             },
             self.open_combo == Some(SettingsCombo::StartupMaximized),
             startup_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::StartupMaximized, cx)),
         );
 
@@ -1250,7 +1252,7 @@ impl Render for SettingsWindow {
             },
             self.open_combo == Some(SettingsCombo::UpdateChecks),
             update_check_options,
-            icons.clone(),
+            icon_font.clone(),
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::UpdateChecks, cx)),
         );
 
@@ -1374,7 +1376,7 @@ impl Render for SettingsWindow {
             current.log_level.label(),
             self.open_combo == Some(SettingsCombo::LogLevel),
             log_options,
-            icons,
+            icon_font,
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::LogLevel, cx)),
         );
         let log_directory_label = crate::logging::log_directory()
@@ -1509,7 +1511,6 @@ impl Render for SettingsWindow {
             .py_5()
             .bg(rgb(BACKGROUND))
             .text_color(rgb(TEXT))
-            .child(div().text_lg().child("Settings"))
             .child(setting_section(
                 "Application behavior",
                 application_behavior,

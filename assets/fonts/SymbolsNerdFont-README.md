@@ -12,6 +12,10 @@ This font contains (in the patched-fonts folder) all symbols and is intended to 
 as fallback or together with fontconfig - so that you do not need to individually
 patch all the fonts. YMMV.
 
+The bundled copies used by nvim-gpui also contain an empty, zero-width `m`
+glyph. This is invisible and exists so GPUI's macOS font loader accepts this
+symbols-only font family.
+
 ## Icon sets
 
 | Icon set name          | upstream                                              | version         | license     |
@@ -64,4 +68,3 @@ Once you narrow down your font choice of family (`Droid Sans`, `Inconsolata`, et
 For more information see: [The FAQ](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting#which-font)
 
 [SIL-RFN]:http://scripts.sil.org/cms/scripts/page.php?item_id=OFL_web_fonts_and_RFNs#14cbfd4a
-

@@ -6,10 +6,7 @@ use crate::{
     input as input_core,
     input::InputTarget,
     settings,
-    widgets::{
-        bundled_nerd_font_icon, ACCENT, BACKGROUND, MUTED_TEXT, SMALL_TEXT_ICON_SCALE, SURFACE,
-        SURFACE_BRIGHT,
-    },
+    widgets::{ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT},
 };
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,

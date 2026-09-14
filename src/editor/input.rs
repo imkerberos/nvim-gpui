@@ -282,7 +282,6 @@ impl EditorRuntime {
 impl EditorRuntime {
     pub(super) fn rime_candidate_popup(
         &self,
-        window: &Window,
         gui_font: &GuiFontSpec,
         gui_wide_font: &GuiFontSpec,
         cell_width: Pixels,
@@ -453,11 +452,23 @@ impl EditorRuntime {
         } else {
             ACCENT
         };
-        // Nerd Font: angle-up (U+F0D9) and angle-down (U+F0DA).
-        let previous_icon = '\u{f0d9}';
-        let next_icon = '\u{f0da}';
-        let page_indicator_font_size =
-            px(f32::from(window.rem_size()) * 0.875 * SMALL_TEXT_ICON_SCALE);
+        let previous_icon = if self.nerd_font_family.is_some() {
+            // Nerd Font: angle-up (U+F0D9).
+            "\u{f0d9}"
+        } else {
+            "‹"
+        };
+        let next_icon = if self.nerd_font_family.is_some() {
+            // Nerd Font: angle-down (U+F0DA).
+            "\u{f0da}"
+        } else {
+            "›"
+        };
+        let page_indicator_icon_font = self
+            .nerd_font_family
+            .as_ref()
+            .map(|family| font(family.clone()))
+            .unwrap_or_else(|| candidate_font.clone());
         let page_indicator = div()
             .h(line_height)
             .flex()
@@ -465,12 +476,12 @@ impl EditorRuntime {
             .justify_end()
             .px_1()
             .text_sm()
-            .child(bundled_nerd_font_icon(
-                window,
-                previous_icon,
-                page_indicator_font_size,
-                previous_color,
-            ))
+            .child(
+                div()
+                    .font(page_indicator_icon_font.clone())
+                    .text_color(rgb(previous_color))
+                    .child(previous_icon),
+            )
             .child(
                 div()
                     .mx_1()
@@ -481,12 +492,12 @@ impl EditorRuntime {
                     }))
                     .child(page_label),
             )
-            .child(bundled_nerd_font_icon(
-                window,
-                next_icon,
-                page_indicator_font_size,
-                next_color,
-            ));
+            .child(
+                div()
+                    .font(page_indicator_icon_font)
+                    .text_color(rgb(next_color))
+                    .child(next_icon),
+            );
         if horizontal {
             popup = popup.child(page_indicator.w(px(page_indicator_width)));
         } else {
