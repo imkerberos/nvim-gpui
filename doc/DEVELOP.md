@@ -463,7 +463,7 @@ an optional local helper:
 | Event | Jobs | Result |
 | --- | --- | --- |
 | Pull request or push to `develop`, `master`, or `main` | macOS arm64, Linux x86_64, Linux arm64, Windows x86_64 | Formatting, Clippy, and tests; macOS also builds and smoke-tests its AppBundle and DMG. |
-| Push of a `v*` tag or manual `release-draft` dispatch | macOS arm64/x86_64, Ubuntu/Debian x86_64/arm64, Fedora x86_64/arm64, Arch Linux x86_64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Debian `.deb` packages, Fedora RPM packages, an Arch Linux package, and Windows ZIP/installer packages. |
+| Manual `release-draft` dispatch | macOS arm64/x86_64, Ubuntu/Debian x86_64/arm64, Fedora x86_64/arm64, Arch Linux x86_64, Windows x86_64 | Release metadata validation, native build/test validation, macOS DMG/App ZIP packages, Debian `.deb` packages, Fedora RPM packages, an Arch Linux package, and Windows ZIP/installer packages. |
 | Successful completion of every release job | Draft release job | Creates or updates an unpublished GitHub Draft Release, attaches packages, and uploads `SHA256SUMS`. |
 
 The release workflow is gated: a package is not attached to the Draft Release
