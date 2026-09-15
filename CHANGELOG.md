@@ -2,8 +2,7 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.7.5] - Unreleased
-
+## [0.7.5] - 2026-09-15
 ### Added
 
 - Switchable Rime double-pinyin schemas, including Xiaohe (Flypy) and other
