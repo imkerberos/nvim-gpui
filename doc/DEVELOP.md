@@ -471,12 +471,17 @@ when any platform validation or packaging job fails. Re-running a failed
 workflow is safe; the draft step updates an existing draft and replaces assets
 with the newly verified files.
 
+`release-draft` dates the matching changelog section on its first run, commits
+that release-date change, pushes it to the current branch, and then starts the
+workflow. Re-running the task does not create another date commit.
+
 The intentional release-time manual steps are preparing the version and
-changelog, pushing the commit, and starting the draft workflow:
+changelog, pushing the prepared commit, and starting the draft workflow. The
+`release-draft` task handles the final changelog date commit and push:
 
 ```sh
 just release-prepare 0.7.3
-# add or update ## [0.7.3] in CHANGELOG.md
+# add or update ## [0.7.3] - Unreleased in CHANGELOG.md
 just release-check v0.7.3
 git add Cargo.toml Cargo.lock Casks/nvim-gpui.rb \
   packaging/macos/Info.plist packaging/fedora/nvim-gpui.spec \

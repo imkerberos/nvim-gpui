@@ -2,9 +2,28 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.7.5-dev] - Unreleased
+## [0.7.5] - Unreleased
 
-Changes for the next release will be documented here.
+### Added
+
+- Switchable Rime double-pinyin schemas, including Xiaohe (Flypy) and other
+  built-in double-pinyin schemes.
+- Curated Rime starter data now includes the selected double-pinyin schemas and
+  can download pinned official data archives by default.
+
+### Improved
+
+- Kitty graphics parsing now handles explicit transmit-and-display commands and
+  pixel-sized image placements for improved compatibility with image clients.
+- Non-macOS application icons use the available canvas more effectively, while
+  the macOS icon remains unchanged and the titlebar keeps a padded variant.
+
+### Fixed
+
+- Long Rime candidate text is measured using the actual GUI fonts and no longer
+  gets clipped at the edge of the candidate popup.
+- macOS document associations now use file-extension declarations correctly,
+  allowing supported files to be opened with nvim-gpui from Finder.
 
 ## [0.7.4] - 2026-09-14
 

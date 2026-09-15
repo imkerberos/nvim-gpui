@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import re
 import sys
 from pathlib import Path
@@ -149,6 +150,35 @@ def changelog_section(root: Path, version: str) -> str:
     return match.group(0).strip()
 
 
+def date_changelog(root: Path, raw_version: str) -> None:
+    version = normalize_version(raw_version)
+    path = root / "CHANGELOG.md"
+    content = read(path)
+    release_date = date.today().isoformat()
+    pattern = rf"(?m)^## \[{re.escape(version)}\] - Unreleased\s*$"
+    updated, count = re.subn(
+        pattern,
+        f"## [{version}] - {release_date}",
+        content,
+        count=1,
+    )
+    if count == 1:
+        write(path, updated)
+        print(f"dated CHANGELOG.md section [{version}] to {release_date}")
+        return
+
+    if re.search(
+        rf"(?m)^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$",
+        content,
+    ):
+        print(f"CHANGELOG.md section [{version}] already has a release date")
+        return
+
+    if re.search(rf"(?m)^## \[{re.escape(version)}\]", content):
+        fail(f"CHANGELOG.md section [{version}] is not marked Unreleased")
+    fail(f"CHANGELOG.md has no Unreleased section for [{version}]")
+
+
 def normalize_version(raw_version: str) -> str:
     version = raw_version[1:] if raw_version.startswith("v") else raw_version
     if not VERSION_PATTERN.fullmatch(version):
@@ -255,6 +285,11 @@ def parse_args() -> argparse.Namespace:
     )
     notes_parser.add_argument("tag")
 
+    date_parser = subparsers.add_parser(
+        "date", help="replace a release changelog section's Unreleased marker"
+    )
+    date_parser.add_argument("version")
+
     return parser.parse_args()
 
 
@@ -267,6 +302,8 @@ def main() -> None:
         check(root, args.tag or None)
     elif args.command == "notes":
         notes(root, args.tag)
+    elif args.command == "date":
+        date_changelog(root, args.version)
     else:
         fail(f"unknown command {args.command!r}")
 

@@ -293,7 +293,7 @@ release-check tag="":
 release-notes tag:
     {{python_command}} scripts/release.py notes {{tag}}
 
-# Trigger the GitHub release workflow, which creates a Draft Release.
+# Date the changelog, commit and push it, then trigger the Draft Release workflow.
 release-draft tag:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -321,6 +321,13 @@ release-draft tag:
       echo "HEAD is not pushed to origin/$branch; push the current commit first" >&2
       exit 1
     }
+    {{python_command}} scripts/release.py date "$tag"
+    if ! git diff --quiet -- CHANGELOG.md; then
+      git add CHANGELOG.md
+      git commit -m "release: date $tag changelog"
+      git push origin "$branch"
+    fi
+    local_commit="$(git rev-parse HEAD)"
     {{python_command}} scripts/release.py check "$tag"
     gh workflow run release.yml --ref "$branch" --raw-field "tag=$tag"
     echo "started Draft Release workflow for $tag from $branch ($local_commit)"

@@ -1,5 +1,5 @@
 Name:           nvim-gpui
-Version:        0.7.5-dev
+Version:        0.7.5
 Release:        1%{?dist}
 Summary:        Another GPU-rendered graphical client for Neovim
 
