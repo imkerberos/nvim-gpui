@@ -205,11 +205,18 @@ impl EditorRuntime {
         &mut self,
         previous: Option<grid::CursorVisualPosition>,
     ) {
+        if !self.cursor.cursor_animation_enabled {
+            self.cursor.cursor_animation = None;
+            return;
+        }
+
+        let now = Instant::now();
         let next = self.current_cursor_screen_position();
         self.cursor.cursor_animation = match (previous, next) {
             (Some(from), Some(target)) if from != target => self
                 .cursor
                 .cursor_animation
+                .filter(|animation| animation.is_recent(now))
                 .map(|animation| animation.retarget(target))
                 .or_else(|| Some(grid::CursorAnimation::new(from, target))),
             _ => None,

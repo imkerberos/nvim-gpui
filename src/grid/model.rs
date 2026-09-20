@@ -355,6 +355,7 @@ pub struct CursorAnimation {
     pub(super) to: CursorVisualPositionF,
     pub(super) started_at: Instant,
     pub(super) duration: Duration,
+    pub(super) show_trail: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,6 +380,9 @@ impl CursorAnimation {
     // while leaving enough frames for the elastic shape and two tail layers
     // to be visible at 60 Hz.
     const DURATION: Duration = Duration::from_millis(180);
+    const RETARGET_WINDOW: Duration = Duration::from_millis(220);
+    const RETARGET_MIN_DURATION_MS: f32 = 48.0;
+    const RETARGET_PER_CELL_DURATION_MS: f32 = 24.0;
 
     pub fn new(from: CursorVisualPosition, target: CursorVisualPosition) -> Self {
         Self {
@@ -386,21 +390,47 @@ impl CursorAnimation {
             to: target.into(),
             started_at: Instant::now(),
             duration: Self::DURATION,
+            show_trail: true,
         }
     }
 
+    /// Whether a new cursor update should be treated as continuous movement.
+    ///
+    /// A retargeted animation can finish before the next key repeat, so the
+    /// active-animation check alone is not enough to distinguish a held key
+    /// from a new movement after a short pause.
+    pub fn is_recent(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started_at) < Self::RETARGET_WINDOW
+    }
+
     /// Retarget an in-flight animation from its current interpolated position.
-    /// This prevents fast cursor movement from jumping back to the previous
-    /// cell whenever Neovim sends another redraw before the animation ends.
+    ///
+    /// Continuous movement uses a short, distance-aware animation and omits
+    /// the long trail. This keeps a held movement responsive without removing
+    /// the full animation from single cursor jumps.
     pub fn retarget(&self, target: CursorVisualPosition) -> Self {
         let now = Instant::now();
         let from = self.position_at(now);
+        let target: CursorVisualPositionF = target.into();
+        let distance = (target.row - from.row)
+            .abs()
+            .max((target.col - from.col).abs())
+            .max((target.width - from.width).abs());
+        let duration_ms = (Self::RETARGET_MIN_DURATION_MS
+            + Self::RETARGET_PER_CELL_DURATION_MS * distance)
+            .min(Self::DURATION.as_millis() as f32)
+            .round() as u64;
         Self {
             from,
-            to: target.into(),
+            to: target,
             started_at: now,
-            duration: Self::DURATION,
+            duration: Duration::from_millis(duration_ms),
+            show_trail: false,
         }
+    }
+
+    pub(crate) fn show_trail(self) -> bool {
+        self.show_trail
     }
 
     pub(super) fn progress(&self, now: Instant) -> f32 {

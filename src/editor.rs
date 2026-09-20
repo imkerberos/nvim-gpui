@@ -176,6 +176,7 @@ impl Default for InputRuntime {
 pub(crate) struct CursorRuntime {
     pub(crate) cursor_blink_started_at: Instant,
     pub(crate) cursor_animation: Option<grid::CursorAnimation>,
+    pub(crate) cursor_animation_enabled: bool,
     pub(crate) multicursor_namespace_task: Option<Task<()>>,
     pub(crate) multicursor_reconcile_task: Option<Task<()>>,
     pub(crate) multicursor_reconcile_dirty: bool,
@@ -186,6 +187,7 @@ impl Default for CursorRuntime {
         Self {
             cursor_blink_started_at: Instant::now(),
             cursor_animation: None,
+            cursor_animation_enabled: true,
             multicursor_namespace_task: None,
             multicursor_reconcile_task: None,
             multicursor_reconcile_dirty: false,
@@ -231,6 +233,10 @@ impl Default for EditorRuntime {
 
 impl EditorRuntime {
     pub(crate) fn apply_runtime_settings(&mut self, settings: &settings::Settings) {
+        self.cursor.cursor_animation_enabled = settings.cursor_animation;
+        if !settings.cursor_animation {
+            self.cursor.cursor_animation = None;
+        }
         self.configured_grid_font_size = Some(settings.font_size as f32);
         self.configured_grid_font =
             (!settings.guifont.trim().is_empty()).then(|| settings.guifont.trim().to_owned());

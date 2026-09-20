@@ -287,66 +287,68 @@ impl NvimGpui {
         }
         let ime_composition = self.editor.active_ime_composition();
 
-        let cursor_element =
-            grid_ready.then(|| {
-                let model = self.editor.active_cursor_model()?;
-                let local_position = model.cursor_visual_position()?;
-                let position = self.editor.current_cursor_screen_position()?;
-                let position = ime_composition
-                    .as_ref()
-                    .map(|composition| {
-                        self.editor.ime_cursor_position_for_composition(
-                            composition,
-                            position,
-                            local_position,
-                        )
-                    })
-                    .unwrap_or(position);
-                let cursor_placement = self
-                    .editor
-                    .grid_placement(self.editor.protocol.cursor.cursor_grid);
-                let cursor_context = self
-                    .editor
-                    .highlight_context_for_layer(cursor_placement.kind);
-                let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
-                    &model,
-                    local_position,
-                    cursor_mode,
-                    cursor_context,
-                );
-                let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
-                    self.editor.grid_element(
-                        Rc::clone(&model),
-                        GridRenderOptions {
-                            placement: cursor_placement,
-                            width: model.width(),
-                            height: model.height(),
-                            cell_width,
-                            line_height,
-                            gui_font: &gui_font,
-                            gui_wide_font: &gui_wide_font,
-                            cursor_blink_started_at,
-                            viewport_offset: px(0.0),
-                        },
-                        self.app.settings.fallback_mode,
+        let cursor_element = grid_ready.then(|| {
+            let model = self.editor.active_cursor_model()?;
+            let local_position = model.cursor_visual_position()?;
+            let position = self.editor.current_cursor_screen_position()?;
+            let position = ime_composition
+                .as_ref()
+                .map(|composition| {
+                    self.editor.ime_cursor_position_for_composition(
+                        composition,
+                        position,
+                        local_position,
                     )
-                });
-                Some(
-                    grid::CursorElement::new(position, cursor_background, cursor_mode)
-                        .with_local_position(local_position)
-                        .with_glyph_foreground(cursor_foreground)
-                        .with_glyph_source(glyph_source)
-                        .with_animation(self.editor.cursor.cursor_animation.filter(|animation| {
-                            ime_composition.is_none() && animation.is_active(now)
-                        }))
-                        .with_metrics(cell_width, line_height)
-                        .with_grid_size(
-                            self.editor.protocol.presentation.grid.width(),
-                            self.editor.protocol.presentation.grid.height(),
-                        )
-                        .with_blink_started_at(cursor_blink_started_at),
+                })
+                .unwrap_or(position);
+            let cursor_placement = self
+                .editor
+                .grid_placement(self.editor.protocol.cursor.cursor_grid);
+            let cursor_context = self
+                .editor
+                .highlight_context_for_layer(cursor_placement.kind);
+            let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
+                &model,
+                local_position,
+                cursor_mode,
+                cursor_context,
+            );
+            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
+                self.editor.grid_element(
+                    Rc::clone(&model),
+                    GridRenderOptions {
+                        placement: cursor_placement,
+                        width: model.width(),
+                        height: model.height(),
+                        cell_width,
+                        line_height,
+                        gui_font: &gui_font,
+                        gui_wide_font: &gui_wide_font,
+                        cursor_blink_started_at,
+                        viewport_offset: px(0.0),
+                    },
+                    self.app.settings.fallback_mode,
                 )
             });
+            let animation = self.editor.cursor.cursor_animation.filter(|animation| {
+                self.editor.cursor.cursor_animation_enabled
+                    && ime_composition.is_none()
+                    && animation.is_active(now)
+            });
+            Some(
+                grid::CursorElement::new(position, cursor_background, cursor_mode)
+                    .with_local_position(local_position)
+                    .with_glyph_foreground(cursor_foreground)
+                    .with_glyph_source(glyph_source)
+                    .with_animation(animation)
+                    .with_metrics(cell_width, line_height)
+                    .with_grid_size(
+                        self.editor.protocol.presentation.grid.width(),
+                        self.editor.protocol.presentation.grid.height(),
+                    )
+                    .with_blink_started_at(cursor_blink_started_at),
+            )
+        });
         let cursor_element = cursor_element.flatten();
         let multicursor_elements = if grid_ready {
             self.editor.multicursor_elements(

@@ -468,6 +468,31 @@ fn cursor_animation_interpolates_to_its_target() {
 }
 
 #[test]
+fn cursor_animation_retarget_is_shorter_and_has_no_trail() {
+    let animation = CursorAnimation::new(
+        CursorVisualPosition {
+            row: 2,
+            col: 3,
+            width: 1,
+        },
+        CursorVisualPosition {
+            row: 2,
+            col: 4,
+            width: 1,
+        },
+    );
+    let retargeted = animation.retarget(CursorVisualPosition {
+        row: 2,
+        col: 5,
+        width: 1,
+    });
+
+    assert!(retargeted.duration < animation.duration);
+    assert!(!retargeted.show_trail());
+    assert!(animation.show_trail());
+}
+
+#[test]
 fn cursor_animation_has_a_small_elastic_settle() {
     assert_eq!(jelly_progress(0.0), 0.0);
     assert!(jelly_progress(0.72) > 1.0);

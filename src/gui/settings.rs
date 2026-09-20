@@ -44,6 +44,7 @@ enum SettingsCombo {
     GuiFontWide,
     NerdFont,
     FallbackMode,
+    CursorAnimation,
     StartupMaximized,
     UpdateChecks,
     LogLevel,
@@ -723,6 +724,35 @@ impl Render for SettingsWindow {
             self.open_combo == Some(SettingsCombo::FallbackMode),
             fallback_options,
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::FallbackMode, cx)),
+        );
+
+        let mut cursor_animation_options = div().w_full().flex().flex_col();
+        cursor_animation_options = cursor_animation_options.child(setting_combo_option(
+            "settings-cursor-animation-on",
+            "On",
+            current.cursor_animation,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.cursor_animation = true, cx);
+            }),
+        ));
+        cursor_animation_options = cursor_animation_options.child(setting_combo_option(
+            "settings-cursor-animation-off",
+            "Off",
+            !current.cursor_animation,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.cursor_animation = false, cx);
+            }),
+        ));
+        let cursor_animation_options = setting_combo_box(
+            "settings-cursor-animation-combo",
+            if current.cursor_animation {
+                "On"
+            } else {
+                "Off"
+            },
+            self.open_combo == Some(SettingsCombo::CursorAnimation),
+            cursor_animation_options,
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::CursorAnimation, cx)),
         );
 
         let mut cache_options = div().w_full().flex().flex_col();
@@ -1547,6 +1577,14 @@ impl Render for SettingsWindow {
                         "Maximum unplaced Kitty Graphics Protocol image data kept in memory.",
                         cache_options,
                     )),
+            ))
+            .child(setting_section(
+                "Cursor",
+                setting_row(
+                    "Cursor animation",
+                    "Animate cursor movement between cells. Disable this for immediate movement.",
+                    cursor_animation_options,
+                ),
             ))
             .child(setting_section(
                 "IME",

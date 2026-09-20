@@ -593,6 +593,33 @@ fn cursor_move_between_grids_uses_one_screen_animation() {
 }
 
 #[test]
+fn disabled_cursor_animation_does_not_start_after_a_cursor_move() {
+    let mut app = NvimGpui::default();
+    app.app.settings.cursor_animation = false;
+    app.editor.apply_runtime_settings(&app.app.settings);
+
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
+        grid: 1,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 0,
+        col: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 0,
+        col: 2,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert!(app.editor.cursor.cursor_animation.is_none());
+}
+
+#[test]
 fn guifont_family_and_size_are_parsed_for_grid_metrics() {
     let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16");
 
