@@ -89,6 +89,9 @@ pub(crate) const WINDOW_CONTROL_MINIMIZE_ASSET: &str = "window-controls/minimize
 pub(crate) const WINDOW_CONTROL_MAXIMIZE_ASSET: &str = "window-controls/maximize.svg";
 pub(crate) const WINDOW_CONTROL_RESTORE_ASSET: &str = "window-controls/restore.svg";
 pub(crate) const WINDOW_CONTROL_CLOSE_ASSET: &str = "window-controls/close.svg";
+pub(crate) const MD_ICON_ARROW_DROP_DOWN_ASSET: &str = "material-icons/arrow_drop_down.svg";
+pub(crate) const MD_ICON_ARROW_DROP_UP_ASSET: &str = "material-icons/arrow_drop_up.svg";
+pub(crate) const MD_ICON_CLOSE_ASSET: &str = "material-icons/close.svg";
 pub(crate) const DEBUG_WINDOW_HEIGHT: f32 = 240.0;
 pub(crate) const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
 

@@ -1,6 +1,7 @@
+use crate::app::{MD_ICON_ARROW_DROP_DOWN_ASSET, MD_ICON_ARROW_DROP_UP_ASSET};
 use gpui::{
-    deferred, div, fill, point, prelude::*, px, relative, rgb, AlignItems, App, Bounds, ClickEvent,
-    CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, Font, GlobalElementId,
+    deferred, div, fill, point, prelude::*, px, relative, rgb, svg, AlignItems, App, Bounds,
+    ClickEvent, CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, GlobalElementId,
     HitboxBehavior, Image, InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ShapedLine, SharedString, Stateful,
     Style, TextRun, Window,
@@ -708,7 +709,6 @@ pub(crate) fn setting_combo_box(
     label: impl Into<SharedString>,
     open: bool,
     options: impl IntoElement,
-    icon_font: Font,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let id = id.into();
@@ -733,10 +733,15 @@ pub(crate) fn setting_combo_box(
             .on_click(on_click)
             .child(div().flex_1().child(label))
             .child(
-                div()
-                    .font(icon_font)
-                    .text_color(rgb(MUTED_TEXT))
-                    .child(if open { "" } else { "" }),
+                svg()
+                    .path(if open {
+                        MD_ICON_ARROW_DROP_UP_ASSET
+                    } else {
+                        MD_ICON_ARROW_DROP_DOWN_ASSET
+                    })
+                    .w(px(18.0))
+                    .h(px(18.0))
+                    .text_color(rgb(MUTED_TEXT)),
             ),
     );
 

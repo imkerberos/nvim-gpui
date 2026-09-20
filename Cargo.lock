@@ -3143,6 +3143,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-icons"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95b34c7103a7fb60504e587abcc6ebf0e88247d99a5941b83619c8b7ed9486a6"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3485,6 +3491,7 @@ dependencies = [
  "image",
  "libloading",
  "log",
+ "md-icons",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
