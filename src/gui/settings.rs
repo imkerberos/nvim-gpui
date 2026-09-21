@@ -1,15 +1,14 @@
 use crate::app::NvimGpui;
 #[cfg(target_os = "macos")]
-use crate::widgets::setting_checkbox;
+use crate::widgets::checkbox;
 use crate::{
     app::{themed_titlebar, themed_titlebar_enabled, MD_ICON_CLOSE_ASSET},
     editor::{system_font_families, EditorRuntime},
     helper, settings, update_check,
     widgets::{
-        setting_combo_box, setting_combo_option, setting_option_button, setting_row,
-        setting_section, setting_text_input, SettingTextInputConfig, SettingTextInputMouseEvent,
-        SettingTextInputState, ACCENT, BACKGROUND, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT,
-        WARNING,
+        combo_box, combo_option, option_button, row, section, text_input, TextInputConfig,
+        TextInputMouseEvent, TextInputState, TokenEditState, ACCENT, BACKGROUND, MUTED_TEXT,
+        SURFACE, SURFACE_BRIGHT, TEXT, WARNING,
     },
 };
 use gpui::{
@@ -79,7 +78,7 @@ impl RimePathField {
 
 struct RimePathEdit {
     field: RimePathField,
-    input: SettingTextInputState,
+    input: TextInputState,
 }
 
 enum RimeTestStatus {
@@ -261,7 +260,7 @@ impl SettingsWindow {
     ) {
         self.commit_rime_path_edit(cx);
         let value = Self::rime_path_value(&self.source.read(cx).app.settings_value(), field);
-        let mut input = SettingTextInputState::new(value);
+        let mut input = TextInputState::new(value);
         input.move_to(cursor.unwrap_or(input.value.len()), false);
         self.rime_path_editing = Some(RimePathEdit { field, input });
         self.rime_test_status = None;
@@ -473,11 +472,11 @@ impl SettingsWindow {
     fn handle_rime_path_mouse(
         &mut self,
         field: RimePathField,
-        event: SettingTextInputMouseEvent,
+        event: TextInputMouseEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let SettingTextInputMouseEvent::Down { index, .. } = event {
+        if let TextInputMouseEvent::Down { index, .. } = event {
             if !matches!(
                 self.rime_path_editing.as_ref(),
                 Some(edit) if edit.field == field
@@ -494,13 +493,13 @@ impl SettingsWindow {
             return;
         };
         match event {
-            SettingTextInputMouseEvent::Down { index, shift } => {
+            TextInputMouseEvent::Down { index, shift } => {
                 edit.input.begin_mouse_selection(index, shift);
             }
-            SettingTextInputMouseEvent::Drag { index } => {
+            TextInputMouseEvent::Drag { index } => {
                 edit.input.extend_mouse_selection(index);
             }
-            SettingTextInputMouseEvent::Up => edit.input.end_mouse_selection(),
+            TextInputMouseEvent::Up => edit.input.end_mouse_selection(),
         }
         cx.notify();
     }
@@ -523,9 +522,9 @@ impl SettingsWindow {
         let editing = editing_state.is_some();
         let input_state = editing_state
             .clone()
-            .unwrap_or_else(|| SettingTextInputState::new(value));
+            .unwrap_or_else(|| TextInputState::new(value));
         let focus_handle = self.rime_path_focus_handles[field.index()].clone();
-        let config = SettingTextInputConfig::new(
+        let config = TextInputConfig::new(
             ("settings-rime-path", field as u32),
             input_state,
             placeholder,
@@ -533,10 +532,10 @@ impl SettingsWindow {
             focus_handle,
         );
         if read_only {
-            return setting_text_input(config.read_only());
+            return text_input(config.read_only());
         }
 
-        setting_text_input(
+        text_input(
             config
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if !matches!(
@@ -584,11 +583,11 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::SettingTextInputState;
+    use super::TextInputState;
 
     #[test]
     fn text_input_moves_on_grapheme_boundaries() {
-        let mut input = SettingTextInputState::new("a👩‍💻b".to_owned());
+        let mut input = TextInputState::new("a👩‍💻b".to_owned());
         input.move_to(input.value.len(), false);
         input.move_left(false);
         assert_eq!(&input.value[input.cursor..], "b");
@@ -599,7 +598,7 @@ mod tests {
 
     #[test]
     fn text_input_mouse_selection_replaces_selected_text() {
-        let mut input = SettingTextInputState::new("/tmp/rime-data".to_owned());
+        let mut input = TextInputState::new("/tmp/rime-data".to_owned());
         input.move_to(5, false);
         input.begin_mouse_selection(5, false);
         input.extend_mouse_selection(14);
@@ -613,7 +612,7 @@ mod tests {
 
     #[test]
     fn text_input_shift_selection_can_be_reversed_and_collapsed() {
-        let mut input = SettingTextInputState::new("abcdef".to_owned());
+        let mut input = TextInputState::new("abcdef".to_owned());
         input.move_to(5, false);
         input.begin_mouse_selection(5, false);
         input.extend_mouse_selection(2);
@@ -626,7 +625,7 @@ mod tests {
 
     #[test]
     fn text_input_select_all_and_backspace_clear_the_value() {
-        let mut input = SettingTextInputState::new("/tmp/rime".to_owned());
+        let mut input = TextInputState::new("/tmp/rime".to_owned());
         input.select_all();
         input.backspace();
 

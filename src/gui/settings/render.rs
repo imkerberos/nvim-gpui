@@ -10,7 +10,7 @@ impl Render for SettingsWindow {
         let mut font_size_options = div().w_full().flex().flex_col();
         for font_size in settings::FONT_SIZE_OPTIONS {
             let font_size = *font_size;
-            font_size_options = font_size_options.child(setting_combo_option(
+            font_size_options = font_size_options.child(combo_option(
                 ("settings-font-size", font_size),
                 format!("{font_size} px"),
                 current.font_size == font_size,
@@ -19,7 +19,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let font_size_options = setting_combo_box(
+        let font_size_options = combo_box(
             "settings-font-size-combo",
             format!("{} px", current.font_size),
             self.open_combo == Some(SettingsCombo::FontSize),
@@ -55,7 +55,7 @@ impl Render for SettingsWindow {
                 settings::NerdFontChoice::SymbolsMono,
             ),
         ] {
-            nerd_font_options = nerd_font_options.child(setting_combo_option(
+            nerd_font_options = nerd_font_options.child(combo_option(
                 id,
                 choice.label(),
                 current.nerd_font == choice,
@@ -64,7 +64,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let nerd_font_options = setting_combo_box(
+        let nerd_font_options = combo_box(
             "settings-nerd-font-combo",
             current.nerd_font.label(),
             self.open_combo == Some(SettingsCombo::NerdFont),
@@ -78,7 +78,7 @@ impl Render for SettingsWindow {
             ("settings-fallback-auto", settings::FallbackMode::Auto),
             ("settings-fallback-force", settings::FallbackMode::Force),
         ] {
-            fallback_options = fallback_options.child(setting_combo_option(
+            fallback_options = fallback_options.child(combo_option(
                 id,
                 mode.label(),
                 current.fallback_mode == mode,
@@ -87,7 +87,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let fallback_options = setting_combo_box(
+        let fallback_options = combo_box(
             "settings-fallback-combo",
             current.fallback_mode.label(),
             self.open_combo == Some(SettingsCombo::FallbackMode),
@@ -96,7 +96,7 @@ impl Render for SettingsWindow {
         );
 
         let mut cursor_animation_options = div().w_full().flex().flex_col();
-        cursor_animation_options = cursor_animation_options.child(setting_combo_option(
+        cursor_animation_options = cursor_animation_options.child(combo_option(
             "settings-cursor-animation-on",
             "On",
             current.cursor_animation,
@@ -104,7 +104,7 @@ impl Render for SettingsWindow {
                 this.apply_setting(|settings| settings.cursor_animation = true, cx);
             }),
         ));
-        cursor_animation_options = cursor_animation_options.child(setting_combo_option(
+        cursor_animation_options = cursor_animation_options.child(combo_option(
             "settings-cursor-animation-off",
             "Off",
             !current.cursor_animation,
@@ -112,7 +112,7 @@ impl Render for SettingsWindow {
                 this.apply_setting(|settings| settings.cursor_animation = false, cx);
             }),
         ));
-        let cursor_animation_options = setting_combo_box(
+        let cursor_animation_options = combo_box(
             "settings-cursor-animation-combo",
             if current.cursor_animation {
                 "On"
@@ -127,7 +127,7 @@ impl Render for SettingsWindow {
         let mut cache_options = div().w_full().flex().flex_col();
         for megabytes in settings::IMAGE_CACHE_SIZE_OPTIONS_MB {
             let label = format!("{megabytes} MB");
-            cache_options = cache_options.child(setting_combo_option(
+            cache_options = cache_options.child(combo_option(
                 ("settings-cache", *megabytes),
                 label,
                 current.image_cache_size_mb == *megabytes,
@@ -136,7 +136,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let cache_options = setting_combo_box(
+        let cache_options = combo_box(
             "settings-cache-combo",
             format!("{} MB", current.image_cache_size_mb),
             self.open_combo == Some(SettingsCombo::ImageCacheSize),
@@ -149,7 +149,7 @@ impl Render for SettingsWindow {
             ("settings-ime-system", settings::ImeBackend::System),
             ("settings-ime-rime", settings::ImeBackend::Rime),
         ] {
-            ime_backend_options = ime_backend_options.child(setting_combo_option(
+            ime_backend_options = ime_backend_options.child(combo_option(
                 id,
                 backend.label(),
                 current.ime_backend == backend,
@@ -158,7 +158,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let ime_backend_combo = setting_combo_box(
+        let ime_backend_combo = combo_box(
             "settings-ime-backend-combo",
             current.ime_backend.label(),
             self.open_combo == Some(SettingsCombo::ImeBackend),
@@ -177,7 +177,7 @@ impl Render for SettingsWindow {
                 settings::RimeCandidateLayout::Horizontal,
             ),
         ] {
-            rime_layout_options = rime_layout_options.child(setting_combo_option(
+            rime_layout_options = rime_layout_options.child(combo_option(
                 id,
                 layout.label(),
                 current.rime_candidate_layout == layout,
@@ -186,7 +186,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let rime_layout_combo = setting_combo_box(
+        let rime_layout_combo = combo_box(
             "settings-rime-layout-combo",
             current.rime_candidate_layout.label(),
             self.open_combo == Some(SettingsCombo::RimeCandidateLayout),
@@ -409,7 +409,7 @@ impl Render for SettingsWindow {
             cx,
         );
         let rime_source = self.source.clone();
-        let rime_library_detect = setting_option_button(
+        let rime_library_detect = option_button(
             "settings-rime-library-auto-detect",
             "Detect",
             current.rime_library_auto_detect,
@@ -513,7 +513,7 @@ impl Render for SettingsWindow {
             .as_ref()
             .map(|reason| (MUTED_TEXT, format!("Not ready: {reason}")));
 
-        let mut ime_content = div().w_full().child(setting_row(
+        let mut ime_content = div().w_full().child(row(
             "Input method",
             "Choose the text input backend used while editing.",
             ime_backend_combo,
@@ -521,12 +521,12 @@ impl Render for SettingsWindow {
         if current.ime_backend == settings::ImeBackend::Rime {
             let mut rime_content = div()
                 .w_full()
-                .child(setting_row(
+                .child(row(
                     "Candidate layout",
                     "Show Rime candidates in a vertical list or a horizontal row.",
                     rime_layout_combo,
                 ))
-                .child(setting_row(
+                .child(row(
                     "Activation shortcut",
                     "Toggle the built-in Rime backend. Changes to this shortcut are saved immediately.",
                     rime_toggle_shortcut_input,
@@ -542,7 +542,7 @@ impl Render for SettingsWindow {
                 );
             }
             rime_content = rime_content
-                .child(setting_row(
+                .child(row(
                     "librime directory",
                     if bundled_rime_runtime {
                         "Read-only path to the librime library shipped in the application bundle."
@@ -551,7 +551,7 @@ impl Render for SettingsWindow {
                     },
                     rime_library_control,
                 ))
-                .child(setting_row(
+                .child(row(
                     "Rime data directory",
                     if bundled_rime_runtime {
                         "Read-only schema and dictionary data shipped in the application bundle."
@@ -560,7 +560,7 @@ impl Render for SettingsWindow {
                     },
                     rime_data_input,
                 ))
-                .child(setting_row(
+                .child(row(
                     "User data directory",
                     "Writable Rime user data in the nvim-gpui application-support directory.",
                     rime_user_data_control,
@@ -574,7 +574,7 @@ impl Render for SettingsWindow {
                         .text_color(rgb(WARNING))
                         .child("Warning: Changes to librime and Rime data directories take effect after restarting nvim-gpui."),
                 )
-                .child(setting_row(
+                .child(row(
                     "Test Rime configuration",
                     "Load the configured librime and create a session.",
                     rime_test_button,
@@ -597,7 +597,7 @@ impl Render for SettingsWindow {
             .w_full()
             .flex()
             .flex_col()
-            .child(setting_combo_option(
+            .child(combo_option(
                 "settings-startup-on",
                 "On",
                 current.startup_maximized,
@@ -605,7 +605,7 @@ impl Render for SettingsWindow {
                     this.apply_setting(|settings| settings.startup_maximized = true, cx);
                 }),
             ))
-            .child(setting_combo_option(
+            .child(combo_option(
                 "settings-startup-off",
                 "Off",
                 !current.startup_maximized,
@@ -613,7 +613,7 @@ impl Render for SettingsWindow {
                     this.apply_setting(|settings| settings.startup_maximized = false, cx);
                 }),
             ));
-        let startup_options = setting_combo_box(
+        let startup_options = combo_box(
             "settings-startup-combo",
             if current.startup_maximized {
                 "On"
@@ -626,7 +626,7 @@ impl Render for SettingsWindow {
         );
 
         let mut update_check_options = div().w_full().flex().flex_col();
-        update_check_options = update_check_options.child(setting_combo_option(
+        update_check_options = update_check_options.child(combo_option(
             "settings-update-checks-on",
             "On",
             current.check_for_updates,
@@ -634,7 +634,7 @@ impl Render for SettingsWindow {
                 this.apply_setting(|settings| settings.check_for_updates = true, cx);
             }),
         ));
-        update_check_options = update_check_options.child(setting_combo_option(
+        update_check_options = update_check_options.child(combo_option(
             "settings-update-checks-off",
             "Off",
             !current.check_for_updates,
@@ -642,7 +642,7 @@ impl Render for SettingsWindow {
                 this.apply_setting(|settings| settings.check_for_updates = false, cx);
             }),
         ));
-        let update_check_options = setting_combo_box(
+        let update_check_options = combo_box(
             "settings-update-checks-combo",
             if current.check_for_updates {
                 "On"
@@ -671,7 +671,7 @@ impl Render for SettingsWindow {
         };
         let update_is_checking = matches!(&update_status, update_check::Status::Checking);
         let update_source = self.source.clone();
-        let check_updates_button = setting_option_button(
+        let check_updates_button = option_button(
             "settings-check-for-updates",
             if update_is_checking {
                 "Checking…"
@@ -719,7 +719,7 @@ impl Render for SettingsWindow {
             .child(update_actions);
 
         #[cfg(target_os = "macos")]
-        let quit_on_window_close = setting_checkbox(
+        let quit_on_window_close = checkbox(
             "settings-quit-on-window-close",
             "Quit when the main window closes",
             current.quit_on_window_close,
@@ -734,7 +734,7 @@ impl Render for SettingsWindow {
         );
 
         #[cfg(target_os = "macos")]
-        let allow_multiple_instances = setting_checkbox(
+        let allow_multiple_instances = checkbox(
             "settings-allow-multiple-instances",
             "Allow multiple instances",
             current.allow_multiple_instances,
@@ -760,7 +760,7 @@ impl Render for SettingsWindow {
         .into_iter()
         .enumerate()
         {
-            log_options = log_options.child(setting_combo_option(
+            log_options = log_options.child(combo_option(
                 ("settings-log-level", index),
                 level.label(),
                 current.log_level == level,
@@ -769,7 +769,7 @@ impl Render for SettingsWindow {
                 }),
             ));
         }
-        let log_options = setting_combo_box(
+        let log_options = combo_box(
             "settings-log-level-combo",
             current.log_level.label(),
             self.open_combo == Some(SettingsCombo::LogLevel),
@@ -834,67 +834,63 @@ impl Render for SettingsWindow {
         }
 
         let source = self.source.clone();
-        let cli_options = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .child(setting_option_button(
-                "settings-cli-install",
-                if cli_available {
-                    "Installed"
-                } else {
-                    "Install CLI (gpvim)"
-                },
-                cli_available,
-                move |cx| {
-                    let source = source.clone();
-                    let task = cx.background_spawn(async move { helper::install() });
-                    cx.spawn(async move |cx| {
-                        let result = task.await;
-                        let _ = source.update(cx, |view, cx| {
-                            view.app.set_cli_install_error(result.err());
-                            cx.notify();
-                        });
-                    })
-                    .detach();
-                },
-            ));
+        let cli_options = div().w_full().flex().items_center().child(option_button(
+            "settings-cli-install",
+            if cli_available {
+                "Installed"
+            } else {
+                "Install CLI (gpvim)"
+            },
+            cli_available,
+            move |cx| {
+                let source = source.clone();
+                let task = cx.background_spawn(async move { helper::install() });
+                cx.spawn(async move |cx| {
+                    let result = task.await;
+                    let _ = source.update(cx, |view, cx| {
+                        view.app.set_cli_install_error(result.err());
+                        cx.notify();
+                    });
+                })
+                .detach();
+            },
+        ));
 
-        let application_behavior = div().w_full().child(setting_row(
+        let application_behavior = div().w_full().child(row(
             "Startup maximized",
             "Open the main editor window in its maximized state.",
             startup_options,
         ));
         let application_behavior = application_behavior
-            .child(setting_row(
+                .child(row(
                 "Automatic update checks",
                 "Check for new stable nvim-gpui releases once per day in the background.",
                 update_check_options,
             ))
-            .child(setting_row(
+            .child(row(
                 "Updates",
                 "Check for updates manually and open the release page when a newer version is available.",
                 update_status_control,
             ));
         #[cfg(target_os = "macos")]
         let application_behavior = application_behavior
-            .child(setting_row(
+            .child(row(
                 "Quit behavior",
                 "Choose whether closing the main editor window also exits nvim-gpui.",
                 quit_on_window_close,
             ))
-            .child(setting_row(
+            .child(row(
                 "Instance behavior",
                 "Allow another nvim-gpui process to run at the same time.",
                 allow_multiple_instances,
             ));
         let application_behavior = application_behavior
-            .child(setting_row(
+            .child(row(
                 "Log level",
                 "Write runtime logs at the selected level. Logging is disabled by default.",
                 log_options,
             ))
-            .child(setting_row(
+            .child(row(
                 "Log directory",
                 "Read-only location used for runtime log files.",
                 log_directory_control,
@@ -908,68 +904,68 @@ impl Render for SettingsWindow {
             .py_5()
             .bg(rgb(BACKGROUND))
             .text_color(rgb(TEXT))
-            .child(setting_section(
+            .child(section(
                 "Application behavior",
                 application_behavior,
             ))
-            .child(setting_section(
+            .child(section(
                 "Font and image",
                 div()
                     .w_full()
-                    .child(setting_row(
+            .child(row(
                         "Font size",
                         "Shared size for guifont, guifontwide, and Nerd Font glyphs.",
                         font_size_options,
                     ))
-                    .child(setting_row(
+            .child(row(
                         "guifont",
                         "Ordered monospace fallback chain. Neovim's guifont chain is appended when configured.",
                         guifont_editor,
                     ))
-                    .child(setting_row(
+                    .child(row(
                         "guifontwide",
                         "Ordered chain for wide characters. Leave it empty to use the system/default chain.",
                         guifontwide_editor,
                     ))
-                    .child(setting_row(
+                    .child(row(
                         "Nerd font",
                         "Font used for bundled Nerd Font fallback glyphs.",
                         nerd_font_options,
                     ))
-                    .child(setting_row(
+                    .child(row(
                         "Fallback mode",
                         "Choose whether missing Nerd glyphs use the selected fallback font.",
                         fallback_options,
                     ))
-                    .child(setting_row(
+                    .child(row(
                         "Image cache size",
                         "Maximum unplaced Kitty Graphics Protocol image data kept in memory.",
                         cache_options,
                     )),
             ))
-            .child(setting_section(
+            .child(section(
                 "Cursor",
-                setting_row(
+                row(
                     "Cursor animation",
                     "Animate cursor movement between cells. Disable this for immediate movement.",
                     cursor_animation_options,
                 ),
             ))
-            .child(setting_section(
+            .child(section(
                 "IME",
                 ime_content,
             ))
-            .child(setting_section(
+            .child(section(
                 "Clipboard",
-                setting_row(
+                row(
                     "Paste shortcut",
                     "Read the local system clipboard and paste it through Neovim.",
                     paste_shortcut_input,
                 ),
             ))
-            .child(setting_section(
+            .child(section(
                 "Utils",
-                setting_row(
+                row(
                     "Command-line helper",
                     "Install gpvim and gpvimdiff so files can be opened or compared from a terminal.",
                     cli_options,

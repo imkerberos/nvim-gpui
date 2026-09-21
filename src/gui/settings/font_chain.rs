@@ -1,6 +1,6 @@
 use super::*;
 use crate::editor::{format_guifont_families, parse_guifont_families};
-use gpui::{deferred, div, px, rgb};
+use crate::widgets::{token_edit, TokenEditCandidate, TokenEditConfig, TokenEditEvent};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum FontChainField {
@@ -33,8 +33,7 @@ impl FontChainField {
 
 pub(super) struct FontChainEdit {
     field: FontChainField,
-    cursor: usize,
-    list_open: bool,
+    state: TokenEditState,
 }
 
 fn font_chain_tokens(value: &str) -> Vec<String> {
@@ -52,10 +51,10 @@ impl SettingsWindow {
         let Some(edit) = self.font_chain_editing.as_mut() else {
             return false;
         };
-        if !edit.list_open {
+        if !edit.state.list_open {
             return false;
         }
-        edit.list_open = false;
+        edit.state.list_open = false;
         true
     }
 
@@ -71,8 +70,10 @@ impl SettingsWindow {
         let token_count = font_chain_tokens(field.value(&settings)).len();
         self.font_chain_editing = Some(FontChainEdit {
             field,
-            cursor: cursor.min(token_count),
-            list_open: true,
+            state: TokenEditState {
+                cursor: cursor.min(token_count),
+                list_open: true,
+            },
         });
         self.open_combo = None;
         self.start_font_scan(window, cx);
@@ -119,7 +120,7 @@ impl SettingsWindow {
             .as_mut()
             .filter(|edit| edit.field == field)
         {
-            edit.cursor = cursor.min(tokens.len());
+            edit.state.cursor = cursor.min(tokens.len());
         }
         cx.notify();
     }
@@ -141,7 +142,7 @@ impl SettingsWindow {
 
         window.prevent_default();
         cx.stop_propagation();
-        let cursor = edit.cursor;
+        let cursor = edit.state.cursor;
         let settings = self.source.read(cx).app.settings_value();
         let mut tokens = font_chain_tokens(field.value(&settings));
         match event.keystroke.key.as_str() {
@@ -151,8 +152,8 @@ impl SettingsWindow {
                     .as_mut()
                     .filter(|edit| edit.field == field)
                 {
-                    if edit.list_open {
-                        edit.list_open = false;
+                    if edit.state.list_open {
+                        edit.state.list_open = false;
                     } else {
                         self.font_chain_editing = None;
                     }
@@ -165,25 +166,25 @@ impl SettingsWindow {
             }
             "left" if cursor > 0 => {
                 if let Some(edit) = self.font_chain_editing.as_mut() {
-                    edit.cursor = cursor - 1;
+                    edit.state.cursor = cursor - 1;
                 }
                 cx.notify();
             }
             "right" if cursor < tokens.len() => {
                 if let Some(edit) = self.font_chain_editing.as_mut() {
-                    edit.cursor = cursor + 1;
+                    edit.state.cursor = cursor + 1;
                 }
                 cx.notify();
             }
             "home" => {
                 if let Some(edit) = self.font_chain_editing.as_mut() {
-                    edit.cursor = 0;
+                    edit.state.cursor = 0;
                 }
                 cx.notify();
             }
             "end" => {
                 if let Some(edit) = self.font_chain_editing.as_mut() {
-                    edit.cursor = tokens.len();
+                    edit.state.cursor = tokens.len();
                 }
                 cx.notify();
             }
@@ -212,7 +213,7 @@ impl SettingsWindow {
         else {
             return;
         };
-        let cursor = edit.cursor;
+        let cursor = edit.state.cursor;
         let settings = self.source.read(cx).app.settings_value();
         let mut tokens = font_chain_tokens(field.value(&settings));
         if let Some(index) = tokens
@@ -225,6 +226,29 @@ impl SettingsWindow {
         } else {
             tokens.insert(cursor.min(tokens.len()), family);
             self.set_font_chain(field, tokens, cursor + 1, cx);
+        }
+    }
+
+    fn handle_font_chain_click(
+        &mut self,
+        field: FontChainField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let token_count = {
+            let settings = self.source.read(cx).app.settings_value();
+            font_chain_tokens(field.value(&settings)).len()
+        };
+        if let Some(edit) = self
+            .font_chain_editing
+            .as_mut()
+            .filter(|edit| edit.field == field)
+        {
+            edit.state.cursor = token_count;
+            edit.state.list_open = !edit.state.list_open;
+            cx.notify();
+        } else {
+            self.begin_font_chain_edit(field, token_count, window, cx);
         }
     }
 
@@ -241,167 +265,51 @@ impl SettingsWindow {
             .font_chain_editing
             .as_ref()
             .filter(|edit| edit.field == field);
-        let cursor = editing.map(|edit| edit.cursor).unwrap_or(tokens.len());
-        let list_open = editing.is_some_and(|edit| edit.list_open);
+        let state = editing.map(|edit| edit.state);
         let focus_handle = self.font_chain_focus_handles[field.index()].clone();
-        let mut token_field = div()
-            .id(("settings-font-chain", field.index() as u32))
-            .w_full()
-            .min_w_0()
-            .h(px(36.0))
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(if editing.is_some() {
-                ACCENT
-            } else {
-                SURFACE_BRIGHT
-            }))
-            .bg(rgb(SURFACE))
-            .track_focus(&focus_handle)
-            .focus(|style| style.border_color(rgb(ACCENT)))
-            .hover(|style| style.border_color(rgb(ACCENT)))
-            .cursor_pointer()
-            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                let token_count = {
-                    let settings = this.source.read(cx).app.settings_value();
-                    font_chain_tokens(field.value(&settings)).len()
-                };
-                if let Some(edit) = this
-                    .font_chain_editing
-                    .as_mut()
-                    .filter(|edit| edit.field == field)
-                {
-                    edit.cursor = token_count;
-                    edit.list_open = !edit.list_open;
-                    cx.notify();
-                } else {
-                    this.begin_font_chain_edit(field, token_count, window, cx);
+        let candidate_families = candidates.map(<[String]>::to_vec).unwrap_or_default();
+        let token_candidates = candidates.map(|candidates| {
+            candidates
+                .iter()
+                .map(|family| TokenEditCandidate {
+                    label: family.clone().into(),
+                    selected: contains_font_family(&tokens, family),
+                })
+                .collect()
+        });
+        let placeholder = default_family
+            .map(|family| format!("System default ({family})"))
+            .unwrap_or_else(|| "System default".to_owned());
+        let on_event = cx.listener(
+            move |this, event: &TokenEditEvent, window, cx| match *event {
+                TokenEditEvent::Surface => this.handle_font_chain_click(field, window, cx),
+                TokenEditEvent::Token(index) => {
+                    this.begin_font_chain_edit(field, index + 1, window, cx);
                 }
-            }))
-            .capture_key_down(cx.listener(move |this, event, window, cx| {
-                this.handle_font_chain_key(field, event, window, cx);
-            }));
-
-        for (index, family) in tokens.iter().cloned().enumerate() {
-            if editing.is_some() && cursor == index {
-                token_field =
-                    token_field.child(div().w(px(2.0)).h(px(22.0)).rounded_sm().bg(rgb(ACCENT)));
-            }
-            token_field = token_field.child(
-                div()
-                    .id((
-                        "settings-font-token",
-                        field.index().saturating_mul(10_000).saturating_add(index),
-                    ))
-                    .max_w(px(240.0))
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(SURFACE_BRIGHT))
-                    .text_sm()
-                    .text_color(rgb(TEXT))
-                    .cursor_pointer()
-                    .child(family)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.begin_font_chain_edit(field, index + 1, window, cx);
-                    })),
-            );
-        }
-        if editing.is_some() && cursor == tokens.len() {
-            token_field =
-                token_field.child(div().w(px(2.0)).h(px(22.0)).rounded_sm().bg(rgb(ACCENT)));
-        }
-        if tokens.is_empty() {
-            token_field = token_field.child(
-                div().flex_1().text_sm().text_color(rgb(MUTED_TEXT)).child(
-                    default_family
-                        .map(|family| format!("System default ({family})"))
-                        .unwrap_or_else(|| "System default".to_owned()),
-                ),
-            );
-        }
-
-        let mut editor = div()
-            .relative()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(token_field);
-
-        if list_open {
-            let mut options = div().w_full().flex().flex_col();
-            match candidates {
-                Some(candidates) => {
-                    for (index, family) in candidates.iter().cloned().enumerate() {
-                        options = options.child(setting_combo_option(
-                            (
-                                "settings-font-candidate",
-                                field.index().saturating_mul(10_000).saturating_add(index),
-                            ),
-                            family.clone(),
-                            contains_font_family(&tokens, &family),
-                            cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_font_candidate(field, family.clone(), cx);
-                            }),
-                        ));
-                    }
-                    if candidates.is_empty() {
-                        options = options.child(
-                            div()
-                                .px_3()
-                                .py_2()
-                                .text_sm()
-                                .text_color(rgb(MUTED_TEXT))
-                                .child("No additional fonts available"),
-                        );
+                TokenEditEvent::Candidate(index) => {
+                    if let Some(family) = candidate_families.get(index).cloned() {
+                        this.toggle_font_candidate(field, family, cx);
                     }
                 }
-                None => {
-                    options = options.child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_sm()
-                            .text_color(rgb(MUTED_TEXT))
-                            .child("Scanning fonts…"),
-                    );
-                }
-            }
-            editor = editor.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .left(px(0.0))
-                        .top(px(40.0))
-                        .w_full()
-                        .p_1()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(SURFACE_BRIGHT))
-                        .bg(rgb(SURFACE))
-                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                        .child(
-                            div()
-                                .id(("settings-font-candidates", field.index()))
-                                .w_full()
-                                .max_h(px(320.0))
-                                .overflow_y_scroll()
-                                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                                .child(options),
-                        ),
-                )
-                .with_priority(1),
-            );
-        }
+            },
+        );
+        let on_key_down = cx.listener(move |this, event, window, cx| {
+            this.handle_font_chain_key(field, event, window, cx);
+        });
 
-        editor
+        token_edit(
+            TokenEditConfig::new(
+                ("settings-font-chain", field.index() as u32),
+                focus_handle,
+                tokens.into_iter().map(Into::into).collect(),
+                placeholder,
+                state,
+            )
+            .candidates(token_candidates)
+            .empty_candidates_label("No additional fonts available")
+            .loading_label("Scanning fonts…")
+            .on_event(on_event)
+            .on_key_down(on_key_down),
+        )
     }
 }
