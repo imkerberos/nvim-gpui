@@ -7,6 +7,7 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 output_dir="${NVIM_GPUI_ARCH_OUTPUT:-$repo_root/dist/arch-x86_64}"
 source_archive="${NVIM_GPUI_ARCH_SOURCE_TARBALL:-}"
+package_version="${NVIM_GPUI_ARCH_PACKAGE_VERSION:-}"
 output_uid="${NVIM_GPUI_OUTPUT_UID:-}"
 output_gid="${NVIM_GPUI_OUTPUT_GID:-}"
 
@@ -21,6 +22,8 @@ fail() {
 [[ -f "$repo_root/packaging/arch/PKGBUILD" ]] || fail 'Arch PKGBUILD is missing'
 [[ -n "$source_archive" && -f "$source_archive" ]] \
   || fail 'the local source archive is missing'
+[[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z._+]*$ ]] \
+  || fail "invalid Arch package version: ${package_version:-<empty>}"
 
 # Docker Desktop's amd64 emulation can reject pacman's downloader seccomp
 # sandbox. The container is already isolated by Docker, so disable only this
@@ -57,8 +60,8 @@ trap 'rm -rf "$build_root"' EXIT
 package_output="$build_root/pkgdest"
 mkdir -p "$package_output"
 cp "$repo_root/packaging/arch/PKGBUILD" "$build_root/PKGBUILD"
-cp "$source_archive" "$build_root/nvim-gpui-$(sed -n 's/^pkgver=//p' \
-  "$repo_root/packaging/arch/PKGBUILD" | head -n 1).tar.gz"
+sed -i "s/^pkgver=.*/pkgver=$package_version/" "$build_root/PKGBUILD"
+cp "$source_archive" "$build_root/nvim-gpui-$package_version.tar.gz"
 chown -R builder:builder "$build_root"
 
 printf 'Building nvim-gpui as an Arch Linux x86_64 package\n'

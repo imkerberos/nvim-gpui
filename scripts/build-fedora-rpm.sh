@@ -44,8 +44,9 @@ docker run --rm -i --pull=missing \
 
 if [[ "$fedora_arch" == 'aarch64' ]]; then
   version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1)"
+  rpm_version="${version%%-*}"
   package_file="$(find "$output_dir" -maxdepth 1 -type f \
-    -name "nvim-gpui-${version}-*.$fedora_arch.rpm" \
+    -name "nvim-gpui-${rpm_version}-*.$fedora_arch.rpm" \
     ! -name '*-debuginfo-*' -print -quit)"
   [[ -n "$package_file" ]] \
     || { echo "Fedora $fedora_arch RPM was not created in $output_dir" >&2; exit 1; }

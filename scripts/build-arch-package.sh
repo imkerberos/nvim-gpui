@@ -12,8 +12,10 @@ version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head
 source_dir="$repo_root/.cache/arch"
 source_archive="$source_dir/nvim-gpui-$version.tar.gz"
 
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
   || { echo "could not parse a package version from Cargo.toml: $version" >&2; exit 1; }
+arch_version="${version%%+*}"
+arch_version="${arch_version//-/}"
 command -v docker >/dev/null 2>&1 \
   || { echo 'docker is required; start Docker Desktop first' >&2; exit 1; }
 docker info >/dev/null \
@@ -44,6 +46,7 @@ docker run --rm -i --pull=missing \
   --mount 'type=volume,src=nvim-gpui-arch-target,dst=/workspace/.cache/arch-target' \
   --workdir /workspace \
   --env NVIM_GPUI_ARCH_SOURCE_TARBALL=/workspace/.cache/arch/nvim-gpui-${version}.tar.gz \
+  --env NVIM_GPUI_ARCH_PACKAGE_VERSION="$arch_version" \
   --env NVIM_GPUI_ARCH_OUTPUT=/workspace/dist/arch-x86_64 \
   --env CARGO_TARGET_DIR=/workspace/.cache/arch-target \
   --env "NVIM_GPUI_OUTPUT_UID=$(id -u)" \
