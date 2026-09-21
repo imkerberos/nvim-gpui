@@ -105,7 +105,7 @@ jobs:
             nvim-gpui-preview-${{ github.run_id }}-darwin-${{ matrix.arch }}.dmg
             nvim-gpui-preview-${{ github.run_id }}-darwin-${{ matrix.arch }}.app.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   debian:
     name: Preview Debian ${{ matrix.arch }}
@@ -160,7 +160,7 @@ jobs:
           name: nvim-gpui-preview-debian-${{ matrix.arch }}-${{ github.run_id }}
           path: nvim-gpui-preview-${{ github.run_id }}-linux-${{ matrix.arch }}.deb
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   fedora:
     name: Preview Fedora ${{ matrix.arch }}
@@ -194,7 +194,7 @@ jobs:
           name: nvim-gpui-preview-fedora-${{ matrix.arch }}-${{ github.run_id }}
           path: nvim-gpui-preview-${{ github.run_id }}-fedora-${{ matrix.arch }}.rpm
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   arch:
     name: Preview Arch Linux x86_64
@@ -220,7 +220,7 @@ jobs:
           name: nvim-gpui-preview-arch-x86_64-${{ github.run_id }}
           path: nvim-gpui-preview-${{ github.run_id }}-arch-x86_64.pkg.tar.zst
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   windows:
     name: Preview Windows x86_64
@@ -346,4 +346,4 @@ jobs:
             nvim-gpui-preview-${{ github.run_id }}-windows-x86_64-setup.exe
             nvim-gpui-preview-${{ github.run_id }}-windows-x86_64.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
