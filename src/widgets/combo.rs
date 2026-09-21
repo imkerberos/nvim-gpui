@@ -60,6 +60,7 @@ pub(crate) fn combo_box(
                     .border_1()
                     .border_color(rgb(SURFACE_BRIGHT))
                     .bg(rgb(SURFACE))
+                    .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .child(
                         div()
                             .id(ElementId::NamedChild(Box::new(id), "options".into()))
