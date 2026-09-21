@@ -281,6 +281,37 @@ installer-windows: rime-runtime-windows bundle-windows
 [windows]
 pack-windows: ci installer-windows smoke-windows
 
+# Push the current branch and start a preview build for that branch.
+preview:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v gh >/dev/null 2>&1 || {
+      echo "GitHub CLI (gh) is required; install it and run gh auth login first" >&2
+      exit 1
+    }
+    branch="$(git branch --show-current)"
+    [ -n "$branch" ] || {
+      echo "preview must run from a named branch" >&2
+      exit 1
+    }
+    git diff --quiet && git diff --cached --quiet || {
+      echo "working tree has uncommitted changes; commit them before preview" >&2
+      exit 1
+    }
+    workflow_ref="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+    gh workflow view preview.yml --ref "$workflow_ref" --yaml >/dev/null 2>&1 || {
+      echo "preview.yml must exist on the repository default branch ($workflow_ref) before preview can start" >&2
+      exit 1
+    }
+    git push --set-upstream origin "$branch"
+    gh workflow run preview.yml \
+      --ref "$workflow_ref" \
+      --raw-field "ref=$branch"
+    local_commit="$(git rev-parse HEAD)"
+    repo_url="$(gh repo view --json url --jq '.url')"
+    echo "started preview for $branch ($local_commit)"
+    echo "workflow: $repo_url/actions/workflows/preview.yml"
+
 # Synchronize Cargo, AppBundle, and Homebrew release versions.
 release-prepare version:
     {{python_command}} scripts/release.py prepare {{version}}

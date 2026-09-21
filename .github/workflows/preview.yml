@@ -1,0 +1,349 @@
+name: Preview Builds
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build. Defaults to the caller ref.
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build. Defaults to the selected workflow ref.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: preview-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEOVIM_VERSION: 0.12.5
+
+jobs:
+  macos:
+    name: Preview macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-15
+            nix_system: aarch64-darwin
+          - arch: x86_64
+            # Build the Intel artifact on Apple Silicon and let Rosetta run
+            # the x86_64 tools needed during the build.
+            runner: macos-15
+            nix_system: x86_64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+
+      - name: Cache Cargo and Rime build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            .cache/rime-build/macos
+          key: preview-macos-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flake.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
+          restore-keys: |
+            preview-macos-${{ matrix.arch }}-
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
+
+      - name: Enable Rosetta 2 for Intel tools
+        if: matrix.arch == 'x86_64'
+        run: sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build and package macOS preview
+        env:
+          NVIM_GPUI_PACKAGE_ARCH: ${{ matrix.arch }}
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-macos
+
+      - name: Archive macOS AppBundle
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: ditto -c -k --sequesterRsrc --keepParent ".cache/macos/nvim-gpui.app" ".cache/macos/nvim-gpui-${ARCH}.app.zip"
+
+      - name: Stage macOS preview artifacts
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cp \
+            ".cache/macos/nvim-gpui-${ARCH}.dmg" \
+            "nvim-gpui-preview-${GITHUB_RUN_ID}-darwin-${ARCH}.dmg"
+          cp \
+            ".cache/macos/nvim-gpui-${ARCH}.app.zip" \
+            "nvim-gpui-preview-${GITHUB_RUN_ID}-darwin-${ARCH}.app.zip"
+
+      - name: Upload macOS preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-preview-darwin-${{ matrix.arch }}-${{ github.run_id }}
+          path: |
+            nvim-gpui-preview-${{ github.run_id }}-darwin-${{ matrix.arch }}.dmg
+            nvim-gpui-preview-${{ github.run_id }}-darwin-${{ matrix.arch }}.app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  debian:
+    name: Preview Debian ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            nix_system: x86_64-linux
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            nix_system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo
+          key: preview-debian-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
+          restore-keys: |
+            preview-debian-${{ matrix.arch }}-
+
+      - name: Run repository checks
+        run: nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just ci
+
+      - name: Build Debian package
+        run: |
+          nix develop --accept-flake-config ".#devShells.${{ matrix.nix_system }}.default" -c just pack-debian-${{ matrix.arch }}
+          package="$(find "dist/ubuntu-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$package"
+          cp "$package" "nvim-gpui-preview-${GITHUB_RUN_ID}-linux-${{ matrix.arch }}.deb"
+
+      - name: Upload Debian preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-preview-debian-${{ matrix.arch }}-${{ github.run_id }}
+          path: nvim-gpui-preview-${{ github.run_id }}-linux-${{ matrix.arch }}.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  fedora:
+    name: Preview Fedora ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build Fedora package
+        run: |
+          bash scripts/build-fedora-rpm.sh "${{ matrix.arch }}"
+          package="$(find "dist/fedora-${{ matrix.arch }}" -maxdepth 1 -type f -name '*.rpm' ! -name '*-debuginfo-*' -print -quit)"
+          test -n "$package"
+          cp "$package" "nvim-gpui-preview-${GITHUB_RUN_ID}-fedora-${{ matrix.arch }}.rpm"
+
+      - name: Upload Fedora preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-preview-fedora-${{ matrix.arch }}-${{ github.run_id }}
+          path: nvim-gpui-preview-${{ github.run_id }}-fedora-${{ matrix.arch }}.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+  arch:
+    name: Preview Arch Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Build Arch Linux package
+        run: |
+          bash scripts/build-arch-package.sh
+          package="$(find dist/arch-x86_64 -maxdepth 1 -type f -name 'nvim-gpui-*.pkg.tar.*' -print -quit)"
+          test -n "$package"
+          cp "$package" "nvim-gpui-preview-${GITHUB_RUN_ID}-arch-x86_64.pkg.tar.zst"
+
+      - name: Upload Arch Linux preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-preview-arch-x86_64-${{ github.run_id }}
+          path: nvim-gpui-preview-${{ github.run_id }}-arch-x86_64.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Preview Windows x86_64
+    runs-on: windows-2022
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Cache Cargo and Rime build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            .cache/rime-build/windows-x86_64
+          key: preview-windows-x86_64-${{ hashFiles('Cargo.lock', 'packaging/rime/runtime.toml', 'packaging/rime/starter-data.toml') }}
+          restore-keys: |
+            preview-windows-x86_64-
+
+      - name: Install Rust components and just
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add clippy rustfmt
+          cargo install just --locked
+          (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {
+            throw 'Chocolatey is not available on the Windows runner'
+          }
+          choco.exe install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chocolatey failed to install Inno Setup with exit code $LASTEXITCODE"
+          }
+
+          $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+          )
+          $iscc = $candidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $iscc) {
+            throw 'Inno Setup was installed but ISCC.exe was not found'
+          }
+          "INNO_SETUP_COMPILER=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Output "using ISCC: $iscc"
+
+      - name: Install pinned Neovim
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION"
+          $nvimBin = Join-Path $installDir 'bin'
+          $nvimExe = Join-Path $nvimBin 'nvim.exe'
+          $archive = Join-Path $env:RUNNER_TEMP "nvim-$env:NEOVIM_VERSION.zip"
+          if (-not (Test-Path $nvimExe)) {
+            Invoke-WebRequest `
+              -Uri "https://github.com/neovim/neovim/releases/download/v$env:NEOVIM_VERSION/nvim-win64.zip" `
+              -OutFile $archive
+            if (Test-Path $installDir) {
+              Remove-Item $installDir -Recurse -Force
+            }
+            Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+            Rename-Item (Join-Path $env:RUNNER_TEMP 'nvim-win64') $installDir
+          }
+          if (-not (Test-Path $nvimExe)) {
+            throw "Neovim executable was not found: $nvimExe"
+          }
+          $nvimBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $nvimExe --version
+
+      - name: Build and package Windows preview
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $artifactDir = Join-Path $root '.cache\artifacts\windows-x86_64'
+          $rimeBuildDir = Join-Path $root '.cache\rime-build\windows-x86_64'
+          $runtimeDir = Join-Path $artifactDir 'rime-runtime'
+          $bundleDir = Join-Path $artifactDir 'nvim-gpui'
+          $installerDir = Join-Path $artifactDir 'installer'
+          New-Item -ItemType Directory -Force -Path $artifactDir, $rimeBuildDir | Out-Null
+
+          $env:NVIM_GPUI_RIME_WINDOWS_ARCH = 'x64'
+          $env:NVIM_GPUI_RIME_BUILD_DIR = $rimeBuildDir
+          $env:NVIM_GPUI_RIME_RUNTIME_OUTPUT = $runtimeDir
+          $env:NVIM_GPUI_WINDOWS_BUNDLE_OUTPUT = $bundleDir
+          $env:NVIM_GPUI_WINDOWS_INSTALLER_OUTPUT = $installerDir
+
+          just pack-windows
+          if ($LASTEXITCODE -ne 0) {
+            throw "just pack-windows failed with exit code $LASTEXITCODE"
+          }
+
+          $versionMatch = [regex]::Match((Get-Content (Join-Path $root 'Cargo.toml') -Raw), '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
+          if (-not $versionMatch.Success) {
+            throw 'could not read the package version from Cargo.toml'
+          }
+          $version = $versionMatch.Groups[1].Value
+          $installer = Join-Path $installerDir "nvim-gpui-$version-setup.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Windows installer was not created: $installer"
+          }
+
+          $previewInstaller = Join-Path $root "nvim-gpui-preview-$env:GITHUB_RUN_ID-windows-x86_64-setup.exe"
+          Copy-Item $installer $previewInstaller -Force
+          $previewZip = Join-Path $root "nvim-gpui-preview-$env:GITHUB_RUN_ID-windows-x86_64.zip"
+          Compress-Archive -Path (Join-Path $bundleDir '*') -DestinationPath $previewZip -Force
+
+      - name: Upload Windows preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvim-gpui-preview-windows-x86_64-${{ github.run_id }}
+          path: |
+            nvim-gpui-preview-${{ github.run_id }}-windows-x86_64-setup.exe
+            nvim-gpui-preview-${{ github.run_id }}-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 14
