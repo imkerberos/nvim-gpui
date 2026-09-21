@@ -242,18 +242,26 @@ be selected with `NVIM_GPUI_RIME_RUNTIME=/path/to/rime-runtime`.
 ## Font configuration
 
 Font selection is available in Settings → `Font and image`. nvim-gpui uses the
-selected fonts as the primary fonts for its own grid renderer. Neovim's
-`guifont` and `guifontwide` options are kept as fallback families, so the same
-Neovim configuration can continue to work in both a terminal and nvim-gpui.
+selected font chains for its own grid renderer. Each font name is a token: the
+arrow keys move between tokens, and Backspace/Delete remove one whole token.
+Click the empty part of the editor to open the installed-font candidate list;
+fonts already present in the chain remain visible and are marked as selected.
+Normal, italic, bold, and bold-italic faces are derived automatically from the
+same chain.
+
+Neovim's `guifont` and `guifontwide` options are parsed as ordered comma-
+separated chains and appended as compatibility fallbacks, so the same Neovim
+configuration can continue to work in both a terminal and nvim-gpui.
 
 The Settings controls are:
 
 - `Font size`: the shared grid size. The available values are 10, 11, 12, 13,
   14, 15, 16, 18, 20, 22, 24, 28, and 32 px. It applies to the primary
   regular font, the primary wide-character font, and bundled Nerd Font glyphs.
-- `guifont`: an enumerated system monospace font used as the primary regular
-  grid font. Choose `System default` to use the platform preference.
-- `guifontwide`: an enumerated Unicode-capable font used for wide characters.
+- `guifont`: an ordered chain of installed system monospace fonts used for the
+  regular grid. An empty chain uses the platform preference.
+- `guifontwide`: an ordered chain of installed Unicode-capable fonts used for
+  wide characters. An empty chain uses the platform/system preference.
   The list tests actual glyph coverage; it does not decide whether a font is
   suitable from `CJK` or another substring in its family name. Fonts such as
   LXGW WenKai can therefore appear in the list.
@@ -268,8 +276,8 @@ For reliable text and CJK alignment, you can also set both `guifont` and
 installed on your system:
 
 ```lua
-vim.opt.guifont = "Iosevka Term Slab"
-vim.opt.guifontwide = "LXGW WenKai"
+vim.opt.guifont = "Iosevka Term Slab,JetBrainsMono Nerd Font"
+vim.opt.guifontwide = "LXGW WenKai,Noto Sans CJK SC"
 ```
 
 If these options are not set, nvim-gpui still selects an installed platform
@@ -283,10 +291,12 @@ font at runtime. The default preference order is:
 
 The first installed font that passes the relevant font check is selected. If
 none of the preferred fonts is available, nvim-gpui searches the installed
-font collection for a suitable regular or Unicode-capable family. An explicit
-Neovim `guifont` or `guifontwide` value is parsed as a family name and used as
-the fallback for the corresponding primary font; if `guifontwide` is absent,
-Neovim's `guifont` is also considered for wide-character fallback.
+font collection for a suitable regular or Unicode-capable family. Each entry
+in an explicit Neovim `guifont` or `guifontwide` chain is parsed in order and
+used as a fallback for the corresponding configured chain; if `guifontwide` is
+absent, Neovim's full `guifont` chain is also considered for wide-character
+fallback. Font names containing commas or colons may use Neovim's backslash
+escaping rules.
 
 ## GUI-specific theme
 

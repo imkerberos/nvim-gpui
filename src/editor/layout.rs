@@ -4,13 +4,13 @@ use crate::app::{
     DEFAULT_GRID_LINE_HEIGHT, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
     PREFERRED_SYSTEM_MONOSPACE_FONTS, PREFERRED_SYSTEM_WIDE_FONTS, THEMED_TITLEBAR_HEIGHT,
 };
-use gpui::{font, px, size, Pixels, Window};
+use gpui::{font, px, size, Pixels, Window, WindowTextSystem};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GuiFontSpec {
     pub(crate) family: String,
     pub(crate) size: f32,
-    pub(crate) fallback_family: Option<String>,
+    pub(crate) fallback_families: Vec<String>,
 }
 
 impl Default for GuiFontSpec {
@@ -18,7 +18,7 @@ impl Default for GuiFontSpec {
         Self {
             family: DEFAULT_GRID_FONT_FAMILY.to_owned(),
             size: DEFAULT_GRID_FONT_SIZE,
-            fallback_family: None,
+            fallback_families: Vec::new(),
         }
     }
 }
@@ -49,7 +49,7 @@ impl GuiFontSpec {
         Self {
             family,
             size: DEFAULT_GRID_FONT_SIZE,
-            fallback_family: None,
+            fallback_families: Vec::new(),
         }
     }
 
@@ -68,7 +68,7 @@ impl GuiFontSpec {
         Self {
             family,
             size: DEFAULT_GRID_FONT_SIZE,
-            fallback_family: None,
+            fallback_families: Vec::new(),
         }
     }
 
@@ -114,16 +114,27 @@ impl EditorRuntime {
         });
         let mut font = self
             .configured_grid_font
-            .as_deref()
-            .map(|family| GuiFontSpec {
-                family: family.to_owned(),
-                size: font_size,
-                fallback_family: fallback.as_ref().map(|font| font.family.clone()),
+            .as_ref()
+            .map(|families| {
+                let mut families = families.clone();
+                append_font_families(
+                    &mut families,
+                    fallback.as_ref().map(|font| {
+                        std::iter::once(font.family.clone())
+                            .chain(font.fallback_families.iter().cloned())
+                            .collect::<Vec<_>>()
+                    }),
+                );
+                GuiFontSpec::from_families(families, font_size)
             })
             .unwrap_or_else(|| GuiFontSpec::system(window));
         if self.configured_grid_font.is_none() {
             font.size = font_size;
-            font.fallback_family = fallback.map(|fallback| fallback.family);
+            if let Some(fallback) = fallback {
+                font.fallback_families = std::iter::once(fallback.family)
+                    .chain(fallback.fallback_families)
+                    .collect();
+            }
         }
         self.resolved_grid_font = Some(font.clone());
         font
@@ -154,52 +165,62 @@ impl EditorRuntime {
         });
         let mut font = self
             .configured_grid_wide_font
-            .as_deref()
-            .map(|family| GuiFontSpec {
-                family: family.to_owned(),
-                size: font_size,
-                fallback_family: fallback.as_ref().map(|font| font.family.clone()),
+            .as_ref()
+            .map(|families| {
+                let mut families = families.clone();
+                append_font_families(
+                    &mut families,
+                    fallback.as_ref().map(|font| {
+                        std::iter::once(font.family.clone())
+                            .chain(font.fallback_families.iter().cloned())
+                            .collect::<Vec<_>>()
+                    }),
+                );
+                GuiFontSpec::from_families(families, font_size)
             })
             .unwrap_or_else(|| GuiFontSpec::system_wide(window));
         if self.configured_grid_wide_font.is_none() {
             font.size = font_size;
-            font.fallback_family = fallback.map(|fallback| fallback.family);
+            if let Some(fallback) = fallback {
+                font.fallback_families = std::iter::once(fallback.family)
+                    .chain(fallback.fallback_families)
+                    .collect();
+            }
         }
         self.resolved_grid_wide_font = Some(font.clone());
         font
     }
 }
 
-pub(crate) fn system_monospace_families(window: &Window) -> Vec<String> {
+pub(crate) fn system_font_families(text_system: &WindowTextSystem) -> (Vec<String>, Vec<String>) {
     let font_size = px(DEFAULT_GRID_FONT_SIZE);
-    let mut families = window
-        .text_system()
-        .all_font_names()
-        .into_iter()
-        .filter(|family| !family.starts_with('.') && is_monospace_family(window, family, font_size))
-        .collect::<Vec<_>>();
-    order_system_font_families(&mut families, PREFERRED_SYSTEM_MONOSPACE_FONTS);
-    families
-}
+    let mut monospace_families = Vec::new();
+    let mut unicode_families = Vec::new();
 
-pub(crate) fn system_unicode_families(window: &Window) -> Vec<String> {
-    let font_size = px(DEFAULT_GRID_FONT_SIZE);
-    let mut families = window
-        .text_system()
-        .all_font_names()
-        .into_iter()
-        .filter(|family| {
-            !family.starts_with('.') && supports_unicode_family(window, family, font_size)
-        })
-        .collect::<Vec<_>>();
-    order_system_font_families(&mut families, PREFERRED_SYSTEM_WIDE_FONTS);
-    families
+    for family in text_system.all_font_names() {
+        if family.starts_with('.') {
+            continue;
+        }
+        if is_monospace_family_with_text_system(text_system, &family, font_size) {
+            monospace_families.push(family.clone());
+        }
+        if supports_unicode_family(text_system, &family, font_size) {
+            unicode_families.push(family);
+        }
+    }
+
+    order_system_font_families(&mut monospace_families, PREFERRED_SYSTEM_MONOSPACE_FONTS);
+    order_system_font_families(&mut unicode_families, PREFERRED_SYSTEM_WIDE_FONTS);
+    (monospace_families, unicode_families)
 }
 
 const UNICODE_FONT_SAMPLE: &[char] = &['中', '文', '日', '本', '한', '🙂'];
 
-fn supports_unicode_family(window: &Window, family: &str, font_size: Pixels) -> bool {
-    let text_system = window.text_system();
+fn supports_unicode_family(
+    text_system: &WindowTextSystem,
+    family: &str,
+    font_size: Pixels,
+) -> bool {
     let requested_font = font(family.to_owned());
     let font_id = text_system.resolve_font(&requested_font);
 
@@ -239,7 +260,14 @@ fn order_system_font_families(families: &mut Vec<String>, preferred: &[&str]) {
 }
 
 pub(crate) fn is_monospace_family(window: &Window, family: &str, font_size: Pixels) -> bool {
-    let text_system = window.text_system();
+    is_monospace_family_with_text_system(window.text_system(), family, font_size)
+}
+
+fn is_monospace_family_with_text_system(
+    text_system: &WindowTextSystem,
+    family: &str,
+    font_size: Pixels,
+) -> bool {
     let font_id = text_system.resolve_font(&font(family.to_owned()));
     let Some(reference) = text_system
         .advance(font_id, font_size, '0')
@@ -259,25 +287,144 @@ pub(crate) fn is_monospace_family(window: &Window, family: &str, font_size: Pixe
 }
 
 pub(crate) fn parse_guifont_spec(spec: &str) -> GuiFontSpec {
-    let first_font = spec.split(',').next().unwrap_or(spec);
-    let mut parts = first_font.split(':');
-    let family = parts.next().unwrap_or_default().replace("\\:", ":");
-    let family = if family.trim().is_empty() {
-        GuiFontSpec::default().family
-    } else {
-        family
-    };
-    let size = parts
-        .find_map(|part| part.strip_prefix('h'))
-        .and_then(|size| size.parse::<f32>().ok())
-        .filter(|size| *size > 0.0)
-        .unwrap_or(DEFAULT_GRID_FONT_SIZE);
-
-    GuiFontSpec {
-        family,
-        size,
-        fallback_family: None,
+    let mut families = Vec::new();
+    let mut size = None;
+    for entry in split_escaped(spec, ',') {
+        let parts = split_escaped(&entry, ':');
+        let family = parts
+            .first()
+            .map(|part| unescape_font_text(part).trim().to_owned())
+            .unwrap_or_default();
+        if family.is_empty() {
+            continue;
+        }
+        if size.is_none() {
+            size = parts.iter().skip(1).find_map(|part| {
+                let part = unescape_font_text(part);
+                part.strip_prefix('h')
+                    .and_then(|size| size.parse::<f32>().ok())
+                    .filter(|size| *size > 0.0)
+            });
+        }
+        families.push(family);
     }
+
+    GuiFontSpec::from_families(families, size.unwrap_or(DEFAULT_GRID_FONT_SIZE))
+}
+
+impl GuiFontSpec {
+    fn from_families(mut families: Vec<String>, size: f32) -> Self {
+        deduplicate_font_families(&mut families);
+        let family = families
+            .first()
+            .cloned()
+            .unwrap_or_else(|| GuiFontSpec::default().family);
+        Self {
+            family,
+            size,
+            fallback_families: families.into_iter().skip(1).collect(),
+        }
+    }
+}
+
+pub(crate) fn parse_guifont_families(spec: &str) -> Vec<String> {
+    if spec.trim().is_empty() {
+        return Vec::new();
+    }
+    let parsed = parse_guifont_spec(spec);
+    std::iter::once(parsed.family)
+        .chain(parsed.fallback_families)
+        .collect()
+}
+
+pub(crate) fn format_guifont_families(families: &[String]) -> String {
+    let mut families = families.to_vec();
+    deduplicate_font_families(&mut families);
+    families
+        .iter()
+        .map(|family| escape_font_text(family))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn append_font_families(target: &mut Vec<String>, additional: Option<Vec<String>>) {
+    let Some(additional) = additional else {
+        return;
+    };
+    target.extend(additional);
+    deduplicate_font_families(target);
+}
+
+fn deduplicate_font_families(families: &mut Vec<String>) {
+    families.retain(|family| !family.trim().is_empty());
+    let mut unique = Vec::with_capacity(families.len());
+    for family in families.drain(..) {
+        if !unique
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&family))
+        {
+            unique.push(family);
+        }
+    }
+    *families = unique;
+}
+
+fn split_escaped(value: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push('\\');
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == delimiter {
+            parts.push(std::mem::take(&mut current));
+        } else {
+            current.push(character);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    parts.push(current);
+    parts
+}
+
+fn unescape_font_text(value: &str) -> String {
+    let mut unescaped = String::new();
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            unescaped.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            unescaped.push(character);
+        }
+    }
+    if escaped {
+        unescaped.push('\\');
+    }
+    unescaped
+}
+
+fn escape_font_text(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| {
+            if matches!(character, '\\' | ',' | ':') {
+                Some('\\')
+            } else {
+                None
+            }
+            .into_iter()
+            .chain(std::iter::once(character))
+        })
+        .collect()
 }
 
 pub(crate) fn line_height_from_metrics(

@@ -72,8 +72,8 @@ pub struct GridElement {
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
     wide_font: Option<(String, Pixels)>,
-    wide_font_fallback: Option<String>,
-    font_fallback: Option<String>,
+    wide_font_fallback: Vec<String>,
+    font_fallback: Vec<String>,
     nerd_fallback_font: Option<(String, Pixels)>,
     highlight_context: HighlightContext,
     viewport_margins: (usize, usize, usize, usize),
@@ -94,8 +94,8 @@ impl GridElement {
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
             wide_font: None,
-            wide_font_fallback: None,
-            font_fallback: None,
+            wide_font_fallback: Vec::new(),
+            font_fallback: Vec::new(),
             nerd_fallback_font: None,
             highlight_context: HighlightContext::Main,
             viewport_margins: (0, 0, 0, 0),
@@ -128,13 +128,13 @@ impl GridElement {
         self
     }
 
-    pub fn with_wide_font_fallback(mut self, family: Option<String>) -> Self {
-        self.wide_font_fallback = family;
+    pub fn with_wide_font_fallback(mut self, families: Vec<String>) -> Self {
+        self.wide_font_fallback = families;
         self
     }
 
-    pub fn with_font_fallback(mut self, family: Option<String>) -> Self {
-        self.font_fallback = family;
+    pub fn with_font_fallback(mut self, families: Vec<String>) -> Self {
+        self.font_fallback = families;
         self
     }
 
@@ -206,6 +206,8 @@ impl GridElement {
         cell: &VisualCell,
         normal_font: &Font,
         normal_font_size: Pixels,
+        bold: bool,
+        italic: bool,
     ) -> (Font, Pixels) {
         let (base_font, size) = if cell.kind == VisualCellKind::WideCharacter {
             self.wide_font
@@ -213,38 +215,44 @@ impl GridElement {
                 .map(|(family, size)| {
                     (
                         font_with_fallback(
-                            font(family.clone()),
-                            self.wide_font_fallback.as_deref(),
+                            styled_font(font(family.clone()), bold, italic),
+                            &self.wide_font_fallback,
                         ),
                         *size,
                     )
                 })
-                .unwrap_or_else(|| (normal_font.clone(), normal_font_size))
+                .unwrap_or_else(|| {
+                    (
+                        styled_font(normal_font.clone(), bold, italic),
+                        normal_font_size,
+                    )
+                })
         } else {
-            (normal_font.clone(), normal_font_size)
+            (
+                styled_font(normal_font.clone(), bold, italic),
+                normal_font_size,
+            )
         };
 
         if cell.kind != VisualCellKind::NerdSymbol {
-            if let Some(character) = cell.text.chars().next() {
-                let fallback_family = if cell.kind == VisualCellKind::WideCharacter {
-                    self.wide_font_fallback.as_deref()
-                } else {
-                    self.font_fallback.as_deref()
-                };
-                if let Some(fallback_family) = fallback_family {
-                    if !self
-                        .glyph_coverage_cache
-                        .borrow_mut()
-                        .contains(window, &base_font, character)
-                    {
-                        let fallback_font = font(fallback_family.to_owned());
-                        if self.glyph_coverage_cache.borrow_mut().contains(
-                            window,
-                            &fallback_font,
-                            character,
-                        ) {
-                            return (fallback_font, size);
-                        }
+            let fallback_families = if cell.kind == VisualCellKind::WideCharacter {
+                &self.wide_font_fallback
+            } else {
+                &self.font_fallback
+            };
+            if !font_covers_text(window, &base_font, &cell.text, &self.glyph_coverage_cache) {
+                for (index, family) in fallback_families.iter().enumerate() {
+                    let fallback_font = styled_font(font(family.clone()), bold, italic);
+                    if font_covers_text(
+                        window,
+                        &fallback_font,
+                        &cell.text,
+                        &self.glyph_coverage_cache,
+                    ) {
+                        return (
+                            font_with_fallback(fallback_font, &fallback_families[index + 1..]),
+                            size,
+                        );
                     }
                 }
             }
@@ -265,7 +273,10 @@ impl GridElement {
             // separate in-memory collection. Use the bundled symbol font as
             // the primary font for this single-cell run on Windows so it can
             // still be resolved from that custom collection.
-            return (font(fallback_family.clone()), *fallback_size);
+            return (
+                styled_font(font(fallback_family.clone()), bold, italic),
+                *fallback_size,
+            );
         }
 
         match self.nerd_fallback_mode {
@@ -330,9 +341,15 @@ impl GridElement {
 
         let text_style = window.text_style();
         let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), self.font_fallback.as_deref());
-        let (cell_font, cell_font_size) =
-            self.font_for_cell(window, &cell, &normal_font, normal_font_size);
+        let normal_font = font_with_fallback(text_style.font(), &self.font_fallback);
+        let (cell_font, cell_font_size) = self.font_for_cell(
+            window,
+            &cell,
+            &normal_font,
+            normal_font_size,
+            attrs.bold,
+            attrs.italic,
+        );
         let underline = (attrs.underline
             || attrs.undercurl
             || attrs.underdouble
@@ -442,22 +459,52 @@ impl GridElement {
     }
 }
 
-fn font_with_fallback(mut base_font: Font, fallback_family: Option<&str>) -> Font {
-    let Some(fallback_family) = fallback_family.filter(|family| !family.is_empty()) else {
+fn font_with_fallback(mut base_font: Font, fallback_families: &[String]) -> Font {
+    if fallback_families.is_empty() {
         return base_font;
-    };
-    let mut fallback_families = vec![fallback_family.to_owned()];
+    }
+    let mut fallback_families = fallback_families.to_vec();
     if let Some(fallbacks) = base_font.fallbacks.as_ref() {
-        fallback_families.extend(
-            fallbacks
-                .fallback_list()
-                .iter()
-                .filter(|family| family.as_str() != fallback_family)
-                .cloned(),
-        );
+        let existing_fallbacks = fallbacks.fallback_list().to_vec();
+        for family in existing_fallbacks {
+            if !fallback_families.iter().any(|item| item == &family) {
+                fallback_families.push(family);
+            }
+        }
     }
     base_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
     base_font
+}
+
+fn styled_font(mut font: Font, bold: bool, italic: bool) -> Font {
+    if italic {
+        font = font.italic();
+    }
+    if bold {
+        font = font.bold();
+    }
+    font
+}
+
+fn font_covers_text(
+    window: &Window,
+    font: &Font,
+    text: &str,
+    cache: &SharedGlyphCoverageCache,
+) -> bool {
+    text.chars()
+        .filter(|character| !is_grapheme_control(*character))
+        .all(|character| cache.borrow_mut().contains(window, font, character))
+}
+
+fn is_grapheme_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200c}'
+            | '\u{200d}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
 }
 
 fn clipped_cell_range(
@@ -526,7 +573,7 @@ impl Element for GridElement {
     ) -> Self::PrepaintState {
         let text_style = window.text_style();
         let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), self.font_fallback.as_deref());
+        let normal_font = font_with_fallback(text_style.font(), &self.font_fallback);
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let model = Rc::clone(&self.model);
@@ -644,18 +691,14 @@ impl Element for GridElement {
             {
                 None
             } else {
-                let (cell_font, cell_font_size) =
-                    self.font_for_cell(window, &cell, &normal_font, normal_font_size);
-                let cell_font = if attrs.italic {
-                    cell_font.italic()
-                } else {
-                    cell_font
-                };
-                let cell_font = if attrs.bold {
-                    cell_font.bold()
-                } else {
-                    cell_font
-                };
+                let (cell_font, cell_font_size) = self.font_for_cell(
+                    window,
+                    &cell,
+                    &normal_font,
+                    normal_font_size,
+                    attrs.bold,
+                    attrs.italic,
+                );
                 let underline = (attrs.underline
                     || attrs.undercurl
                     || attrs.underdouble

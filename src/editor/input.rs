@@ -310,13 +310,10 @@ impl EditorRuntime {
 
         let candidate_font_for = |font_spec: &GuiFontSpec| {
             let mut candidate_font = font(font_spec.family.clone());
-            let mut fallbacks = Vec::new();
+            let mut fallbacks = font_spec.fallback_families.clone();
             if let Some(nerd_font_family) = self.nerd_font_family.as_ref() {
-                fallbacks.push(nerd_font_family.clone());
-            }
-            if let Some(fallback_family) = font_spec.fallback_family.as_ref() {
-                if !fallbacks.iter().any(|family| family == fallback_family) {
-                    fallbacks.push(fallback_family.clone());
+                if !fallbacks.iter().any(|family| family == nerd_font_family) {
+                    fallbacks.push(nerd_font_family.clone());
                 }
             }
             if !fallbacks.is_empty() {

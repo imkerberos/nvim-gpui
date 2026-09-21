@@ -39,7 +39,8 @@ mod tests;
 #[cfg(test)]
 pub(crate) use layout::parse_guifont_spec;
 pub(crate) use layout::{
-    initial_window_size_for_grid, system_monospace_families, system_unicode_families, GuiFontSpec,
+    format_guifont_families, initial_window_size_for_grid, parse_guifont_families,
+    system_font_families, GuiFontSpec,
 };
 pub(crate) use protocol::{
     GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
@@ -201,8 +202,8 @@ pub(crate) struct EditorRuntime {
     pub(crate) input: InputRuntime,
     pub(crate) cursor: CursorRuntime,
     pub(crate) configured_grid_font_size: Option<f32>,
-    pub(crate) configured_grid_font: Option<String>,
-    pub(crate) configured_grid_wide_font: Option<String>,
+    pub(crate) configured_grid_font: Option<Vec<String>>,
+    pub(crate) configured_grid_wide_font: Option<Vec<String>>,
     pub(crate) resolved_grid_font: Option<GuiFontSpec>,
     pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
@@ -238,10 +239,10 @@ impl EditorRuntime {
             self.cursor.cursor_animation = None;
         }
         self.configured_grid_font_size = Some(settings.font_size as f32);
-        self.configured_grid_font =
-            (!settings.guifont.trim().is_empty()).then(|| settings.guifont.trim().to_owned());
+        self.configured_grid_font = (!settings.guifont.trim().is_empty())
+            .then(|| parse_guifont_families(settings.guifont.trim()));
         self.configured_grid_wide_font = (!settings.guifontwide.trim().is_empty())
-            .then(|| settings.guifontwide.trim().to_owned());
+            .then(|| parse_guifont_families(settings.guifontwide.trim()));
         self.resolved_grid_font = None;
         self.resolved_grid_wide_font = None;
         self.nerd_font_family = self

@@ -7,8 +7,9 @@ use crate::{
         GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey,
     },
     editor::{
-        initial_window_size_for_grid, parse_guifont_spec, EditorRuntime, EditorState,
-        GridPlacement, GuiFontSpec, ViewportAnimation,
+        format_guifont_families, initial_window_size_for_grid, parse_guifont_families,
+        parse_guifont_spec, EditorRuntime, EditorState, GridPlacement, GuiFontSpec,
+        ViewportAnimation,
     },
     grid::{
         AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
@@ -621,10 +622,35 @@ fn disabled_cursor_animation_does_not_start_after_a_cursor_move() {
 
 #[test]
 fn guifont_family_and_size_are_parsed_for_grid_metrics() {
-    let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16");
+    let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16,Cascadia Code,Font\\,With\\,Commas");
 
     assert_eq!(spec.family, "FiraCode Nerd Font Mono");
     assert_eq!(spec.size, 16.0);
+    assert_eq!(
+        spec.fallback_families,
+        ["Cascadia Code", "Font,With,Commas"]
+    );
+    assert_eq!(
+        parse_guifont_families("FiraCode:h16,Cascadia Code"),
+        ["FiraCode", "Cascadia Code"]
+    );
+}
+
+#[test]
+fn guifont_family_lists_round_trip_escaped_names_and_deduplicate() {
+    let families = [
+        "Iosevka Term".to_owned(),
+        "Font,With,Commas".to_owned(),
+        "Font:With:Colons".to_owned(),
+        "iosevka term".to_owned(),
+    ];
+
+    let formatted = format_guifont_families(&families);
+    assert_eq!(
+        formatted,
+        "Iosevka Term,Font\\,With\\,Commas,Font\\:With\\:Colons"
+    );
+    assert_eq!(parse_guifont_families(&formatted), families[..3]);
 }
 
 #[test]
@@ -633,6 +659,8 @@ fn empty_guifont_falls_back_to_a_safe_grid_font() {
 
     assert_eq!(spec.family, GuiFontSpec::default().family);
     assert_eq!(spec.size, 14.0);
+    assert!(spec.fallback_families.is_empty());
+    assert!(parse_guifont_families("").is_empty());
 }
 
 #[test]

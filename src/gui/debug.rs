@@ -1,5 +1,6 @@
 use crate::app::NvimGpui;
 use crate::app::{themed_titlebar, themed_titlebar_enabled};
+use crate::editor::format_guifont_families;
 use crate::widgets::{ACCENT, MUTED_TEXT, SURFACE, SURFACE_BRIGHT, TEXT};
 use gpui::{div, prelude::*, rgb, Context, Entity, Render, Subscription, Window};
 
@@ -25,14 +26,24 @@ impl Render for DebugWindow {
             .editor
             .resolved_grid_font
             .as_ref()
-            .map(|font| format!("{}:h{}", font.family, font.size))
+            .map(|font| {
+                let families = std::iter::once(font.family.clone())
+                    .chain(font.fallback_families.iter().cloned())
+                    .collect::<Vec<_>>();
+                format!("{}:h{}", format_guifont_families(&families), font.size)
+            })
             .or_else(|| view.editor.protocol.guifont.clone())
             .unwrap_or_else(|| "system monospace (resolving)".to_owned());
         let guifontwide = view
             .editor
             .resolved_grid_wide_font
             .as_ref()
-            .map(|font| format!("{}:h{}", font.family, font.size))
+            .map(|font| {
+                let families = std::iter::once(font.family.clone())
+                    .chain(font.fallback_families.iter().cloned())
+                    .collect::<Vec<_>>();
+                format!("{}:h{}", format_guifont_families(&families), font.size)
+            })
             .or_else(|| view.editor.protocol.guifontwide.clone())
             .unwrap_or_else(|| "same as guifont (fallback)".to_owned());
         let grid_size = view

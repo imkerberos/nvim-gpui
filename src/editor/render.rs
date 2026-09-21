@@ -42,8 +42,8 @@ impl EditorRuntime {
                 options.gui_wide_font.family.clone(),
                 px(options.gui_wide_font.size),
             )
-            .with_wide_font_fallback(options.gui_wide_font.fallback_family.clone())
-            .with_font_fallback(options.gui_font.fallback_family.clone())
+            .with_wide_font_fallback(options.gui_wide_font.fallback_families.clone())
+            .with_font_fallback(options.gui_font.fallback_families.clone())
             .with_nerd_fallback_font(
                 self.nerd_font_family.clone().unwrap_or_default(),
                 px(options.gui_font.size),
