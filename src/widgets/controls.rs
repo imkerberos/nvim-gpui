@@ -1,6 +1,10 @@
-use gpui::{div, prelude::*, px, rgb, App, ClickEvent, IntoElement, SharedString};
+#[cfg(target_os = "macos")]
+use gpui::ClickEvent;
+use gpui::{div, prelude::*, px, rgb, App, IntoElement, SharedString};
 
-use super::{ACCENT, BACKGROUND, SURFACE, SURFACE_BRIGHT, TEXT};
+#[cfg(target_os = "macos")]
+use super::SURFACE;
+use super::{ACCENT, BACKGROUND, SURFACE_BRIGHT, TEXT};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn checkbox(
