@@ -5,6 +5,10 @@ use std::collections::HashSet;
 impl EditorRuntime {
     pub(crate) fn apply_viewport_commits(&mut self, commits: Vec<GridCommit>) {
         for commit in commits {
+            if !self.scrolling_animation_enabled {
+                self.presentation.viewport_animations.remove(&commit.grid);
+                continue;
+            }
             let Some(previous_placement) = commit.previous_placement else {
                 continue;
             };

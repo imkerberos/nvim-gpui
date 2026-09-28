@@ -51,6 +51,7 @@ enum SettingsCombo {
     NerdFont,
     FallbackMode,
     CursorAnimation,
+    ScrollingAnimation,
     StartupMaximized,
     UpdateChecks,
     LogLevel,

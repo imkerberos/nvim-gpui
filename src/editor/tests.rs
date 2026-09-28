@@ -621,6 +621,29 @@ fn disabled_cursor_animation_does_not_start_after_a_cursor_move() {
 }
 
 #[test]
+fn disabling_scrolling_animation_clears_active_viewport_transitions() {
+    let mut editor = EditorRuntime::default();
+    editor.presentation.viewport_animations.insert(
+        1,
+        ViewportAnimation {
+            previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
+            scroll_delta: 1,
+            started_at: Instant::now(),
+            presented: false,
+        },
+    );
+
+    let settings = crate::settings::Settings {
+        scrolling_animation: false,
+        ..crate::settings::Settings::default()
+    };
+    editor.apply_runtime_settings(&settings);
+
+    assert!(!editor.scrolling_animation_enabled);
+    assert!(editor.presentation.viewport_animations.is_empty());
+}
+
+#[test]
 fn guifont_family_and_size_are_parsed_for_grid_metrics() {
     let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16,Cascadia Code,Font\\,With\\,Commas");
 

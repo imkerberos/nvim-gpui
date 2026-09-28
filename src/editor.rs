@@ -201,6 +201,7 @@ pub(crate) struct EditorRuntime {
     pub(crate) presentation: RenderRuntime,
     pub(crate) input: InputRuntime,
     pub(crate) cursor: CursorRuntime,
+    pub(crate) scrolling_animation_enabled: bool,
     pub(crate) configured_grid_font_size: Option<f32>,
     pub(crate) configured_grid_font: Option<Vec<String>>,
     pub(crate) configured_grid_wide_font: Option<Vec<String>>,
@@ -219,6 +220,7 @@ impl Default for EditorRuntime {
             presentation: RenderRuntime::default(),
             input: InputRuntime::default(),
             cursor: CursorRuntime::default(),
+            scrolling_animation_enabled: true,
             configured_grid_font_size: None,
             configured_grid_font: None,
             configured_grid_wide_font: None,
@@ -237,6 +239,10 @@ impl EditorRuntime {
         self.cursor.cursor_animation_enabled = settings.cursor_animation;
         if !settings.cursor_animation {
             self.cursor.cursor_animation = None;
+        }
+        self.scrolling_animation_enabled = settings.scrolling_animation;
+        if !settings.scrolling_animation {
+            self.presentation.viewport_animations.clear();
         }
         self.configured_grid_font_size = Some(settings.font_size as f32);
         self.configured_grid_font = (!settings.guifont.trim().is_empty())

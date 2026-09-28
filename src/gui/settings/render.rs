@@ -124,6 +124,35 @@ impl Render for SettingsWindow {
             cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::CursorAnimation, cx)),
         );
 
+        let mut scrolling_animation_options = div().w_full().flex().flex_col();
+        scrolling_animation_options = scrolling_animation_options.child(combo_option(
+            "settings-scrolling-animation-on",
+            "On",
+            current.scrolling_animation,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.scrolling_animation = true, cx);
+            }),
+        ));
+        scrolling_animation_options = scrolling_animation_options.child(combo_option(
+            "settings-scrolling-animation-off",
+            "Off",
+            !current.scrolling_animation,
+            cx.listener(|this, _, _, cx| {
+                this.apply_setting(|settings| settings.scrolling_animation = false, cx);
+            }),
+        ));
+        let scrolling_animation_options = combo_box(
+            "settings-scrolling-animation-combo",
+            if current.scrolling_animation {
+                "On"
+            } else {
+                "Off"
+            },
+            self.open_combo == Some(SettingsCombo::ScrollingAnimation),
+            scrolling_animation_options,
+            cx.listener(|this, _, _, cx| this.toggle_combo(SettingsCombo::ScrollingAnimation, cx)),
+        );
+
         let mut cache_options = div().w_full().flex().flex_col();
         for megabytes in settings::IMAGE_CACHE_SIZE_OPTIONS_MB {
             let label = format!("{megabytes} MB");
@@ -944,12 +973,20 @@ impl Render for SettingsWindow {
                     )),
             ))
             .child(section(
-                "Cursor",
-                row(
-                    "Cursor animation",
-                    "Animate cursor movement between cells. Disable this for immediate movement.",
-                    cursor_animation_options,
-                ),
+                "Animation",
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(row(
+                        "Cursor animation",
+                        "Animate cursor movement between cells. This may reduce responsiveness or increase CPU usage.",
+                        cursor_animation_options,
+                    ))
+                    .child(row(
+                        "Scrolling animation",
+                        "Animate viewport scrolling. This may reduce responsiveness or increase CPU usage during continuous movement.",
+                        scrolling_animation_options,
+                    )),
             ))
             .child(section(
                 "IME",
