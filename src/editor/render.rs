@@ -13,6 +13,89 @@ struct GridRenderOptions<'a> {
     viewport_offset: Pixels,
 }
 
+#[derive(Clone, Copy)]
+struct ViewportRenderGeometry {
+    placement: GridPlacement,
+    width: usize,
+    height: usize,
+    clip_width: usize,
+    clip_height: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+}
+
+impl ViewportRenderGeometry {
+    fn margins(self) -> (usize, usize, usize, usize) {
+        self.placement
+            .viewport_margins
+            .map(|margins| {
+                let top = usize::try_from(margins.top)
+                    .unwrap_or(usize::MAX)
+                    .min(self.height);
+                let bottom = usize::try_from(margins.bottom)
+                    .unwrap_or(usize::MAX)
+                    .min(self.height.saturating_sub(top));
+                let left = usize::try_from(margins.left)
+                    .unwrap_or(usize::MAX)
+                    .min(self.width);
+                let right = usize::try_from(margins.right)
+                    .unwrap_or(usize::MAX)
+                    .min(self.width.saturating_sub(left));
+                (
+                    top,
+                    self.height.saturating_sub(bottom),
+                    left,
+                    self.width.saturating_sub(right),
+                )
+            })
+            .unwrap_or((0, self.height, 0, self.width))
+    }
+
+    fn viewport_content_is_visible(self, viewport_offset: Pixels) -> bool {
+        let (top, bottom, left, right) = self.margins();
+        if top >= bottom || left >= right || self.clip_width == 0 || self.clip_height == 0 {
+            return false;
+        }
+
+        let viewport_left = left as f32 * f32::from(self.cell_width);
+        let viewport_right = right as f32 * f32::from(self.cell_width);
+        let viewport_top = top as f32 * f32::from(self.line_height) + f32::from(viewport_offset);
+        let viewport_bottom =
+            bottom as f32 * f32::from(self.line_height) + f32::from(viewport_offset);
+        let clip_right = self.clip_width as f32 * f32::from(self.cell_width);
+        let clip_bottom = self.clip_height as f32 * f32::from(self.line_height);
+
+        viewport_left < clip_right
+            && viewport_right > 0.0
+            && viewport_top < clip_bottom
+            && viewport_bottom > 0.0
+    }
+}
+
+fn viewport_animation_offsets(
+    animation: Option<&ViewportAnimation>,
+    geometry: ViewportRenderGeometry,
+    now: Instant,
+) -> (Pixels, Pixels, bool, bool) {
+    let Some(animation) = animation else {
+        return (px(0.0), px(0.0), false, false);
+    };
+
+    let (old_offset, current_offset) =
+        animation.offsets(now, geometry.height, geometry.line_height);
+    let previous_visible = geometry.viewport_content_is_visible(old_offset);
+    let current_visible = geometry.viewport_content_is_visible(current_offset);
+
+    if !previous_visible && !current_visible {
+        // Neither translated viewport intersects the layer clip. Keep the
+        // committed grid visible immediately instead of showing an empty
+        // frame during a jump that is too large for a scroll transition.
+        return (px(0.0), px(0.0), false, true);
+    }
+
+    (old_offset, current_offset, previous_visible, false)
+}
+
 impl EditorRuntime {
     fn highlight_context_for_layer(&self, kind: GridLayerKind) -> grid::HighlightContext {
         match kind {
@@ -388,10 +471,24 @@ impl NvimGpui {
             let main_placement = main_layer.placement;
             let main_width = main_layer.content_rect.width as usize;
             let main_height = main_layer.content_rect.height as usize;
+            let (old_offset, current_offset, render_previous_grid, cancel_animation) =
+                viewport_animation_offsets(
+                    viewport_animations.get(&1),
+                    ViewportRenderGeometry {
+                        placement: main_placement,
+                        width: main_width,
+                        height: main_height,
+                        clip_width: main_width,
+                        clip_height: main_height,
+                        cell_width,
+                        line_height,
+                    },
+                    now,
+                );
+            if cancel_animation {
+                self.editor.presentation.viewport_animations.remove(&1);
+            }
             let main_animation = viewport_animations.get(&1);
-            let (old_offset, current_offset) = main_animation
-                .map(|animation| animation.offsets(now, main_height, line_height))
-                .unwrap_or((px(0.0), px(0.0)));
             let main_options = GridRenderOptions {
                 placement: main_placement,
                 width: main_width,
@@ -411,14 +508,18 @@ impl NvimGpui {
                 .h_full()
                 .overflow_hidden();
 
-            if let Some(animation) = main_animation {
+            if render_previous_grid {
                 let old_options = GridRenderOptions {
                     viewport_offset: old_offset,
                     ..main_options
                 };
                 main_layer = main_layer.child(grid_surface(
                     self.editor.grid_element(
-                        Rc::clone(&animation.previous_grid),
+                        Rc::clone(
+                            &main_animation
+                                .expect("previous grid must exist when it is rendered")
+                                .previous_grid,
+                        ),
                         old_options,
                         self.app.settings.fallback_mode,
                     ),
@@ -449,10 +550,26 @@ impl NvimGpui {
                 let clip_rect = compositor_layer.clip_rect;
                 let model_width = content_rect.width as usize;
                 let model_height = content_rect.height as usize;
-                let animation = viewport_animations.get(&grid_id);
-                let (old_offset, current_offset) = animation
-                    .map(|animation| animation.offsets(now, model_height, line_height))
-                    .unwrap_or((px(0.0), px(0.0)));
+                let (old_offset, current_offset, render_previous_grid, cancel_animation) =
+                    viewport_animation_offsets(
+                        viewport_animations.get(&grid_id),
+                        ViewportRenderGeometry {
+                            placement,
+                            width: model_width,
+                            height: model_height,
+                            clip_width: clip_rect.width as usize,
+                            clip_height: clip_rect.height as usize,
+                            cell_width,
+                            line_height,
+                        },
+                        now,
+                    );
+                if cancel_animation {
+                    self.editor
+                        .presentation
+                        .viewport_animations
+                        .remove(&grid_id);
+                }
                 let options = GridRenderOptions {
                     placement,
                     width: model_width,
@@ -475,14 +592,19 @@ impl NvimGpui {
                     // bounds so it cannot cover a neighbouring picker pane
                     // or its separator.
                     .overflow_hidden();
-                if let Some(animation) = animation {
+                if render_previous_grid {
                     let old_options = GridRenderOptions {
                         viewport_offset: old_offset,
                         ..options
                     };
                     layer = layer.child(grid_surface(
                         self.editor.grid_element(
-                            Rc::clone(&animation.previous_grid),
+                            Rc::clone(
+                                &viewport_animations
+                                    .get(&grid_id)
+                                    .expect("previous grid must exist when it is rendered")
+                                    .previous_grid,
+                            ),
                             old_options,
                             self.app.settings.fallback_mode,
                         ),
@@ -533,5 +655,109 @@ impl NvimGpui {
         }
 
         editor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::protocol::GridViewportMargins;
+    use std::rc::Rc;
+
+    #[test]
+    fn viewport_animation_keeps_previous_grid_at_the_start_of_a_large_jump() {
+        let started_at = Instant::now();
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+
+        let (_, current_offset, render_previous, cancel_animation) = viewport_animation_offsets(
+            Some(&animation),
+            ViewportRenderGeometry {
+                placement: GridPlacement::default(),
+                width: 10,
+                height: 10,
+                clip_width: 10,
+                clip_height: 10,
+                cell_width: px(10.0),
+                line_height: px(20.0),
+            },
+            started_at,
+        );
+
+        assert_eq!(current_offset, px(200.0));
+        assert!(render_previous);
+        assert!(!cancel_animation);
+    }
+
+    #[test]
+    fn viewport_animation_drops_previous_grid_after_it_leaves_the_clip() {
+        let started_at = Instant::now() - Duration::from_millis(200);
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+
+        let (_, _, render_previous, cancel_animation) = viewport_animation_offsets(
+            Some(&animation),
+            ViewportRenderGeometry {
+                placement: GridPlacement::default(),
+                width: 10,
+                height: 10,
+                clip_width: 10,
+                clip_height: 10,
+                cell_width: px(10.0),
+                line_height: px(20.0),
+            },
+            Instant::now(),
+        );
+
+        assert!(!render_previous);
+        assert!(!cancel_animation);
+    }
+
+    #[test]
+    fn viewport_animation_falls_back_to_current_grid_when_both_are_outside_the_clip() {
+        let started_at = Instant::now();
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+        let placement = GridPlacement {
+            viewport_margins: Some(GridViewportMargins {
+                top: 5,
+                bottom: 4,
+                left: 0,
+                right: 0,
+            }),
+            ..GridPlacement::default()
+        };
+
+        let (old_offset, current_offset, render_previous, cancel_animation) =
+            viewport_animation_offsets(
+                Some(&animation),
+                ViewportRenderGeometry {
+                    placement,
+                    width: 10,
+                    height: 10,
+                    clip_width: 10,
+                    clip_height: 1,
+                    cell_width: px(10.0),
+                    line_height: px(20.0),
+                },
+                started_at,
+            );
+
+        assert_eq!(old_offset, px(0.0));
+        assert_eq!(current_offset, px(0.0));
+        assert!(!render_previous);
+        assert!(cancel_animation);
     }
 }
