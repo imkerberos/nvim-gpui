@@ -65,6 +65,19 @@ pub(crate) struct GridDirtyRegion {
 impl GridDirtyRegion {
     const MAX_RECTS: usize = 64;
 
+    pub(crate) fn merge(&mut self, other: &GridDirtyRegion) {
+        if other.full {
+            self.mark_full();
+            return;
+        }
+        if self.full {
+            return;
+        }
+        for rect in other.rects.iter().copied() {
+            self.mark_rect(rect);
+        }
+    }
+
     fn mark_full(&mut self) {
         self.full = true;
         self.rects.clear();
@@ -1345,6 +1358,34 @@ mod tests {
 
         assert!(region.full);
         assert!(region.rects.is_empty());
+    }
+
+    #[test]
+    fn dirty_region_merge_preserves_changes_from_multiple_commits() {
+        let mut accumulated = GridDirtyRegion::default();
+        let first = GridDirtyRegion {
+            full: false,
+            rects: vec![GridDirtyRect {
+                top: 1,
+                bottom: 2,
+                left: 0,
+                right: 4,
+            }],
+        };
+        let second = GridDirtyRegion {
+            full: false,
+            rects: vec![GridDirtyRect {
+                top: 6,
+                bottom: 7,
+                left: 0,
+                right: 4,
+            }],
+        };
+
+        accumulated.merge(&first);
+        accumulated.merge(&second);
+
+        assert_eq!(accumulated.rects, [first.rects[0], second.rects[0]]);
     }
 
     #[test]

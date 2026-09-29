@@ -67,6 +67,7 @@ impl NvimGpui {
                     "Neovim UI attached: width={width}, height={height}"
                 );
                 self.apply_redraw_commit(redraw, previous_cursor);
+                self.editor.invalidate_presentation_snapshot();
                 self.app.session.rpc_status = format!("rpc: attached {width}×{height}");
             }
             ProtocolOutcome::PendingChanged => {

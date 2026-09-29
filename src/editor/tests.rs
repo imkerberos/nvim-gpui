@@ -1240,6 +1240,95 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
 }
 
 #[test]
+fn floating_grid_viewport_changes_follow_scrolling_animation_setting() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
+        grid: 2,
+        width: 8,
+        height: 3,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("old", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
+        grid: 2,
+        win: Vec::new(),
+        position: NvimFloatPosition::Screen { row: 0, col: 0 },
+        mouse_enabled: true,
+        zindex: 40,
+        compindex: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 0,
+        botline: 3,
+        curline: 0,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 0,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 1,
+        botline: 4,
+        curline: 1,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("new", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert_eq!(
+        app.editor
+            .presentation
+            .viewport_animations
+            .get(&2)
+            .expect("floating viewport should follow the scrolling animation setting")
+            .scroll_delta,
+        1
+    );
+
+    app.app.settings.scrolling_animation = false;
+    app.editor.apply_runtime_settings(&app.app.settings);
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 2,
+        botline: 5,
+        curline: 2,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("latest", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert!(app.editor.presentation.viewport_animations.is_empty());
+}
+
+#[test]
 fn delayed_viewport_animation_starts_when_presented() {
     let started_at = Instant::now() - Duration::from_secs(1);
     let mut animation = ViewportAnimation {

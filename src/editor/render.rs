@@ -200,7 +200,17 @@ impl Render for GridRowView {
     }
 }
 
-fn grid_row_surface(view: Entity<GridRowView>, row: usize, context: &GridRowContext) -> gpui::Div {
+fn grid_row_surface(
+    view: Entity<GridRowView>,
+    row: usize,
+    context: &GridRowContext,
+    use_cache: bool,
+) -> gpui::Div {
+    let mut row_view = gpui::AnyView::from(view);
+    if use_cache {
+        row_view = row_view.cached(StyleRefinement::default());
+    }
+
     div()
         .absolute()
         .left(px(0.0))
@@ -212,7 +222,7 @@ fn grid_row_surface(view: Entity<GridRowView>, row: usize, context: &GridRowCont
         // past a terminal cell. Keep only the horizontal grid-edge clip here;
         // the containing grid/layer clips the complete surface vertically.
         .overflow_x_hidden()
-        .child(gpui::AnyView::from(view).cached(StyleRefinement::default()))
+        .child(row_view)
 }
 
 pub(super) fn viewport_rect(
@@ -468,7 +478,14 @@ impl NvimGpui {
         views
             .into_iter()
             .enumerate()
-            .map(|(row, view)| grid_row_surface(view, row, &context).into_any_element())
+            .map(|(row, view)| {
+                // A dirty row is the repaint boundary. Let GPUI rebuild this
+                // row for the current presentation, while retaining cached
+                // layout/paint for rows that did not change. This is
+                // especially important for floating previews: the parent
+                // grid can repaint without a stale float row being reused.
+                grid_row_surface(view, row, &context, !dirty_rows[row]).into_any_element()
+            })
             .collect()
     }
 

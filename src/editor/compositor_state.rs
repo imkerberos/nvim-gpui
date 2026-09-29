@@ -7,7 +7,9 @@ impl EditorRuntime {
         for commit in commits {
             self.presentation
                 .grid_dirty_regions
-                .insert(commit.grid, commit.dirty_region.clone());
+                .entry(commit.grid)
+                .or_default()
+                .merge(&commit.dirty_region);
             if !self.scrolling_animation_enabled {
                 self.presentation.viewport_animations.remove(&commit.grid);
                 continue;
@@ -242,5 +244,59 @@ impl EditorRuntime {
             col: col as usize,
             width: position.width,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    #[test]
+    fn viewport_commits_accumulate_dirty_regions_for_the_same_grid() {
+        let mut editor = EditorRuntime::default();
+        let grid = Rc::new(crate::grid::GridModel::new(8, 8));
+
+        let commit = |top| GridCommit {
+            grid: 2,
+            previous_grid: Rc::clone(&grid),
+            next_grid: Rc::clone(&grid),
+            previous_placement: None,
+            next_placement: None,
+            dirty_region: GridDirtyRegion {
+                full: false,
+                rects: vec![crate::editor::protocol::GridDirtyRect {
+                    top,
+                    bottom: top + 1,
+                    left: 0,
+                    right: 4,
+                }],
+            },
+        };
+
+        editor.apply_viewport_commits(vec![commit(1), commit(6)]);
+
+        assert_eq!(
+            editor
+                .presentation
+                .grid_dirty_regions
+                .get(&2)
+                .expect("dirty region should be retained")
+                .rects,
+            vec![
+                crate::editor::protocol::GridDirtyRect {
+                    top: 1,
+                    bottom: 2,
+                    left: 0,
+                    right: 4,
+                },
+                crate::editor::protocol::GridDirtyRect {
+                    top: 6,
+                    bottom: 7,
+                    left: 0,
+                    right: 4,
+                },
+            ]
+        );
     }
 }
