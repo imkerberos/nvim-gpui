@@ -5,6 +5,9 @@ use std::collections::HashSet;
 impl EditorRuntime {
     pub(crate) fn apply_viewport_commits(&mut self, commits: Vec<GridCommit>) {
         for commit in commits {
+            self.presentation
+                .grid_dirty_regions
+                .insert(commit.grid, commit.dirty_region.clone());
             if !self.scrolling_animation_enabled {
                 self.presentation.viewport_animations.remove(&commit.grid);
                 continue;

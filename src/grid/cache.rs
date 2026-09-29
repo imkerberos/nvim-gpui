@@ -2,6 +2,81 @@ use super::*;
 
 const MAX_SHAPED_LINE_CACHE_ENTRIES: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum FontRole {
+    Normal,
+    Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FontSelection {
+    Primary,
+    Fallback(usize),
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FontSelectionKey {
+    role: FontRole,
+    font: Font,
+    character: char,
+}
+
+/// Caches the explicit fallback family selected for a character.
+///
+/// The cache deliberately stores only a small selection index. It does not
+/// retain visual cells, shaped lines, or rendered text. Font configuration
+/// changes clear it because the same role may then refer to a different font
+/// chain.
+#[derive(Default)]
+pub(crate) struct FontSelectionCache {
+    entries: HashMap<FontSelectionKey, FontSelection>,
+}
+
+pub(crate) type SharedFontSelectionCache = Rc<RefCell<FontSelectionCache>>;
+
+impl FontSelectionCache {
+    pub(crate) fn shared() -> SharedFontSelectionCache {
+        Rc::new(RefCell::new(Self::default()))
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn get(
+        &self,
+        role: FontRole,
+        font: &Font,
+        character: char,
+    ) -> Option<FontSelection> {
+        self.entries
+            .get(&FontSelectionKey {
+                role,
+                font: font.clone(),
+                character,
+            })
+            .copied()
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        role: FontRole,
+        font: Font,
+        character: char,
+        selection: FontSelection,
+    ) {
+        self.entries.insert(
+            FontSelectionKey {
+                role,
+                font,
+                character,
+            },
+            selection,
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GlyphCoverageKey {
     font: Font,

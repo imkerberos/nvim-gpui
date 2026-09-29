@@ -65,13 +65,6 @@ pub(crate) struct GridDirtyRegion {
 impl GridDirtyRegion {
     const MAX_RECTS: usize = 64;
 
-    fn full() -> Self {
-        Self {
-            full: true,
-            rects: Vec::new(),
-        }
-    }
-
     fn mark_full(&mut self) {
         self.full = true;
         self.rects.clear();
@@ -489,6 +482,7 @@ impl ProtocolState {
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.presentation.pending_grid_size = Some(None);
+                    self.mark_grid_dirty_full(grid);
                 } else {
                     self.presentation.pending_other_grids.remove(&grid);
                     self.presentation.pending_destroyed_grids.insert(grid);
@@ -500,13 +494,6 @@ impl ProtocolState {
                 self.cursor.pending_cursor_grid = Some(grid);
                 self.pending_grid_mut_for(grid)
                     .set_cursor(row as usize, col as usize);
-                self.mark_grid_dirty_rect(
-                    grid,
-                    row as usize,
-                    (row as usize).saturating_add(1),
-                    col as usize,
-                    (col as usize).saturating_add(1),
-                );
                 self.pending_geometry_changed = true;
                 ProtocolOutcome::PendingChanged
             }
@@ -735,6 +722,7 @@ impl ProtocolState {
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.presentation.pending_grid_size = Some(None);
+                    self.mark_grid_dirty_full(grid);
                 } else {
                     self.presentation.pending_other_grids.remove(&grid);
                     self.presentation.pending_destroyed_grids.insert(grid);
@@ -1026,9 +1014,7 @@ impl ProtocolState {
     }
 
     fn take_grid_dirty_region(&mut self, grid: u64) -> GridDirtyRegion {
-        self.pending_dirty_regions
-            .remove(&grid)
-            .unwrap_or_else(GridDirtyRegion::full)
+        self.pending_dirty_regions.remove(&grid).unwrap_or_default()
     }
 
     fn set_default_colors_on_all_grids(
@@ -1388,5 +1374,24 @@ mod tests {
                 right: 9,
             }]
         );
+    }
+
+    #[test]
+    fn cursor_only_grid_commit_has_no_content_dirty_region() {
+        let mut protocol = ProtocolState::default();
+        protocol.apply(NvimEvent::GridCursorGoto {
+            grid: 1,
+            row: 2,
+            col: 3,
+        });
+
+        let redraw = match protocol.apply(NvimEvent::Flush) {
+            ProtocolOutcome::Flushed(redraw) => redraw,
+            _ => panic!("expected flushed redraw"),
+        };
+        let dirty_region = &redraw.grid_commits[0].dirty_region;
+
+        assert!(!dirty_region.full);
+        assert!(dirty_region.rects.is_empty());
     }
 }

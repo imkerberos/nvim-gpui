@@ -11,7 +11,8 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, Image, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, TextRun, Window,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, StyleRefinement, Task, TextRun,
+    Window,
 };
 use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{
@@ -43,8 +44,8 @@ pub(crate) use layout::{
     system_font_families, GuiFontSpec,
 };
 pub(crate) use protocol::{
-    GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
-    RedrawCommit,
+    GridCommit, GridDirtyRegion, GridLayerKind, GridPlacement, MultiCursorPosition,
+    ProtocolOutcome, ProtocolState, RedrawCommit,
 };
 
 pub(crate) const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
@@ -130,6 +131,34 @@ pub(crate) struct RenderRuntime {
     pub(crate) viewport_animations: HashMap<u64, ViewportAnimation>,
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
+    pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
+    pub(crate) grid_row_views: HashMap<u64, Vec<Entity<GridRowView>>>,
+    pub(crate) grid_row_contexts: HashMap<u64, GridRowContext>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct GridRowContext {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) cell_width: Pixels,
+    pub(crate) line_height: Pixels,
+    pub(crate) gui_font: GuiFontSpec,
+    pub(crate) gui_wide_font: GuiFontSpec,
+    pub(crate) placement: GridPlacement,
+    pub(crate) highlight_context: grid::HighlightContext,
+    pub(crate) cursor_blink_started_at: Instant,
+    pub(crate) viewport_offset: Pixels,
+    pub(crate) fallback_mode: settings::FallbackMode,
+    pub(crate) nerd_font_family: Option<String>,
+}
+
+pub(crate) struct GridRowView {
+    pub(crate) model: Rc<grid::GridModel>,
+    pub(crate) row: usize,
+    pub(crate) context: GridRowContext,
+    pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
 }
 
 pub(crate) struct InputRuntime {
@@ -210,6 +239,7 @@ pub(crate) struct EditorRuntime {
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
     pub(crate) nerd_font_family: Option<String>,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
     pub(crate) bundled_nerd_font_registered: bool,
 }
 
@@ -229,6 +259,7 @@ impl Default for EditorRuntime {
             shaping_cache: grid::ShapedLineCache::shared(),
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
+            font_selection_cache: grid::FontSelectionCache::shared(),
             bundled_nerd_font_registered: false,
         }
     }
@@ -256,6 +287,10 @@ impl EditorRuntime {
             .then(|| settings.nerd_font.family().to_owned());
         self.shaping_cache.borrow_mut().clear();
         self.glyph_coverage_cache.borrow_mut().clear();
+        self.font_selection_cache.borrow_mut().clear();
+        self.presentation.grid_row_views.clear();
+        self.presentation.grid_row_contexts.clear();
+        self.presentation.grid_dirty_regions.clear();
         for image in self
             .protocol
             .presentation

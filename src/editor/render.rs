@@ -132,6 +132,7 @@ impl EditorRuntime {
                 px(options.gui_font.size),
             )
             .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+            .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
             .with_shaping_cache(Rc::clone(&self.shaping_cache))
             .with_nerd_fallback_mode(fallback_mode)
             .with_cursor_blink_started_at(options.cursor_blink_started_at)
@@ -159,6 +160,55 @@ fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::D
         .w(px(options.width as f32 * f32::from(options.cell_width)))
         .h(px(options.height as f32 * f32::from(options.line_height)))
         .child(element)
+}
+
+impl Render for GridRowView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let context = &self.context;
+        let mut element = GridElement::with_shared_model(Rc::clone(&self.model))
+            .with_render_rows(self.row, self.row.saturating_add(1))
+            .with_metrics(context.cell_width, context.line_height)
+            .with_highlight_context(context.highlight_context)
+            .with_wide_font(
+                context.gui_wide_font.family.clone(),
+                px(context.gui_wide_font.size),
+            )
+            .with_wide_font_fallback(context.gui_wide_font.fallback_families.clone())
+            .with_font_fallback(context.gui_font.fallback_families.clone())
+            .with_nerd_fallback_font(
+                context.nerd_font_family.clone().unwrap_or_default(),
+                px(context.gui_font.size),
+            )
+            .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+            .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
+            .with_shaping_cache(Rc::clone(&self.shaping_cache))
+            .with_nerd_fallback_mode(context.fallback_mode)
+            .with_cursor_blink_started_at(context.cursor_blink_started_at)
+            .with_viewport_offset(point(px(0.0), context.viewport_offset))
+            .with_nerd_font_mode(true);
+
+        if let Some(margins) = context.placement.viewport_margins {
+            element = element.with_viewport_margins(
+                margins.top,
+                margins.bottom,
+                margins.left,
+                margins.right,
+            );
+        }
+
+        element
+    }
+}
+
+fn grid_row_surface(view: Entity<GridRowView>, row: usize, context: &GridRowContext) -> gpui::Div {
+    div()
+        .absolute()
+        .left(px(0.0))
+        .top(px(row as f32 * f32::from(context.line_height)))
+        .w(px(context.width as f32 * f32::from(context.cell_width)))
+        .h(context.line_height)
+        .overflow_hidden()
+        .child(gpui::AnyView::from(view).cached(StyleRefinement::default()))
 }
 
 pub(super) fn viewport_rect(
@@ -320,6 +370,104 @@ impl EditorRuntime {
 }
 
 impl NvimGpui {
+    fn grid_row_surfaces(
+        &mut self,
+        grid_id: u64,
+        model: Rc<grid::GridModel>,
+        options: GridRenderOptions<'_>,
+        fallback_mode: settings::FallbackMode,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let row_count = options.height.min(model.height());
+        let context = GridRowContext {
+            width: options.width,
+            height: row_count,
+            cell_width: options.cell_width,
+            line_height: options.line_height,
+            gui_font: options.gui_font.clone(),
+            gui_wide_font: options.gui_wide_font.clone(),
+            placement: options.placement,
+            highlight_context: self
+                .editor
+                .highlight_context_for_layer(options.placement.kind),
+            cursor_blink_started_at: options.cursor_blink_started_at,
+            viewport_offset: options.viewport_offset,
+            fallback_mode,
+            nerd_font_family: self.editor.nerd_font_family.clone(),
+        };
+        let context_changed = self
+            .editor
+            .presentation
+            .grid_row_contexts
+            .insert(grid_id, context.clone())
+            .as_ref()
+            != Some(&context);
+        let dirty_region = self
+            .editor
+            .presentation
+            .grid_dirty_regions
+            .remove(&grid_id)
+            .unwrap_or_default();
+
+        let shaping_cache = Rc::clone(&self.editor.shaping_cache);
+        let glyph_coverage_cache = Rc::clone(&self.editor.glyph_coverage_cache);
+        let font_selection_cache = Rc::clone(&self.editor.font_selection_cache);
+        let mut views = self
+            .editor
+            .presentation
+            .grid_row_views
+            .remove(&grid_id)
+            .unwrap_or_default();
+        views.truncate(row_count);
+        while views.len() < row_count {
+            let row = views.len();
+            let row_model = Rc::clone(&model);
+            let row_context = context.clone();
+            let row_shaping_cache = Rc::clone(&shaping_cache);
+            let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
+            let row_font_selection_cache = Rc::clone(&font_selection_cache);
+            views.push(cx.new(|_| GridRowView {
+                model: row_model,
+                row,
+                context: row_context,
+                shaping_cache: row_shaping_cache,
+                glyph_coverage_cache: row_glyph_coverage_cache,
+                font_selection_cache: row_font_selection_cache,
+            }));
+        }
+
+        let mut dirty_rows = vec![context_changed || dirty_region.full; row_count];
+        for rect in dirty_region.rects {
+            let start = rect.top.min(row_count);
+            let end = rect.bottom.min(row_count);
+            for dirty in &mut dirty_rows[start..end] {
+                *dirty = true;
+            }
+        }
+        for (row, view) in views.iter().enumerate() {
+            if !dirty_rows[row] {
+                continue;
+            }
+            let row_model = Rc::clone(&model);
+            let row_context = context.clone();
+            view.update(cx, |state, cx| {
+                state.model = row_model;
+                state.context = row_context;
+                cx.notify();
+            });
+        }
+
+        self.editor
+            .presentation
+            .grid_row_views
+            .insert(grid_id, views.clone());
+        views
+            .into_iter()
+            .enumerate()
+            .map(|(row, view)| grid_row_surface(view, row, &context).into_any_element())
+            .collect()
+    }
+
     pub(crate) fn render_editor_surface(
         &mut self,
         window: &mut Window,
@@ -527,15 +675,32 @@ impl NvimGpui {
                 ));
             }
 
-            let main_element = self.with_ime_input_handler(
-                self.editor
-                    .grid_element(main_model, main_options, self.app.settings.fallback_mode),
-                1,
-                entity.clone(),
-                invalidate_ime_coordinates,
-                ime_composition.as_ref(),
-            );
-            main_layer = main_layer.child(grid_surface(main_element, main_options));
+            let use_cached_main_rows = !render_previous_grid
+                && current_offset == px(0.0)
+                && ime_composition.is_none()
+                && self.editor.input.ime_input_grid != Some(1);
+            if use_cached_main_rows {
+                main_layer.extend(self.grid_row_surfaces(
+                    1,
+                    main_model,
+                    main_options,
+                    self.app.settings.fallback_mode,
+                    cx,
+                ));
+            } else {
+                let main_element = self.with_ime_input_handler(
+                    self.editor.grid_element(
+                        main_model,
+                        main_options,
+                        self.app.settings.fallback_mode,
+                    ),
+                    1,
+                    entity.clone(),
+                    invalidate_ime_coordinates,
+                    ime_composition.as_ref(),
+                );
+                main_layer = main_layer.child(grid_surface(main_element, main_options));
+            }
 
             main_layer =
                 main_layer.child(image_surface(1, image_layers, image_sources, main_options));
@@ -611,17 +776,34 @@ impl NvimGpui {
                         old_options,
                     ));
                 }
-                layer = layer.child(grid_surface(
-                    self.with_ime_input_handler(
-                        self.editor
-                            .grid_element(model, options, self.app.settings.fallback_mode),
+                let use_cached_rows = !render_previous_grid
+                    && current_offset == px(0.0)
+                    && ime_composition.is_none()
+                    && self.editor.input.ime_input_grid != Some(grid_id);
+                if use_cached_rows {
+                    layer.extend(self.grid_row_surfaces(
                         grid_id,
-                        entity.clone(),
-                        invalidate_ime_coordinates,
-                        ime_composition.as_ref(),
-                    ),
-                    options,
-                ));
+                        model,
+                        options,
+                        self.app.settings.fallback_mode,
+                        cx,
+                    ));
+                } else {
+                    layer = layer.child(grid_surface(
+                        self.with_ime_input_handler(
+                            self.editor.grid_element(
+                                model,
+                                options,
+                                self.app.settings.fallback_mode,
+                            ),
+                            grid_id,
+                            entity.clone(),
+                            invalidate_ime_coordinates,
+                            ime_composition.as_ref(),
+                        ),
+                        options,
+                    ));
+                }
                 layer = layer.child(image_surface(grid_id, image_layers, image_sources, options));
                 editor = editor.child(layer);
             }
