@@ -207,7 +207,11 @@ fn grid_row_surface(view: Entity<GridRowView>, row: usize, context: &GridRowCont
         .top(px(row as f32 * f32::from(context.line_height)))
         .w(px(context.width as f32 * f32::from(context.cell_width)))
         .h(context.line_height)
-        .overflow_hidden()
+        // Do not clip a cached row at its logical line boundary. Glyph raster
+        // bounds can extend above or below the row, just as they can extend
+        // past a terminal cell. Keep only the horizontal grid-edge clip here;
+        // the containing grid/layer clips the complete surface vertically.
+        .overflow_x_hidden()
         .child(gpui::AnyView::from(view).cached(StyleRefinement::default()))
 }
 

@@ -112,13 +112,19 @@ impl GlyphCoverageCache {
 
         let text_system = window.text_system();
         let requested_font = text_system.resolve_font(font);
-        // A shaping result can still contain the primary font's missing-glyph
-        // box, so comparing shaped font ids is not a reliable coverage test.
-        // `typographic_bounds` asks the platform font directly for the glyph
-        // and therefore distinguishes a real glyph from a replacement box.
+        // `resolve_font` falls back to the platform's default stack when a
+        // requested family is unavailable. Do not let that unrelated font
+        // make an invalid configured family look like it contains the glyph.
         let contains = text_system
-            .typographic_bounds(requested_font, px(16.0), character)
-            .is_ok();
+            .get_font_for_id(requested_font)
+            .is_some_and(|resolved_font| {
+                resolved_font
+                    .family
+                    .eq_ignore_ascii_case(font.family.as_ref())
+                    && text_system
+                        .typographic_bounds(requested_font, px(16.0), character)
+                        .is_ok()
+            });
         self.entries.insert(key, contains);
         contains
     }

@@ -21,6 +21,12 @@ struct PaintedText {
     in_viewport: bool,
 }
 
+struct CellFontRun {
+    len: usize,
+    font: Font,
+    size: Pixels,
+}
+
 struct ImePaintedText {
     row: usize,
     col: usize,
@@ -225,7 +231,7 @@ impl GridElement {
         (start, end)
     }
 
-    fn font_for_cell(
+    fn font_runs_for_cell(
         &mut self,
         window: &Window,
         cell: &VisualCell,
@@ -233,7 +239,7 @@ impl GridElement {
         normal_font_size: Pixels,
         bold: bool,
         italic: bool,
-    ) -> (Font, Pixels) {
+    ) -> Vec<CellFontRun> {
         let (primary_font, size, role, fallback_families) =
             if cell.kind == VisualCellKind::WideCharacter {
                 self.wide_font
@@ -269,73 +275,159 @@ impl GridElement {
         let base_font = font_with_fallback(primary_font.clone(), &fallback_families);
 
         if cell.kind != VisualCellKind::NerdSymbol {
-            let mut selection = None;
-            for character in cell
+            let selections = cell
                 .text
-                .chars()
-                .filter(|character| !is_grapheme_control(*character))
-            {
-                let current = self.font_selection_for_character(
-                    window,
-                    role,
-                    &primary_font,
-                    &fallback_families,
-                    bold,
-                    italic,
-                    character,
-                );
-                if selection.is_some_and(|previous| previous != current) {
-                    // A cell containing multiple glyphs from different
-                    // families must remain a cascade so shaping can split
-                    // the run at the correct glyph boundaries.
-                    return (base_font, size);
-                }
-                selection = Some(current);
+                .char_indices()
+                .filter(|&(_, character)| !is_grapheme_control(character))
+                .map(|(offset, character)| {
+                    (
+                        offset,
+                        self.font_selection_for_character(
+                            window,
+                            role,
+                            &primary_font,
+                            &fallback_families,
+                            bold,
+                            italic,
+                            character,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let selection = selections
+                .first()
+                .map(|(_, selection)| *selection)
+                .unwrap_or(FontSelection::Primary);
+
+            if selections.iter().all(|(_, current)| *current == selection) {
+                return vec![CellFontRun {
+                    len: cell.text.len(),
+                    font: font_for_selection(
+                        &primary_font,
+                        &base_font,
+                        &fallback_families,
+                        selection,
+                        bold,
+                        italic,
+                    ),
+                    size,
+                }];
             }
 
-            return match selection.unwrap_or(FontSelection::Primary) {
-                FontSelection::Primary => (primary_font, size),
-                FontSelection::Fallback(index) => {
-                    let fallback_font =
-                        styled_font(font(fallback_families[index].clone()), bold, italic);
-                    (
-                        font_with_fallback(fallback_font, &fallback_families[index + 1..]),
-                        size,
-                    )
+            #[cfg(target_os = "linux")]
+            {
+                // GPUI's Linux text backend does not pass Font.fallbacks to
+                // cosmic-text. Split a mixed grapheme into explicit font
+                // runs so the selected application chain is still honored.
+                let mut runs = Vec::new();
+                let mut start = 0;
+                let mut current = selection;
+                for (offset, next) in selections.into_iter().skip(1) {
+                    if next != current {
+                        runs.push(CellFontRun {
+                            len: offset - start,
+                            font: font_for_selection(
+                                &primary_font,
+                                &base_font,
+                                &fallback_families,
+                                current,
+                                bold,
+                                italic,
+                            ),
+                            size,
+                        });
+                        start = offset;
+                        current = next;
+                    }
                 }
-                FontSelection::Unavailable => (base_font, size),
-            };
+                runs.push(CellFontRun {
+                    len: cell.text.len() - start,
+                    font: font_for_selection(
+                        &primary_font,
+                        &base_font,
+                        &fallback_families,
+                        current,
+                        bold,
+                        italic,
+                    ),
+                    size,
+                });
+                return runs;
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                // CoreText and DirectWrite can consume the explicit cascade
+                // while preserving shaping across the whole grapheme.
+                return vec![CellFontRun {
+                    len: cell.text.len(),
+                    font: base_font,
+                    size,
+                }];
+            }
         }
 
         let Some(character) = cell.text.chars().next() else {
-            return (base_font, size);
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
         };
         let Some((fallback_family, fallback_size)) = self.nerd_fallback_font.as_ref() else {
-            return (base_font, size);
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
         };
 
-        #[cfg(target_os = "windows")]
+        #[cfg(target_os = "linux")]
+        if self.nerd_fallback_mode == FallbackMode::Auto
+            && self
+                .glyph_coverage_cache
+                .borrow_mut()
+                .contains(window, &base_font, character)
+        {
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if self.nerd_fallback_mode != FallbackMode::None {
-            // GPUI 0.2.2 builds explicit DirectWrite fallbacks from the
-            // system font collection, while bundled Nerd Fonts live in its
-            // separate in-memory collection. Use the bundled symbol font as
-            // the primary font for this single-cell run on Windows so it can
-            // still be resolved from that custom collection.
-            return (
-                styled_font(font(fallback_family.clone()), bold, italic),
-                *fallback_size,
-            );
+            // GPUI 0.2.2 cannot use an explicit Font.fallbacks chain on
+            // Linux, and bundled Nerd Fonts live in a separate in-memory
+            // collection on Windows. Resolve the symbol font directly on
+            // both platforms so the bundled glyph is addressable.
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: styled_font(font(fallback_family.clone()), bold, italic),
+                size: *fallback_size,
+            }];
         }
 
         match self.nerd_fallback_mode {
-            FallbackMode::None => return (base_font, size),
+            FallbackMode::None => {
+                return vec![CellFontRun {
+                    len: cell.text.len(),
+                    font: base_font,
+                    size,
+                }]
+            }
             FallbackMode::Auto => {
                 if self
                     .glyph_coverage_cache
                     .borrow_mut()
                     .contains(window, &base_font, character)
                 {
-                    return (base_font, size);
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: base_font,
+                        size,
+                    }];
                 }
             }
             FallbackMode::Force => {}
@@ -359,7 +451,11 @@ impl GridElement {
         }
         let mut fallback_font = base_font;
         fallback_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
-        (fallback_font, *fallback_size)
+        vec![CellFontRun {
+            len: cell.text.len(),
+            font: fallback_font,
+            size: *fallback_size,
+        }]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -439,7 +535,7 @@ impl GridElement {
         let text_style = window.text_style();
         let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
         let normal_font = font_with_fallback(text_style.font(), &self.font_fallback);
-        let (cell_font, cell_font_size) = self.font_for_cell(
+        let cell_font_runs = self.font_runs_for_cell(
             window,
             &cell,
             &normal_font,
@@ -461,21 +557,23 @@ impl GridElement {
             thickness: px(1.0),
             color: Some(foreground),
         });
-        let text_len = cell.text.len();
-        let line = self.shaping_cache.borrow_mut().shape_line(
-            window,
-            cell.text,
-            vec![StyledTextRun {
-                len: text_len,
+        let runs = cell_font_runs
+            .into_iter()
+            .map(|run| StyledTextRun {
+                len: run.len,
                 style: ShapingStyle {
-                    font: cell_font,
-                    font_size: cell_font_size,
+                    font: run.font,
+                    font_size: run.size,
                     foreground,
                     underline,
                     strikethrough,
                 },
-            }],
-        );
+            })
+            .collect();
+        let line = self
+            .shaping_cache
+            .borrow_mut()
+            .shape_line(window, cell.text, runs);
         Some(CursorGlyph { line })
     }
 
@@ -579,6 +677,24 @@ fn font_with_fallback(mut base_font: Font, fallback_families: &[String]) -> Font
     }
     base_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
     base_font
+}
+
+fn font_for_selection(
+    primary_font: &Font,
+    base_font: &Font,
+    fallback_families: &[String],
+    selection: FontSelection,
+    bold: bool,
+    italic: bool,
+) -> Font {
+    match selection {
+        FontSelection::Primary => primary_font.clone(),
+        FontSelection::Fallback(index) => {
+            let fallback_font = styled_font(font(fallback_families[index].clone()), bold, italic);
+            font_with_fallback(fallback_font, &fallback_families[index + 1..])
+        }
+        FontSelection::Unavailable => base_font.clone(),
+    }
 }
 
 fn styled_font(mut font: Font, bold: bool, italic: bool) -> Font {
@@ -780,14 +896,14 @@ impl Element for GridElement {
             if attrs.blink {
                 has_blinking_text = true;
             }
-            let style = if cell.text.is_empty()
+            let styles = if cell.text.is_empty()
                 || is_kitty_placeholder(&cell.text)
                 || attrs.conceal
                 || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
             {
                 None
             } else {
-                let (cell_font, cell_font_size) = self.font_for_cell(
+                let cell_font_runs = self.font_runs_for_cell(
                     window,
                     &cell,
                     &normal_font,
@@ -809,13 +925,21 @@ impl Element for GridElement {
                     thickness: px(1.0),
                     color: Some(resolved.special),
                 });
-                Some(ShapingStyle {
-                    font: cell_font,
-                    font_size: cell_font_size,
-                    foreground,
-                    underline,
-                    strikethrough,
-                })
+                Some(
+                    cell_font_runs
+                        .into_iter()
+                        .map(|run| StyledTextRun {
+                            len: run.len,
+                            style: ShapingStyle {
+                                font: run.font,
+                                font_size: run.size,
+                                foreground,
+                                underline,
+                                strikethrough,
+                            },
+                        })
+                        .collect::<Vec<_>>(),
+                )
             };
             let origin = point(
                 bounds.origin.x + cell_width * render_start,
@@ -837,7 +961,7 @@ impl Element for GridElement {
                 )
             });
 
-            if let Some(style) = style {
+            if let Some(cell_runs) = styles {
                 let can_merge = cell.kind == VisualCellKind::Text
                     && cell.grid_len == 1
                     && pending_text.as_ref().is_some_and(|pending| {
@@ -852,13 +976,11 @@ impl Element for GridElement {
                         .expect("a mergeable cell must have pending text");
                     pending.text.push_str(&cell.text);
                     pending.render_end = render_start + cell.grid_len;
-                    let text_len = cell.text.len();
-                    match pending.runs.last_mut() {
-                        Some(last) if last.style == style => last.len += text_len,
-                        _ => pending.runs.push(StyledTextRun {
-                            len: text_len,
-                            style,
-                        }),
+                    for cell_run in cell_runs {
+                        match pending.runs.last_mut() {
+                            Some(last) if last.style == cell_run.style => last.len += cell_run.len,
+                            _ => pending.runs.push(cell_run),
+                        }
                     }
                 } else {
                     if let Some(pending) = pending_text.take() {
@@ -869,10 +991,7 @@ impl Element for GridElement {
                         render_start,
                         render_end: render_start + cell.grid_len,
                         text: cell.text.to_string(),
-                        runs: vec![StyledTextRun {
-                            len: cell.text.len(),
-                            style,
-                        }],
+                        runs: cell_runs,
                         mergeable: cell.kind == VisualCellKind::Text,
                         in_viewport,
                     });
