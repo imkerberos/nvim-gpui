@@ -30,6 +30,36 @@ return modified
 const UNNAMED_BUFFER_LABEL: &str = "[No Name]";
 
 impl NvimGpui {
+    fn schedule_redraw_at_next_frame(
+        &mut self,
+        view: gpui::WeakEntity<Self>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.app.session.redraw_notify_scheduled {
+            return;
+        }
+
+        let Some(window_handle) = self.window.main_window_handle else {
+            cx.notify();
+            return;
+        };
+
+        self.app.session.redraw_notify_scheduled = true;
+        let result = window_handle.update(cx, move |_, window, _| {
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.app.session.redraw_notify_scheduled = false;
+                    cx.notify();
+                });
+            });
+        });
+
+        if result.is_err() {
+            self.app.session.redraw_notify_scheduled = false;
+            cx.notify();
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         connection: ConnectionSpec,
@@ -183,7 +213,7 @@ impl NvimGpui {
                             this.schedule_multicursor_reconcile(cx);
                         }
                         if should_notify {
-                            cx.notify();
+                            this.schedule_redraw_at_next_frame(weak.clone(), cx);
                         }
                         true
                     })
@@ -481,6 +511,7 @@ impl NvimGpui {
 
     fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {
         self.app.session.session_id = None;
+        self.app.session.redraw_notify_scheduled = false;
         self.editor.protocol = ProtocolState::default();
         self.editor.protocol.theme = initial_theme;
         self.editor.protocol.presentation.grid_size =

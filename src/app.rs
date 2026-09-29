@@ -98,6 +98,7 @@ pub(crate) const MAX_EVENTS_PER_UI_UPDATE: usize = 2048;
 /// Window-facing state owned by the application root.
 pub(crate) struct WindowRuntime {
     pub(crate) focus_handle: Option<FocusHandle>,
+    pub(crate) main_window_handle: Option<AnyWindowHandle>,
     pub(crate) window_title: String,
     pub(crate) window_icon: String,
     pub(crate) quit_dialog: QuitDialogState,
@@ -114,6 +115,7 @@ impl Default for WindowRuntime {
     fn default() -> Self {
         Self {
             focus_handle: None,
+            main_window_handle: None,
             window_title: DEFAULT_WINDOW_TITLE.to_owned(),
             window_icon: "nvim-gpui".to_owned(),
             quit_dialog: QuitDialogState::default(),

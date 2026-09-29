@@ -409,6 +409,23 @@ fn grid_scroll_moves_rows_and_clears_the_scrolled_in_area() {
 }
 
 #[test]
+fn full_width_vertical_scroll_reuses_rows_and_their_wrap_state() {
+    let mut model = GridModel::from_rows(vec![
+        GridRow::new(vec![GridCell::text("a", DEFAULT_HIGHLIGHT)]).wrapped(),
+        GridRow::new(vec![GridCell::text("b", DEFAULT_HIGHLIGHT)]),
+        GridRow::new(vec![GridCell::text("c", DEFAULT_HIGHLIGHT)]).wrapped(),
+    ]);
+
+    model.scroll(0, 3, 0, 1, 1, 0);
+
+    assert_eq!(model.rows()[0].cells()[0].text, "b");
+    assert!(!model.rows()[0].wraps_to_next);
+    assert_eq!(model.rows()[1].cells()[0].text, "c");
+    assert!(model.rows()[1].wraps_to_next);
+    assert!(!model.rows()[2].wraps_to_next);
+}
+
+#[test]
 fn cursor_is_kept_in_the_grid_model() {
     let mut model = GridModel::new(4, 2);
 

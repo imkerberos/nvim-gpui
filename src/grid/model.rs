@@ -651,6 +651,27 @@ impl GridModel {
             return;
         }
 
+        if cols == 0 && left == 0 && right == self.width() {
+            // Neovim uses this shape for the hot path of ordinary vertical
+            // window scrolling. Reuse immutable row allocations instead of
+            // cloning every cell and touching every destination row.
+            let original = self.rows.clone();
+            let blank = Rc::new(GridRow::new(
+                (0..self.width())
+                    .map(|_| GridCell::blank(DEFAULT_HIGHLIGHT))
+                    .collect(),
+            ));
+            for row in top..bot {
+                let source_row = row as isize + rows;
+                self.rows[row] = if (top as isize..bot as isize).contains(&source_row) {
+                    Rc::clone(&original[source_row as usize])
+                } else {
+                    Rc::clone(&blank)
+                };
+            }
+            return;
+        }
+
         // Row references are copied here, not cell storage. Each destination
         // row is cloned lazily by `replace_cell` only when it is modified.
         let original = self.rows.clone();
