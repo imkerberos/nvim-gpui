@@ -78,6 +78,7 @@ pub struct GridElement {
     cell_width: Pixels,
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
+    primary_font: Option<(String, Pixels)>,
     wide_font: Option<(String, Pixels)>,
     wide_font_fallback: Vec<String>,
     font_fallback: Vec<String>,
@@ -102,6 +103,7 @@ impl GridElement {
             cell_width: px(10.0),
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
+            primary_font: None,
             wide_font: None,
             wide_font_fallback: Vec::new(),
             font_fallback: Vec::new(),
@@ -131,6 +133,11 @@ impl GridElement {
     pub fn with_metrics(mut self, cell_width: Pixels, line_height: Pixels) -> Self {
         self.cell_width = cell_width;
         self.line_height = line_height;
+        self
+    }
+
+    pub fn with_primary_font(mut self, family: impl Into<String>, size: Pixels) -> Self {
+        self.primary_font = Some((family.into(), size));
         self
     }
 
@@ -458,6 +465,21 @@ impl GridElement {
         }]
     }
 
+    fn normal_font(&self, window: &Window) -> (Font, Pixels) {
+        if let Some((family, size)) = &self.primary_font {
+            return (
+                font_with_fallback(font(family.clone()), &self.font_fallback),
+                *size,
+            );
+        }
+
+        let text_style = window.text_style();
+        (
+            font_with_fallback(text_style.font(), &self.font_fallback),
+            text_style.font_size.to_pixels(window.rem_size()),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn font_selection_for_character(
         &mut self,
@@ -532,9 +554,7 @@ impl GridElement {
             return None;
         }
 
-        let text_style = window.text_style();
-        let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), &self.font_fallback);
+        let (normal_font, normal_font_size) = self.normal_font(window);
         let cell_font_runs = self.font_runs_for_cell(
             window,
             &cell,
@@ -782,9 +802,7 @@ impl Element for GridElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        let text_style = window.text_style();
-        let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), &self.font_fallback);
+        let (normal_font, normal_font_size) = self.normal_font(window);
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let model = Rc::clone(&self.model);
@@ -969,6 +987,17 @@ impl Element for GridElement {
                             && pending.in_viewport == in_viewport
                             && pending.row == cell.row
                             && pending.render_end == render_start
+                            // Keep a font/style transition as a shaping
+                            // boundary. CoreText can collapse a later bold
+                            // run back to the regular face when a long grid
+                            // row containing trailing cells is shaped as one
+                            // line. The row cache still combines adjacent
+                            // cells with the same style.
+                            && pending.runs.last().is_some_and(|last| {
+                                cell_runs
+                                    .first()
+                                    .is_some_and(|first| last.style == first.style)
+                            })
                     });
                 if can_merge {
                     let pending = pending_text

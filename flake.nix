@@ -48,6 +48,7 @@
               gh
               gnumake
               just
+              vimPlugins.markview-nvim
               neovim
               imagemagick
               python3
@@ -76,6 +77,7 @@
               export NVIM_GPUI_LAZY="${pkgs.vimPlugins.lazy-nvim}"
               export NVIM_GPUI_SNACKS="${pkgs.vimPlugins.snacks-nvim}"
               export NVIM_GPUI_TREESITTER="${treesitterMarkdown}"
+              export NVIM_GPUI_MARKVIEW="${pkgs.vimPlugins.markview-nvim}"
               export NVIM_GPUI_IMAGEMAGICK="${pkgs.imagemagick}"
               # Runtime builders download the pinned official starter-data
               # archives by default. Set NVIM_GPUI_RIME_STARTER_DATA when a

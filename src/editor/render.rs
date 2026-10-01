@@ -120,6 +120,7 @@ impl EditorRuntime {
         let highlight_context = self.highlight_context_for_layer(options.placement.kind);
         let mut element = GridElement::with_shared_model(model)
             .with_metrics(options.cell_width, options.line_height)
+            .with_primary_font(options.gui_font.family.clone(), px(options.gui_font.size))
             .with_highlight_context(highlight_context)
             .with_wide_font(
                 options.gui_wide_font.family.clone(),
@@ -168,6 +169,7 @@ impl Render for GridRowView {
         let mut element = GridElement::with_shared_model(Rc::clone(&self.model))
             .with_render_rows(self.row, self.row.saturating_add(1))
             .with_metrics(context.cell_width, context.line_height)
+            .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
             .with_highlight_context(context.highlight_context)
             .with_wide_font(
                 context.gui_wide_font.family.clone(),
@@ -451,23 +453,36 @@ impl NvimGpui {
         }
 
         let mut dirty_rows = vec![context_changed || dirty_region.full; row_count];
-        for rect in dirty_region.rects {
+        for rect in &dirty_region.rects {
             let start = rect.top.min(row_count);
             let end = rect.bottom.min(row_count);
             for dirty in &mut dirty_rows[start..end] {
                 *dirty = true;
             }
         }
-        for (row, view) in views.iter().enumerate() {
+        for row in 0..views.len() {
             if !dirty_rows[row] {
                 continue;
             }
             let row_model = Rc::clone(&model);
             let row_context = context.clone();
-            view.update(cx, |state, cx| {
-                state.model = row_model;
-                state.context = row_context;
-                cx.notify();
+            let row_shaping_cache = Rc::clone(&shaping_cache);
+            let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
+            let row_font_selection_cache = Rc::clone(&font_selection_cache);
+
+            // A dirty row must get a new Entity identity. Updating the old
+            // entity and notifying it is normally enough for GPUI, but a
+            // parent that already retained the AnyView can still reuse its
+            // cached layout/paint for the current frame. Replacing only the
+            // affected rows makes the repaint boundary explicit while clean
+            // rows keep their retained surfaces.
+            views[row] = cx.new(|_| GridRowView {
+                model: row_model,
+                row,
+                context: row_context,
+                shaping_cache: row_shaping_cache,
+                glyph_coverage_cache: row_glyph_coverage_cache,
+                font_selection_cache: row_font_selection_cache,
             });
         }
 
