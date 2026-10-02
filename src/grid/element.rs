@@ -92,6 +92,74 @@ struct GridCellRange {
     columns: (usize, usize),
 }
 
+#[derive(Clone)]
+enum GridSource {
+    Full(Rc<GridModel>),
+    Row {
+        index: usize,
+        row: Rc<GridRow>,
+        width: usize,
+        height: usize,
+        highlights: Rc<HighlightTable>,
+        defaults: DefaultColors,
+    },
+}
+
+impl GridSource {
+    fn width(&self) -> usize {
+        match self {
+            Self::Full(model) => model.width(),
+            Self::Row { width, .. } => *width,
+        }
+    }
+
+    fn height(&self) -> usize {
+        match self {
+            Self::Full(model) => model.height(),
+            Self::Row { height, .. } => *height,
+        }
+    }
+
+    fn row_range(&self) -> (usize, usize) {
+        match self {
+            Self::Full(model) => (0, model.height()),
+            Self::Row { index, .. } => (*index, index.saturating_add(1)),
+        }
+    }
+
+    fn style_parts(&self) -> (&HighlightTable, DefaultColors) {
+        match self {
+            Self::Full(model) => (model.highlights(), model.default_colors()),
+            Self::Row {
+                highlights,
+                defaults,
+                ..
+            } => (highlights, *defaults),
+        }
+    }
+
+    fn for_each_cell_in_range(
+        &self,
+        builder: &VisualCellBuilder,
+        range: GridCellRange,
+        f: &mut impl FnMut(VisualCell),
+    ) {
+        match self {
+            Self::Full(model) => builder.for_each_cell_in_range(
+                model,
+                range.rows.0..range.rows.1,
+                range.columns.0..range.columns.1,
+                f,
+            ),
+            Self::Row { index, row, .. } => {
+                if (range.rows.0..range.rows.1).contains(index) {
+                    builder.for_each_row_in_range(*index, row, range.columns.0..range.columns.1, f);
+                }
+            }
+        }
+    }
+}
+
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
@@ -103,7 +171,7 @@ pub struct GridPrepaintState {
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
 
 pub struct GridElement {
-    model: Rc<GridModel>,
+    source: GridSource,
     nerd_font_mode: bool,
     nerd_fallback_mode: FallbackMode,
     cell_width: Pixels,
@@ -130,8 +198,30 @@ pub struct GridElement {
 
 impl GridElement {
     pub fn with_shared_model(model: Rc<GridModel>) -> Self {
+        Self::with_source(GridSource::Full(model))
+    }
+
+    pub(crate) fn with_shared_row(
+        index: usize,
+        row: Rc<GridRow>,
+        width: usize,
+        height: usize,
+        highlights: Rc<HighlightTable>,
+        defaults: DefaultColors,
+    ) -> Self {
+        Self::with_source(GridSource::Row {
+            index,
+            row,
+            width,
+            height,
+            highlights,
+            defaults,
+        })
+    }
+
+    fn with_source(source: GridSource) -> Self {
         Self {
-            model,
+            source,
             nerd_font_mode: false,
             nerd_fallback_mode: FallbackMode::Auto,
             cell_width: px(10.0),
@@ -287,8 +377,8 @@ impl GridElement {
     }
 
     fn render_row_range(&self) -> (usize, usize) {
-        let height = self.model.height();
-        let (start, end) = self.render_rows.unwrap_or((0, height));
+        let height = self.source.height();
+        let (start, end) = self.render_rows.unwrap_or_else(|| self.source.row_range());
         let start = start.min(height);
         let end = end.max(start).min(height);
         (start, end)
@@ -647,13 +737,17 @@ impl GridElement {
         position: CursorVisualPosition,
         foreground: Hsla,
     ) -> Option<CursorGlyph> {
-        let row = self.model.rows().get(position.row)?;
+        let model = match &self.source {
+            GridSource::Full(model) => model,
+            GridSource::Row { .. } => return None,
+        };
+        let row = model.rows().get(position.row)?;
         let cell = VisualCellBuilder::new(self.nerd_font_mode).build_cell_at(
             position.row,
             row,
             position.col,
         )?;
-        let resolved = resolve_highlight(&self.model, cell.highlight, self.highlight_context);
+        let resolved = resolve_highlight(model, cell.highlight, self.highlight_context);
         let attrs = resolved.attrs;
         if cell.text.is_empty() || is_kitty_placeholder(&cell.text) || attrs.conceal {
             return None;
@@ -703,14 +797,14 @@ impl GridElement {
     }
 
     fn viewport_row_range(&self) -> (usize, usize) {
-        let height = self.model.height();
+        let height = self.source.height();
         let top = self.viewport_margins.0.min(height);
         let bottom = self.viewport_margins.1.min(height.saturating_sub(top));
         (top, height.saturating_sub(bottom))
     }
 
     fn viewport_column_range(&self) -> (usize, usize) {
-        let width = self.model.width();
+        let width = self.source.width();
         let left = self.viewport_margins.2.min(width);
         let right = self.viewport_margins.3.min(width.saturating_sub(left));
         (left, width.saturating_sub(right))
@@ -781,7 +875,7 @@ impl GridElement {
                 clipped.origin.x,
                 clipped.size.width,
                 self.cell_width,
-                self.model.width(),
+                self.source.width(),
             ),
         }
     }
@@ -847,7 +941,7 @@ impl Element for GridElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = (self.cell_width * self.model.width()).into();
+        style.size.width = (self.cell_width * self.source.width()).into();
         let (render_start, render_end) = self.render_row_range();
         style.size.height = (self.line_height * render_end.saturating_sub(render_start)).into();
         (window.request_layout(style, [], cx), ())
@@ -875,7 +969,10 @@ impl Element for GridElement {
                 + text_system.descent(normal_font_id, normal_font_size) * 0.618;
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
-        let model = Rc::clone(&self.model);
+        let source = self.source.clone();
+        let (highlights, defaults) = source.style_parts();
+        let model_width = self.source.width();
+        let model_height = self.source.height();
         let now = Instant::now();
         let (render_row_start, _) = self.render_row_range();
         let render_range = self.render_range(bounds, window.content_mask().bounds);
@@ -890,13 +987,17 @@ impl Element for GridElement {
         // Inline composition contributes glyphs only. Its background must
         // remain the background of the underlying grid cell (for example,
         // CursorLine), including after the composition is cleared.
-        let ime_style =
-            resolve_highlight(model.as_ref(), DEFAULT_HIGHLIGHT, self.highlight_context);
+        let ime_style = visual::resolve_highlight_from_parts(
+            highlights,
+            defaults,
+            DEFAULT_HIGHLIGHT,
+            self.highlight_context,
+        );
         let ime_foreground = ime_style.foreground;
         let ime_paint = self.ime_composition.as_ref().and_then(|composition| {
             if composition.text.is_empty()
-                || composition.row >= model.height()
-                || composition.col > model.width()
+                || composition.row >= model_height
+                || composition.col > model_width
             {
                 return None;
             }
@@ -956,7 +1057,7 @@ impl Element for GridElement {
                 col: composition.col,
                 grid_width: composition.grid_width.max(1),
                 line,
-                in_viewport: composition.col < model.width()
+                in_viewport: composition.col < model_width
                     && self.cell_is_in_viewport(composition.row, composition.col),
             })
         });
@@ -977,7 +1078,12 @@ impl Element for GridElement {
             let resolved = resolved_highlights
                 .entry(cell.highlight)
                 .or_insert_with(|| {
-                    resolve_highlight(model.as_ref(), cell.highlight, self.highlight_context)
+                    visual::resolve_highlight_from_parts(
+                        highlights,
+                        defaults,
+                        cell.highlight,
+                        self.highlight_context,
+                    )
                 });
             let attrs = &resolved.attrs;
             let foreground = resolved.foreground;
@@ -1165,12 +1271,7 @@ impl Element for GridElement {
                 overlines.push((overline.0, overline.1, in_viewport));
             }
         };
-        builder.for_each_cell_in_range(
-            model.as_ref(),
-            render_range.rows.0..render_range.rows.1,
-            render_range.columns.0..render_range.columns.1,
-            &mut paint_cell,
-        );
+        source.for_each_cell_in_range(&builder, render_range, &mut paint_cell);
 
         if let Some(gap) = ime_gap {
             // Usually every gap cell gets its background from the original
@@ -1317,6 +1418,53 @@ impl Element for GridElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_row_does_not_keep_the_whole_grid_model_alive() {
+        let mut model = Rc::new(GridModel::from_rows(vec![
+            GridRow::new(vec![GridCell::text("other", DEFAULT_HIGHLIGHT)]),
+            GridRow::new(vec![
+                GridCell::wide_lead("界", HighlightId(7)),
+                GridCell::wide_continuation(HighlightId(7)),
+            ]),
+        ]));
+        Rc::make_mut(&mut model).set_highlight(
+            HighlightId(7),
+            HighlightAttrs {
+                bold: true,
+                ..Default::default()
+            },
+        );
+        let weak_model = Rc::downgrade(&model);
+        let source = GridSource::Row {
+            index: 1,
+            row: model.row_handle(1).unwrap(),
+            width: model.width(),
+            height: model.height(),
+            highlights: model.highlight_handle(),
+            defaults: model.default_colors(),
+        };
+        let full_source = GridSource::Full(Rc::clone(&model));
+        let range = GridCellRange {
+            rows: (1, 2),
+            columns: (1, 2),
+        };
+        let builder = VisualCellBuilder::new(false);
+        let mut full_cells = Vec::new();
+        full_source.for_each_cell_in_range(&builder, range, &mut |cell| full_cells.push(cell));
+        let mut row_cells = Vec::new();
+        source.for_each_cell_in_range(&builder, range, &mut |cell| row_cells.push(cell));
+        assert_eq!(row_cells, full_cells);
+        assert_eq!(row_cells[0].text, "界");
+        assert_eq!(row_cells[0].highlight, HighlightId(7));
+        assert!(source.style_parts().0[&HighlightId(7)].bold);
+
+        drop(full_source);
+        drop(model);
+        assert!(weak_model.upgrade().is_none());
+        assert_eq!(source.width(), 2);
+        assert_eq!(source.row_range(), (1, 2));
+    }
 
     #[test]
     fn adjacent_wide_cells_share_one_grid_underline() {

@@ -65,6 +65,16 @@ impl VisualCellBuilder {
         }
     }
 
+    pub(crate) fn for_each_row_in_range(
+        &self,
+        row: usize,
+        grid_row: &GridRow,
+        columns: std::ops::Range<usize>,
+        f: &mut impl FnMut(VisualCell),
+    ) {
+        self.for_each_row(row, grid_row, columns, f);
+    }
+
     pub fn build_row(&self, row: usize, grid_row: &GridRow) -> Vec<VisualCell> {
         let mut visual_cells = Vec::new();
         self.for_each_row(row, grid_row, 0..grid_row.cells().len(), &mut |cell| {
@@ -232,8 +242,22 @@ pub fn resolve_highlight(
     highlight: HighlightId,
     context: HighlightContext,
 ) -> ResolvedHighlight {
-    let attrs = model.highlight_ref(highlight).cloned().unwrap_or_default();
-    let (default_foreground, default_background, default_special) = model.default_colors();
+    resolve_highlight_from_parts(
+        model.highlights(),
+        model.default_colors(),
+        highlight,
+        context,
+    )
+}
+
+pub(crate) fn resolve_highlight_from_parts(
+    highlights: &HashMap<HighlightId, HighlightAttrs>,
+    defaults: (Option<u32>, Option<u32>, Option<u32>),
+    highlight: HighlightId,
+    context: HighlightContext,
+) -> ResolvedHighlight {
+    let attrs = highlights.get(&highlight).cloned().unwrap_or_default();
+    let (default_foreground, default_background, default_special) = defaults;
     let foreground = attrs
         .foreground
         .or(default_foreground)

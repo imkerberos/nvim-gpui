@@ -26,6 +26,33 @@ fn wide_character_occupies_two_grid_cells() {
 }
 
 #[test]
+fn highlight_table_is_shared_until_it_is_modified() {
+    let mut grid = GridModel::new(1, 1);
+    grid.set_highlight(
+        HighlightId(1),
+        HighlightAttrs {
+            bold: true,
+            ..Default::default()
+        },
+    );
+    let previous = grid.highlight_handle();
+    let mut next = grid.clone();
+    assert!(std::rc::Rc::ptr_eq(&previous, &next.highlight_handle()));
+
+    next.set_highlight(
+        HighlightId(1),
+        HighlightAttrs {
+            italic: true,
+            ..Default::default()
+        },
+    );
+    assert!(previous[&HighlightId(1)].bold);
+    assert!(!previous[&HighlightId(1)].italic);
+    assert!(next.highlight(HighlightId(1)).unwrap().italic);
+    assert!(!std::rc::Rc::ptr_eq(&previous, &next.highlight_handle()));
+}
+
+#[test]
 fn ranged_visual_cells_include_wide_lead_overlapping_the_range_start() {
     let model = GridModel::from_rows(vec![GridRow::new(vec![
         GridCell::wide_lead("界", DEFAULT_HIGHLIGHT),

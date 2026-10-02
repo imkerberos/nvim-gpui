@@ -37,6 +37,8 @@ pub use model::{
     DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow, GridRows,
     HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
+pub(crate) type HighlightTable = HashMap<HighlightId, HighlightAttrs>;
+pub(crate) type DefaultColors = (Option<u32>, Option<u32>, Option<u32>);
 pub use visual::{HighlightContext, ResolvedHighlight};
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
 

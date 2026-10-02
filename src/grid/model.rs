@@ -293,7 +293,7 @@ pub struct GridModel {
     rows: Vec<Rc<GridRow>>,
     width: usize,
     cursor: Option<GridCursor>,
-    highlights: std::collections::HashMap<HighlightId, HighlightAttrs>,
+    highlights: Rc<std::collections::HashMap<HighlightId, HighlightAttrs>>,
     default_foreground: Option<u32>,
     default_background: Option<u32>,
     default_special: Option<u32>,
@@ -469,7 +469,7 @@ impl GridModel {
             rows: rows.into_iter().map(Rc::new).collect(),
             width,
             cursor: None,
-            highlights: std::collections::HashMap::new(),
+            highlights: Rc::new(std::collections::HashMap::new()),
             default_foreground: None,
             default_background: None,
             default_special: None,
@@ -527,7 +527,7 @@ impl GridModel {
         self.rows.clear();
         self.width = 0;
         self.cursor = None;
-        self.highlights.clear();
+        self.highlights = Rc::new(std::collections::HashMap::new());
         self.default_foreground = None;
         self.default_background = None;
         self.default_special = None;
@@ -600,19 +600,25 @@ impl GridModel {
     }
 
     pub fn set_highlight(&mut self, id: HighlightId, attrs: HighlightAttrs) {
-        self.highlights.insert(id, attrs);
+        Rc::make_mut(&mut self.highlights).insert(id, attrs);
     }
 
     pub fn highlight(&self, id: HighlightId) -> Option<HighlightAttrs> {
         self.highlights.get(&id).cloned()
     }
 
-    pub(super) fn highlight_ref(&self, id: HighlightId) -> Option<&HighlightAttrs> {
-        self.highlights.get(&id)
-    }
-
     pub fn highlights(&self) -> &std::collections::HashMap<HighlightId, HighlightAttrs> {
         &self.highlights
+    }
+
+    pub(crate) fn row_handle(&self, row: usize) -> Option<Rc<GridRow>> {
+        self.rows.get(row).cloned()
+    }
+
+    pub(crate) fn highlight_handle(
+        &self,
+    ) -> Rc<std::collections::HashMap<HighlightId, HighlightAttrs>> {
+        Rc::clone(&self.highlights)
     }
 
     pub fn set_default_colors(

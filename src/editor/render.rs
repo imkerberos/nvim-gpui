@@ -167,29 +167,35 @@ fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::D
 impl Render for GridRowView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let context = &self.context;
-        let mut element = GridElement::with_shared_model(Rc::clone(&self.model))
-            .with_render_rows(self.row, self.row.saturating_add(1))
-            .with_metrics(context.cell_width, context.line_height)
-            .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
-            .with_highlight_context(context.highlight_context)
-            .with_wide_font(
-                context.gui_wide_font.family.clone(),
-                px(context.gui_wide_font.size),
-            )
-            .with_wide_font_fallback(context.gui_wide_font.fallback_families.clone())
-            .with_font_fallback(context.gui_font.fallback_families.clone())
-            .with_nerd_fallback_font(
-                context.nerd_font_family.clone().unwrap_or_default(),
-                px(context.gui_font.size),
-            )
-            .with_font_style_cache(Rc::clone(&self.font_style_cache))
-            .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-            .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
-            .with_shaping_cache(Rc::clone(&self.shaping_cache))
-            .with_nerd_fallback_mode(context.fallback_mode)
-            .with_cursor_blink_started_at(context.cursor_blink_started_at)
-            .with_viewport_offset(point(px(0.0), context.viewport_offset))
-            .with_nerd_font_mode(true);
+        let mut element = GridElement::with_shared_row(
+            self.row,
+            Rc::clone(&self.row_data),
+            context.width,
+            context.height,
+            Rc::clone(&self.highlights),
+            self.default_colors,
+        )
+        .with_metrics(context.cell_width, context.line_height)
+        .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
+        .with_highlight_context(context.highlight_context)
+        .with_wide_font(
+            context.gui_wide_font.family.clone(),
+            px(context.gui_wide_font.size),
+        )
+        .with_wide_font_fallback(context.gui_wide_font.fallback_families.clone())
+        .with_font_fallback(context.gui_font.fallback_families.clone())
+        .with_nerd_fallback_font(
+            context.nerd_font_family.clone().unwrap_or_default(),
+            px(context.gui_font.size),
+        )
+        .with_font_style_cache(Rc::clone(&self.font_style_cache))
+        .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+        .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
+        .with_shaping_cache(Rc::clone(&self.shaping_cache))
+        .with_nerd_fallback_mode(context.fallback_mode)
+        .with_cursor_blink_started_at(context.cursor_blink_started_at)
+        .with_viewport_offset(point(px(0.0), context.viewport_offset))
+        .with_nerd_font_mode(true);
 
         if let Some(margins) = context.placement.viewport_margins {
             element = element.with_viewport_margins(
@@ -440,15 +446,21 @@ impl NvimGpui {
         views.truncate(row_count);
         while views.len() < row_count {
             let row = views.len();
-            let row_model = Rc::clone(&model);
+            let row_data = model
+                .row_handle(row)
+                .expect("row count is bounded by the model height");
             let row_context = context.clone();
+            let row_highlights = model.highlight_handle();
+            let default_colors = model.default_colors();
             let row_shaping_cache = Rc::clone(&shaping_cache);
             let row_font_style_cache = Rc::clone(&font_style_cache);
             let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
             let row_font_selection_cache = Rc::clone(&font_selection_cache);
             views.push(cx.new(|_| GridRowView {
-                model: row_model,
+                row_data,
                 row,
+                highlights: row_highlights,
+                default_colors,
                 context: row_context,
                 shaping_cache: row_shaping_cache,
                 font_style_cache: row_font_style_cache,
@@ -469,8 +481,12 @@ impl NvimGpui {
             if !dirty_rows[row] {
                 continue;
             }
-            let row_model = Rc::clone(&model);
+            let row_data = model
+                .row_handle(row)
+                .expect("row count is bounded by the model height");
             let row_context = context.clone();
+            let row_highlights = model.highlight_handle();
+            let default_colors = model.default_colors();
             let row_shaping_cache = Rc::clone(&shaping_cache);
             let row_font_style_cache = Rc::clone(&font_style_cache);
             let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
@@ -483,8 +499,10 @@ impl NvimGpui {
             // affected rows makes the repaint boundary explicit while clean
             // rows keep their retained surfaces.
             views[row] = cx.new(|_| GridRowView {
-                model: row_model,
+                row_data,
                 row,
+                highlights: row_highlights,
+                default_colors,
                 context: row_context,
                 shaping_cache: row_shaping_cache,
                 font_style_cache: row_font_style_cache,

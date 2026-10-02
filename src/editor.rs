@@ -179,8 +179,10 @@ impl GridRowContext {
 }
 
 pub(crate) struct GridRowView {
-    pub(crate) model: Rc<grid::GridModel>,
+    pub(crate) row_data: Rc<grid::GridRow>,
     pub(crate) row: usize,
+    pub(crate) highlights: Rc<grid::HighlightTable>,
+    pub(crate) default_colors: grid::DefaultColors,
     pub(crate) context: GridRowContext,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
     pub(crate) font_style_cache: grid::SharedFontStyleCache,
