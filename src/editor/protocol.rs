@@ -42,6 +42,81 @@ pub(crate) struct GridViewportMargins {
     pub(crate) right: u64,
 }
 
+/// A bounded description of the cells changed by one redraw batch.
+///
+/// This is deliberately only metadata. Keeping rendered cells or shaped text
+/// here would duplicate the grid model and make the protocol reducer retain a
+/// large amount of rendering state. A future retained-surface renderer can
+/// use this region to update only the affected part of a grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GridDirtyRect {
+    pub(crate) top: usize,
+    pub(crate) bottom: usize,
+    pub(crate) left: usize,
+    pub(crate) right: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GridDirtyRegion {
+    pub(crate) full: bool,
+    pub(crate) rects: Vec<GridDirtyRect>,
+}
+
+impl GridDirtyRegion {
+    const MAX_RECTS: usize = 64;
+
+    pub(crate) fn merge(&mut self, other: &GridDirtyRegion) {
+        if other.full {
+            self.mark_full();
+            return;
+        }
+        if self.full {
+            return;
+        }
+        for rect in other.rects.iter().copied() {
+            self.mark_rect(rect);
+        }
+    }
+
+    fn mark_full(&mut self) {
+        self.full = true;
+        self.rects.clear();
+    }
+
+    fn mark_rect(&mut self, rect: GridDirtyRect) {
+        if self.full || rect.top >= rect.bottom || rect.left >= rect.right {
+            return;
+        }
+
+        // Merge overlapping or edge-touching rectangles. Redraw streams tend
+        // to update adjacent cells row by row, so this keeps the metadata
+        // small without retaining any rendered cell data.
+        let mut merged = rect;
+        let mut index = 0;
+        while index < self.rects.len() {
+            let current = self.rects[index];
+            let touches = current.top <= merged.bottom
+                && merged.top <= current.bottom
+                && current.left <= merged.right
+                && merged.left <= current.right;
+            if touches {
+                merged.top = merged.top.min(current.top);
+                merged.bottom = merged.bottom.max(current.bottom);
+                merged.left = merged.left.min(current.left);
+                merged.right = merged.right.max(current.right);
+                self.rects.swap_remove(index);
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        self.rects.push(merged);
+        if self.rects.len() > Self::MAX_RECTS {
+            self.mark_full();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GridPlacement {
     pub(crate) row: i64,
@@ -230,6 +305,10 @@ pub(crate) struct GridCommit {
     pub(crate) next_grid: Rc<grid::GridModel>,
     pub(crate) previous_placement: Option<GridPlacement>,
     pub(crate) next_placement: Option<GridPlacement>,
+    /// Kept with the commit so a retained renderer can consume the exact
+    /// changed cells without reconstructing them from the event stream.
+    #[allow(dead_code)]
+    pub(crate) dirty_region: GridDirtyRegion,
 }
 
 pub(crate) enum ProtocolOutcome {
@@ -266,6 +345,7 @@ pub(crate) struct ProtocolState {
     pending_redraw: Option<PendingRedrawState>,
     pending_geometry_changed: bool,
     pending_cursor_timing_reset: bool,
+    pending_dirty_regions: HashMap<u64, GridDirtyRegion>,
 }
 
 impl Default for ProtocolState {
@@ -291,6 +371,7 @@ impl Default for ProtocolState {
             pending_redraw: None,
             pending_geometry_changed: false,
             pending_cursor_timing_reset: false,
+            pending_dirty_regions: HashMap::new(),
         }
     }
 }
@@ -367,6 +448,7 @@ impl ProtocolState {
                 }
                 self.refresh_float_position(grid);
                 self.presentation.pending_destroyed_grids.remove(&grid);
+                self.mark_grid_dirty_full(grid);
                 self.pending_geometry_changed = true;
                 ProtocolOutcome::PendingChanged
             }
@@ -386,6 +468,18 @@ impl ProtocolState {
                     &cells,
                     wraps_to_next,
                 );
+                let width = cells
+                    .iter()
+                    .fold(0usize, |width, cell| width.saturating_add(cell.repeat));
+                let left = (col_start as usize).saturating_sub(1);
+                let right = (col_start as usize).saturating_add(width).saturating_add(1);
+                self.mark_grid_dirty_rect(
+                    grid,
+                    row as usize,
+                    (row as usize).saturating_add(1),
+                    left,
+                    right,
+                );
                 ProtocolOutcome::PendingChanged
             }
             NvimEvent::GridClear { grid } => {
@@ -393,6 +487,7 @@ impl ProtocolState {
                     self.startup.grid_content_seen = true;
                 }
                 self.pending_grid_mut_for(grid).clear();
+                self.mark_grid_dirty_full(grid);
                 ProtocolOutcome::PendingChanged
             }
             NvimEvent::GridDestroy { grid } => {
@@ -400,6 +495,7 @@ impl ProtocolState {
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.presentation.pending_grid_size = Some(None);
+                    self.mark_grid_dirty_full(grid);
                 } else {
                     self.presentation.pending_other_grids.remove(&grid);
                     self.presentation.pending_destroyed_grids.insert(grid);
@@ -423,6 +519,7 @@ impl ProtocolState {
                 theme.default_foreground = foreground;
                 theme.default_background = background;
                 self.set_default_colors_on_all_grids(foreground, background, special);
+                self.mark_all_grids_dirty_full();
                 ProtocolOutcome::PendingChanged
             }
             NvimEvent::HlAttrDefine { id, attrs } => {
@@ -438,6 +535,7 @@ impl ProtocolState {
                     _ => {}
                 }
                 self.set_highlight_on_all_grids(id, attrs);
+                self.mark_all_grids_dirty_full();
                 ProtocolOutcome::PendingChanged
             }
             NvimEvent::GridScroll {
@@ -456,6 +554,13 @@ impl ProtocolState {
                     right as usize,
                     rows as isize,
                     cols as isize,
+                );
+                self.mark_grid_dirty_rect(
+                    grid,
+                    top as usize,
+                    bot as usize,
+                    left as usize,
+                    right as usize,
                 );
                 self.pending_geometry_changed = true;
                 ProtocolOutcome::PendingChanged
@@ -630,6 +735,7 @@ impl ProtocolState {
                 if grid == 1 {
                     self.pending_grid_mut().destroy();
                     self.presentation.pending_grid_size = Some(None);
+                    self.mark_grid_dirty_full(grid);
                 } else {
                     self.presentation.pending_other_grids.remove(&grid);
                     self.presentation.pending_destroyed_grids.insert(grid);
@@ -883,6 +989,47 @@ impl ProtocolState {
         )
     }
 
+    fn mark_grid_dirty_rect(
+        &mut self,
+        grid: u64,
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+    ) {
+        self.pending_dirty_regions
+            .entry(grid)
+            .or_default()
+            .mark_rect(GridDirtyRect {
+                top,
+                bottom,
+                left,
+                right,
+            });
+    }
+
+    fn mark_grid_dirty_full(&mut self, grid: u64) {
+        self.pending_dirty_regions
+            .entry(grid)
+            .or_default()
+            .mark_full();
+    }
+
+    fn mark_all_grids_dirty_full(&mut self) {
+        let mut grids = vec![1];
+        grids.extend(self.presentation.other_grids.keys().copied());
+        grids.extend(self.presentation.pending_other_grids.keys().copied());
+        grids.sort_unstable();
+        grids.dedup();
+        for grid in grids {
+            self.mark_grid_dirty_full(grid);
+        }
+    }
+
+    fn take_grid_dirty_region(&mut self, grid: u64) -> GridDirtyRegion {
+        self.pending_dirty_regions.remove(&grid).unwrap_or_default()
+    }
+
     fn set_default_colors_on_all_grids(
         &mut self,
         foreground: Option<u32>,
@@ -1036,6 +1183,7 @@ impl ProtocolState {
                 next_grid: Rc::clone(&grid),
                 previous_placement: self.presentation.grid_placements.get(&1).copied(),
                 next_placement: self.presentation.pending_grid_placements.get(&1).copied(),
+                dirty_region: self.take_grid_dirty_region(1),
             });
             if let Some(cursor) = grid.cursor() {
                 self.state.line = cursor.row + 1;
@@ -1044,6 +1192,7 @@ impl ProtocolState {
             self.presentation.grid = grid;
         }
         for (grid, model) in std::mem::take(&mut self.presentation.pending_other_grids) {
+            let dirty_region = self.take_grid_dirty_region(grid);
             if !self.presentation.pending_destroyed_grids.contains(&grid) {
                 if let Some(previous_grid) = self.presentation.other_grids.get(&grid).cloned() {
                     commits.push(GridCommit {
@@ -1056,6 +1205,7 @@ impl ProtocolState {
                             .pending_grid_placements
                             .get(&grid)
                             .copied(),
+                        dirty_region,
                     });
                 }
                 self.presentation.other_grids.insert(grid, model);
@@ -1141,6 +1291,7 @@ impl ProtocolState {
         self.cursor.pending_cursor_grid = None;
         self.pending_theme = None;
         self.pending_redraw = None;
+        self.pending_dirty_regions.clear();
         self.presentation.pending_ui_data.clear();
         self.pending_geometry_changed = false;
         self.pending_cursor_timing_reset = false;
@@ -1159,4 +1310,129 @@ impl ProtocolState {
 fn parse_non_negative_float(value: &str) -> Option<f32> {
     let value = value.parse::<f32>().ok()?;
     value.is_finite().then_some(value.max(0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_region_merges_adjacent_updates_without_storing_cells() {
+        let mut region = GridDirtyRegion::default();
+        region.mark_rect(GridDirtyRect {
+            top: 2,
+            bottom: 3,
+            left: 4,
+            right: 8,
+        });
+        region.mark_rect(GridDirtyRect {
+            top: 3,
+            bottom: 4,
+            left: 4,
+            right: 8,
+        });
+
+        assert!(!region.full);
+        assert_eq!(
+            region.rects,
+            vec![GridDirtyRect {
+                top: 2,
+                bottom: 4,
+                left: 4,
+                right: 8,
+            }]
+        );
+    }
+
+    #[test]
+    fn dirty_region_falls_back_to_full_after_too_many_disjoint_rects() {
+        let mut region = GridDirtyRegion::default();
+        for index in 0..=GridDirtyRegion::MAX_RECTS {
+            region.mark_rect(GridDirtyRect {
+                top: index * 2,
+                bottom: index * 2 + 1,
+                left: 0,
+                right: 1,
+            });
+        }
+
+        assert!(region.full);
+        assert!(region.rects.is_empty());
+    }
+
+    #[test]
+    fn dirty_region_merge_preserves_changes_from_multiple_commits() {
+        let mut accumulated = GridDirtyRegion::default();
+        let first = GridDirtyRegion {
+            full: false,
+            rects: vec![GridDirtyRect {
+                top: 1,
+                bottom: 2,
+                left: 0,
+                right: 4,
+            }],
+        };
+        let second = GridDirtyRegion {
+            full: false,
+            rects: vec![GridDirtyRect {
+                top: 6,
+                bottom: 7,
+                left: 0,
+                right: 4,
+            }],
+        };
+
+        accumulated.merge(&first);
+        accumulated.merge(&second);
+
+        assert_eq!(accumulated.rects, [first.rects[0], second.rects[0]]);
+    }
+
+    #[test]
+    fn grid_line_commit_carries_only_the_changed_region() {
+        let mut protocol = ProtocolState::default();
+        protocol.apply(NvimEvent::GridLine {
+            grid: 1,
+            row: 4,
+            col_start: 6,
+            cells: vec![grid::GridLineCell::new("x", grid::DEFAULT_HIGHLIGHT, 2)],
+            wraps_to_next: false,
+        });
+
+        let redraw = match protocol.apply(NvimEvent::Flush) {
+            ProtocolOutcome::Flushed(redraw) => redraw,
+            _ => panic!("expected flushed redraw"),
+        };
+        let dirty_region = &redraw.grid_commits[0].dirty_region;
+
+        assert!(!dirty_region.full);
+        assert_eq!(
+            dirty_region.rects,
+            vec![GridDirtyRect {
+                top: 4,
+                bottom: 5,
+                left: 5,
+                right: 9,
+            }]
+        );
+    }
+
+    #[test]
+    fn cursor_only_grid_commit_has_no_content_dirty_region() {
+        let mut protocol = ProtocolState::default();
+        protocol.apply(NvimEvent::GridCursorGoto {
+            grid: 1,
+            row: 2,
+            col: 3,
+        });
+
+        let redraw = match protocol.apply(NvimEvent::Flush) {
+            ProtocolOutcome::Flushed(redraw) => redraw,
+            _ => panic!("expected flushed redraw"),
+        };
+        let dirty_region = &redraw.grid_commits[0].dirty_region;
+
+        assert!(!dirty_region.full);
+        assert!(dirty_region.rects.is_empty());
+    }
 }

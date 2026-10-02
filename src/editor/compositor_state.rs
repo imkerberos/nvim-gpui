@@ -5,6 +5,36 @@ use std::collections::HashSet;
 impl EditorRuntime {
     pub(crate) fn apply_viewport_commits(&mut self, commits: Vec<GridCommit>) {
         for commit in commits {
+            self.presentation
+                .grid_dirty_regions
+                .entry(commit.grid)
+                .or_default()
+                .merge(&commit.dirty_region);
+            if self
+                .presentation
+                .viewport_animations
+                .get(&commit.grid)
+                .is_some_and(|animation| !animation.presented)
+            {
+                // The old animation's previous grid was never displayed.
+                // Starting another transition from the intermediate commit
+                // would put an unseen, already-obsolete frame on screen.
+                self.presentation.viewport_animations.remove(&commit.grid);
+                self.presentation
+                    .scroll_animation_suppressed
+                    .insert(commit.grid);
+            }
+            if self
+                .presentation
+                .scroll_animation_suppressed
+                .contains(&commit.grid)
+            {
+                continue;
+            }
+            if !self.scrolling_animation_enabled {
+                self.presentation.viewport_animations.remove(&commit.grid);
+                continue;
+            }
             let Some(previous_placement) = commit.previous_placement else {
                 continue;
             };
@@ -205,11 +235,18 @@ impl EditorRuntime {
         &mut self,
         previous: Option<grid::CursorVisualPosition>,
     ) {
+        if !self.cursor.cursor_animation_enabled {
+            self.cursor.cursor_animation = None;
+            return;
+        }
+
+        let now = Instant::now();
         let next = self.current_cursor_screen_position();
         self.cursor.cursor_animation = match (previous, next) {
             (Some(from), Some(target)) if from != target => self
                 .cursor
                 .cursor_animation
+                .filter(|animation| animation.is_recent(now))
                 .map(|animation| animation.retarget(target))
                 .or_else(|| Some(grid::CursorAnimation::new(from, target))),
             _ => None,
@@ -228,5 +265,97 @@ impl EditorRuntime {
             col: col as usize,
             width: position.width,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::protocol::GridViewport;
+    use std::rc::Rc;
+
+    #[test]
+    fn back_to_back_scroll_commits_skip_an_unpresented_old_frame() {
+        let mut editor = EditorRuntime::default();
+        let grid = Rc::new(crate::grid::GridModel::new(8, 8));
+        let placement = GridPlacement {
+            viewport: Some(GridViewport {
+                topline: 1,
+                botline: 9,
+                curline: 1,
+                curcol: 0,
+                line_count: 100,
+                scroll_delta: 1,
+            }),
+            ..GridPlacement::default()
+        };
+        let commit = || GridCommit {
+            grid: 2,
+            previous_grid: Rc::clone(&grid),
+            next_grid: Rc::clone(&grid),
+            previous_placement: Some(placement),
+            next_placement: Some(placement),
+            dirty_region: GridDirtyRegion::default(),
+        };
+
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(editor.presentation.viewport_animations.contains_key(&2));
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(!editor.presentation.viewport_animations.contains_key(&2));
+        assert!(editor.presentation.scroll_animation_suppressed.contains(&2));
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(!editor.presentation.viewport_animations.contains_key(&2));
+
+        editor.presentation.scroll_animation_suppressed.clear();
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(editor.presentation.viewport_animations.contains_key(&2));
+    }
+
+    #[test]
+    fn viewport_commits_accumulate_dirty_regions_for_the_same_grid() {
+        let mut editor = EditorRuntime::default();
+        let grid = Rc::new(crate::grid::GridModel::new(8, 8));
+
+        let commit = |top| GridCommit {
+            grid: 2,
+            previous_grid: Rc::clone(&grid),
+            next_grid: Rc::clone(&grid),
+            previous_placement: None,
+            next_placement: None,
+            dirty_region: GridDirtyRegion {
+                full: false,
+                rects: vec![crate::editor::protocol::GridDirtyRect {
+                    top,
+                    bottom: top + 1,
+                    left: 0,
+                    right: 4,
+                }],
+            },
+        };
+
+        editor.apply_viewport_commits(vec![commit(1), commit(6)]);
+
+        assert_eq!(
+            editor
+                .presentation
+                .grid_dirty_regions
+                .get(&2)
+                .expect("dirty region should be retained")
+                .rects,
+            vec![
+                crate::editor::protocol::GridDirtyRect {
+                    top: 1,
+                    bottom: 2,
+                    left: 0,
+                    right: 4,
+                },
+                crate::editor::protocol::GridDirtyRect {
+                    top: 6,
+                    bottom: 7,
+                    left: 0,
+                    right: 4,
+                },
+            ]
+        );
     }
 }

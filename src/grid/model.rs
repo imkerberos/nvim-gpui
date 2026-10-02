@@ -293,7 +293,7 @@ pub struct GridModel {
     rows: Vec<Rc<GridRow>>,
     width: usize,
     cursor: Option<GridCursor>,
-    highlights: std::collections::HashMap<HighlightId, HighlightAttrs>,
+    highlights: Rc<std::collections::HashMap<HighlightId, HighlightAttrs>>,
     default_foreground: Option<u32>,
     default_background: Option<u32>,
     default_special: Option<u32>,
@@ -355,6 +355,7 @@ pub struct CursorAnimation {
     pub(super) to: CursorVisualPositionF,
     pub(super) started_at: Instant,
     pub(super) duration: Duration,
+    pub(super) show_trail: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,6 +380,9 @@ impl CursorAnimation {
     // while leaving enough frames for the elastic shape and two tail layers
     // to be visible at 60 Hz.
     const DURATION: Duration = Duration::from_millis(180);
+    const RETARGET_WINDOW: Duration = Duration::from_millis(220);
+    const RETARGET_MIN_DURATION_MS: f32 = 48.0;
+    const RETARGET_PER_CELL_DURATION_MS: f32 = 24.0;
 
     pub fn new(from: CursorVisualPosition, target: CursorVisualPosition) -> Self {
         Self {
@@ -386,21 +390,47 @@ impl CursorAnimation {
             to: target.into(),
             started_at: Instant::now(),
             duration: Self::DURATION,
+            show_trail: true,
         }
     }
 
+    /// Whether a new cursor update should be treated as continuous movement.
+    ///
+    /// A retargeted animation can finish before the next key repeat, so the
+    /// active-animation check alone is not enough to distinguish a held key
+    /// from a new movement after a short pause.
+    pub fn is_recent(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started_at) < Self::RETARGET_WINDOW
+    }
+
     /// Retarget an in-flight animation from its current interpolated position.
-    /// This prevents fast cursor movement from jumping back to the previous
-    /// cell whenever Neovim sends another redraw before the animation ends.
+    ///
+    /// Continuous movement uses a short, distance-aware animation and omits
+    /// the long trail. This keeps a held movement responsive without removing
+    /// the full animation from single cursor jumps.
     pub fn retarget(&self, target: CursorVisualPosition) -> Self {
         let now = Instant::now();
         let from = self.position_at(now);
+        let target: CursorVisualPositionF = target.into();
+        let distance = (target.row - from.row)
+            .abs()
+            .max((target.col - from.col).abs())
+            .max((target.width - from.width).abs());
+        let duration_ms = (Self::RETARGET_MIN_DURATION_MS
+            + Self::RETARGET_PER_CELL_DURATION_MS * distance)
+            .min(Self::DURATION.as_millis() as f32)
+            .round() as u64;
         Self {
             from,
-            to: target.into(),
+            to: target,
             started_at: now,
-            duration: Self::DURATION,
+            duration: Duration::from_millis(duration_ms),
+            show_trail: false,
         }
+    }
+
+    pub(crate) fn show_trail(self) -> bool {
+        self.show_trail
     }
 
     pub(super) fn progress(&self, now: Instant) -> f32 {
@@ -439,7 +469,7 @@ impl GridModel {
             rows: rows.into_iter().map(Rc::new).collect(),
             width,
             cursor: None,
-            highlights: std::collections::HashMap::new(),
+            highlights: Rc::new(std::collections::HashMap::new()),
             default_foreground: None,
             default_background: None,
             default_special: None,
@@ -497,7 +527,7 @@ impl GridModel {
         self.rows.clear();
         self.width = 0;
         self.cursor = None;
-        self.highlights.clear();
+        self.highlights = Rc::new(std::collections::HashMap::new());
         self.default_foreground = None;
         self.default_background = None;
         self.default_special = None;
@@ -570,19 +600,25 @@ impl GridModel {
     }
 
     pub fn set_highlight(&mut self, id: HighlightId, attrs: HighlightAttrs) {
-        self.highlights.insert(id, attrs);
+        Rc::make_mut(&mut self.highlights).insert(id, attrs);
     }
 
     pub fn highlight(&self, id: HighlightId) -> Option<HighlightAttrs> {
         self.highlights.get(&id).cloned()
     }
 
-    pub(super) fn highlight_ref(&self, id: HighlightId) -> Option<&HighlightAttrs> {
-        self.highlights.get(&id)
-    }
-
     pub fn highlights(&self) -> &std::collections::HashMap<HighlightId, HighlightAttrs> {
         &self.highlights
+    }
+
+    pub(crate) fn row_handle(&self, row: usize) -> Option<Rc<GridRow>> {
+        self.rows.get(row).cloned()
+    }
+
+    pub(crate) fn highlight_handle(
+        &self,
+    ) -> Rc<std::collections::HashMap<HighlightId, HighlightAttrs>> {
+        Rc::clone(&self.highlights)
     }
 
     pub fn set_default_colors(
@@ -621,9 +657,39 @@ impl GridModel {
             return;
         }
 
-        // Row references are copied here, not cell storage. Each destination
-        // row is cloned lazily by `replace_cell` only when it is modified.
-        let original = self.rows.clone();
+        if cols == 0 && left == 0 && right == self.width() {
+            // Neovim uses this shape for the hot path of ordinary vertical
+            // window scrolling. Rotate only the affected row references;
+            // cloning the whole grid's row vector on every scroll would
+            // also touch unrelated rows and increment every Rc count.
+            let width = self.width();
+            let region = &mut self.rows[top..bot];
+            let region_len = region.len();
+            let shift = rows.unsigned_abs().min(region_len);
+            if rows > 0 {
+                region.rotate_left(shift);
+            } else {
+                region.rotate_right(shift);
+            }
+            let blank = Rc::new(GridRow::new(
+                (0..width)
+                    .map(|_| GridCell::blank(DEFAULT_HIGHLIGHT))
+                    .collect(),
+            ));
+            let exposed = if rows > 0 {
+                &mut region[region_len - shift..]
+            } else {
+                &mut region[..shift]
+            };
+            for row in exposed {
+                *row = Rc::clone(&blank);
+            }
+            return;
+        }
+
+        // Snapshot only the scrolling region's row references, not the whole
+        // grid. Each destination row is cloned lazily by `replace_cell`.
+        let original = self.rows[top..bot].to_vec();
         for row in top..bot {
             for col in left..right {
                 let source_row = row as isize + rows;
@@ -631,7 +697,7 @@ impl GridModel {
                 let cell = if (top as isize..bot as isize).contains(&source_row)
                     && (left as isize..right as isize).contains(&source_col)
                 {
-                    original[source_row as usize].cells[source_col as usize].clone()
+                    original[source_row as usize - top].cells[source_col as usize].clone()
                 } else {
                     GridCell::blank(DEFAULT_HIGHLIGHT)
                 };
@@ -642,7 +708,7 @@ impl GridModel {
         for row in top..bot {
             Rc::make_mut(&mut self.rows[row]).wraps_to_next =
                 if (top as isize..bot as isize).contains(&(row as isize + rows)) {
-                    original[(row as isize + rows) as usize].wraps_to_next
+                    original[(row as isize + rows) as usize - top].wraps_to_next
                 } else {
                     false
                 };

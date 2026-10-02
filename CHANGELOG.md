@@ -2,7 +2,35 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.7.6] - 2026-10-03
+
+### Added
+
+- Ordered font fallback chains for `guifont` and `guifontwide`, editable as
+  font tokens in Settings and supported in Neovim's font option parsing.
+- Separate Cursor and Scrolling animation switches in Settings, both enabled
+  by default.
+- Reusable, manually triggered preview builds for testing changes before a
+  release.
+
+### Improved
+
+- Grid rendering retains unchanged rows, limits work to visible regions, and
+  reduces repeated font selection and text shaping during redraws and scrolling.
+- Settings controls use Material Design icons, and the repository's test
+  Neovim configuration installs its plugins through lazy.nvim without Nix.
+
+### Fixed
+
+- Preserve bold and italic styling across font fallback and grid text shaping,
+  including Markdown text rendered with conceal.
+- Repaint changed grid rows at Neovim redraw boundaries so floating previews
+  and other rapidly updated content do not retain the previous state.
+- Avoid horizontal seams where cached grid rows clip or cover glyphs that
+  extend across line boundaries.
+
 ## [0.7.5] - 2026-09-15
+
 ### Added
 
 - Switchable Rime double-pinyin schemas, including Xiaohe (Flypy) and other

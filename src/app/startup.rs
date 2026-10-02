@@ -1,6 +1,7 @@
 use super::{
     initial_window_size_for_grid, NvimGpui, DEBUG_WINDOW_HEIGHT, DEFAULT_GRID_HEIGHT,
-    DEFAULT_GRID_WIDTH, DEFAULT_WINDOW_TITLE, LOGO_ASSET, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+    DEFAULT_GRID_WIDTH, DEFAULT_WINDOW_TITLE, LOGO_ASSET, MD_ICON_ARROW_DROP_DOWN_ASSET,
+    MD_ICON_ARROW_DROP_UP_ASSET, MD_ICON_CLOSE_ASSET, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
     WINDOW_CONTROL_CLOSE_ASSET, WINDOW_CONTROL_MAXIMIZE_ASSET, WINDOW_CONTROL_MINIMIZE_ASSET,
     WINDOW_CONTROL_RESTORE_ASSET,
 };
@@ -34,6 +35,9 @@ impl AssetSource for AppAssets {
             WINDOW_CONTROL_CLOSE_ASSET => {
                 include_bytes!("../../assets/icons/window-controls/close.svg")
             }
+            MD_ICON_ARROW_DROP_DOWN_ASSET => md_icons::outlined::ICON_ARROW_DROP_DOWN.as_bytes(),
+            MD_ICON_ARROW_DROP_UP_ASSET => md_icons::outlined::ICON_ARROW_DROP_UP.as_bytes(),
+            MD_ICON_CLOSE_ASSET => md_icons::outlined::ICON_CLOSE.as_bytes(),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(asset)))

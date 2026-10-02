@@ -123,12 +123,10 @@ impl NvimGpui {
     ) {
         self.app.session.event_task = Some(cx.spawn(async move |weak, cx| {
             while let Ok(event) = events.recv().await {
-                // A redraw Flush is a Neovim transaction boundary, not a
-                // required GPUI presentation boundary. Keep all events in
-                // order, including events after Flush, and present the latest
-                // complete state once for this batch. This is important for
-                // key repeat: an invalid motion can still produce a Flush,
-                // but there is no useful intermediate frame to present.
+                // Keep each Neovim redraw transaction aligned with a GPUI
+                // invalidation. If multiple Flush events are drained into one
+                // batch, the retained GPUI tree can skip the intermediate
+                // dirty state and leave a cached row or float on screen.
                 let batch = collect_event_batch(event, &events);
                 let has_queued_events = !events.is_empty();
                 if batch.len() > 1 {
@@ -488,6 +486,10 @@ impl NvimGpui {
         self.editor.protocol.startup.nvim_grid_ready = false;
         self.app.last_resize = None;
         self.editor.presentation.viewport_animations.clear();
+        self.editor.presentation.scroll_animation_suppressed.clear();
+        self.editor.presentation.grid_row_views.clear();
+        self.editor.presentation.grid_row_contexts.clear();
+        self.editor.presentation.grid_dirty_regions.clear();
         self.editor.cursor.multicursor_namespace_task = None;
         self.editor.cursor.multicursor_reconcile_task = None;
         self.editor.cursor.multicursor_reconcile_dirty = false;
@@ -499,7 +501,9 @@ impl NvimGpui {
         self.editor.resolved_grid_font = None;
         self.editor.resolved_grid_wide_font = None;
         self.editor.shaping_cache.borrow_mut().clear();
+        self.editor.font_style_cache.borrow_mut().clear();
         self.editor.glyph_coverage_cache.borrow_mut().clear();
+        self.editor.font_selection_cache.borrow_mut().clear();
         self.editor.invalidate_presentation_snapshot();
         self.editor.input.mouse_option = "nvi".to_owned();
         self.editor.input.mouse_enabled = true;
@@ -774,7 +778,13 @@ fn collect_event_batch(
 
     while batch.len() < MAX_EVENTS_PER_UI_UPDATE {
         match events.try_recv() {
-            Ok(event) => batch.push(event),
+            Ok(event) => {
+                let is_flush = matches!(event, NvimEvent::Flush);
+                batch.push(event);
+                if is_flush {
+                    break;
+                }
+            }
             Err(async_channel::TryRecvError::Empty) | Err(async_channel::TryRecvError::Closed) => {
                 break
             }
@@ -789,7 +799,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redraw_batch_does_not_stop_at_first_flush() {
+    fn redraw_batch_stops_at_flush() {
         let (sender, receiver) = async_channel::unbounded();
         sender.try_send(NvimEvent::Flush).unwrap();
         sender.try_send(NvimEvent::GridClear { grid: 1 }).unwrap();
@@ -797,10 +807,12 @@ mod tests {
 
         let batch = collect_event_batch(NvimEvent::GridClear { grid: 1 }, &receiver);
 
-        assert_eq!(batch.len(), 4);
+        assert_eq!(batch.len(), 2);
         assert!(matches!(batch[1], NvimEvent::Flush));
-        assert!(matches!(batch[2], NvimEvent::GridClear { grid: 1 }));
-        assert!(matches!(batch[3], NvimEvent::Flush));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(NvimEvent::GridClear { grid: 1 })
+        ));
     }
 
     #[test]

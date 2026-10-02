@@ -7,8 +7,9 @@ use crate::{
         GridAnchor, GridId, ImageFormatKind, ImageId, ImagePlacement, PlacementKey,
     },
     editor::{
-        initial_window_size_for_grid, parse_guifont_spec, EditorRuntime, EditorState,
-        GridPlacement, GuiFontSpec, ViewportAnimation,
+        format_guifont_families, initial_window_size_for_grid, parse_guifont_families,
+        parse_guifont_spec, EditorRuntime, EditorState, GridPlacement, GuiFontSpec,
+        ViewportAnimation,
     },
     grid::{
         AmbiguousWidth, CursorModeInfo, CursorShape, CursorVisualPosition, DisplayOptions,
@@ -593,11 +594,86 @@ fn cursor_move_between_grids_uses_one_screen_animation() {
 }
 
 #[test]
+fn disabled_cursor_animation_does_not_start_after_a_cursor_move() {
+    let mut app = NvimGpui::default();
+    app.app.settings.cursor_animation = false;
+    app.editor.apply_runtime_settings(&app.app.settings);
+
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
+        grid: 1,
+        width: 4,
+        height: 2,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 0,
+        col: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+    app.apply_nvim_event_for_test(NvimEvent::GridCursorGoto {
+        grid: 1,
+        row: 0,
+        col: 2,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert!(app.editor.cursor.cursor_animation.is_none());
+}
+
+#[test]
+fn disabling_scrolling_animation_clears_active_viewport_transitions() {
+    let mut editor = EditorRuntime::default();
+    editor.presentation.viewport_animations.insert(
+        1,
+        ViewportAnimation {
+            previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
+            scroll_delta: 1,
+            started_at: Instant::now(),
+            presented: false,
+        },
+    );
+
+    let settings = crate::settings::Settings {
+        scrolling_animation: false,
+        ..crate::settings::Settings::default()
+    };
+    editor.apply_runtime_settings(&settings);
+
+    assert!(!editor.scrolling_animation_enabled);
+    assert!(editor.presentation.viewport_animations.is_empty());
+}
+
+#[test]
 fn guifont_family_and_size_are_parsed_for_grid_metrics() {
-    let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16");
+    let spec = parse_guifont_spec("FiraCode Nerd Font Mono:h16,Cascadia Code,Font\\,With\\,Commas");
 
     assert_eq!(spec.family, "FiraCode Nerd Font Mono");
     assert_eq!(spec.size, 16.0);
+    assert_eq!(
+        spec.fallback_families,
+        ["Cascadia Code", "Font,With,Commas"]
+    );
+    assert_eq!(
+        parse_guifont_families("FiraCode:h16,Cascadia Code"),
+        ["FiraCode", "Cascadia Code"]
+    );
+}
+
+#[test]
+fn guifont_family_lists_round_trip_escaped_names_and_deduplicate() {
+    let families = [
+        "Iosevka Term".to_owned(),
+        "Font,With,Commas".to_owned(),
+        "Font:With:Colons".to_owned(),
+        "iosevka term".to_owned(),
+    ];
+
+    let formatted = format_guifont_families(&families);
+    assert_eq!(
+        formatted,
+        "Iosevka Term,Font\\,With\\,Commas,Font\\:With\\:Colons"
+    );
+    assert_eq!(parse_guifont_families(&formatted), families[..3]);
 }
 
 #[test]
@@ -606,6 +682,8 @@ fn empty_guifont_falls_back_to_a_safe_grid_font() {
 
     assert_eq!(spec.family, GuiFontSpec::default().family);
     assert_eq!(spec.size, 14.0);
+    assert!(spec.fallback_families.is_empty());
+    assert!(parse_guifont_families("").is_empty());
 }
 
 #[test]
@@ -1159,6 +1237,95 @@ fn viewport_scroll_keeps_the_previous_grid_for_the_transition() {
             .top,
         1
     );
+}
+
+#[test]
+fn floating_grid_viewport_changes_follow_scrolling_animation_setting() {
+    let mut app = NvimGpui::default();
+
+    app.apply_nvim_event_for_test(NvimEvent::GridResized {
+        grid: 2,
+        width: 8,
+        height: 3,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("old", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::WinFloatPos {
+        grid: 2,
+        win: Vec::new(),
+        position: NvimFloatPosition::Screen { row: 0, col: 0 },
+        mouse_enabled: true,
+        zindex: 40,
+        compindex: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 0,
+        botline: 3,
+        curline: 0,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 0,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 1,
+        botline: 4,
+        curline: 1,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("new", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert_eq!(
+        app.editor
+            .presentation
+            .viewport_animations
+            .get(&2)
+            .expect("floating viewport should follow the scrolling animation setting")
+            .scroll_delta,
+        1
+    );
+
+    app.app.settings.scrolling_animation = false;
+    app.editor.apply_runtime_settings(&app.app.settings);
+    app.apply_nvim_event_for_test(NvimEvent::WinViewport {
+        grid: 2,
+        win: Vec::new(),
+        topline: 2,
+        botline: 5,
+        curline: 2,
+        curcol: 0,
+        line_count: 10,
+        scroll_delta: 1,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::GridLine {
+        grid: 2,
+        row: 0,
+        col_start: 0,
+        cells: vec![GridLineCell::new("latest", HighlightId(1), 1)],
+        wraps_to_next: false,
+    });
+    app.apply_nvim_event_for_test(NvimEvent::Flush);
+
+    assert!(app.editor.presentation.viewport_animations.is_empty());
 }
 
 #[test]

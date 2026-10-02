@@ -11,11 +11,12 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, Image, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, TextRun, Window,
+    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, StyleRefinement, Task, TextRun,
+    Window,
 };
 use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     rc::Rc,
     sync::Arc,
@@ -39,11 +40,12 @@ mod tests;
 #[cfg(test)]
 pub(crate) use layout::parse_guifont_spec;
 pub(crate) use layout::{
-    initial_window_size_for_grid, system_monospace_families, system_unicode_families, GuiFontSpec,
+    format_guifont_families, initial_window_size_for_grid, parse_guifont_families,
+    system_font_families, GuiFontSpec,
 };
 pub(crate) use protocol::{
-    GridCommit, GridLayerKind, GridPlacement, MultiCursorPosition, ProtocolOutcome, ProtocolState,
-    RedrawCommit,
+    GridCommit, GridDirtyRegion, GridLayerKind, GridPlacement, MultiCursorPosition,
+    ProtocolOutcome, ProtocolState, RedrawCommit,
 };
 
 pub(crate) const VIEWPORT_SCROLL_DURATION: Duration = Duration::from_millis(140);
@@ -127,8 +129,76 @@ impl ViewportAnimation {
 #[derive(Default)]
 pub(crate) struct RenderRuntime {
     pub(crate) viewport_animations: HashMap<u64, ViewportAnimation>,
+    /// A newer commit arrived before the preceding scroll frame was drawn.
+    /// Show the latest grid directly until a render has caught up.
+    pub(crate) scroll_animation_suppressed: HashSet<u64>,
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
+    pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
+    pub(crate) grid_row_views: HashMap<u64, Vec<GridRowViews>>,
+    pub(crate) grid_row_contexts: HashMap<u64, GridRowContext>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct GridRowContext {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) cell_width: Pixels,
+    pub(crate) line_height: Pixels,
+    pub(crate) gui_font: GuiFontSpec,
+    pub(crate) gui_wide_font: GuiFontSpec,
+    pub(crate) placement: GridPlacement,
+    pub(crate) highlight_context: grid::HighlightContext,
+    pub(crate) cursor_blink_started_at: Instant,
+    pub(crate) viewport_offset: Pixels,
+    pub(crate) fallback_mode: settings::FallbackMode,
+    pub(crate) nerd_font_family: Option<String>,
+}
+
+impl GridRowContext {
+    pub(crate) fn paints_like(&self, other: &Self) -> bool {
+        let mut placement = self.placement;
+        let mut other_placement = other.placement;
+        // Viewport line and cursor metadata drive scrolling decisions outside
+        // the row view. They do not change a stationary row's pixels.
+        placement.viewport = None;
+        other_placement.viewport = None;
+        self.width == other.width
+            && self.height == other.height
+            && self.cell_width == other.cell_width
+            && self.line_height == other.line_height
+            && self.gui_font == other.gui_font
+            && self.gui_wide_font == other.gui_wide_font
+            && placement == other_placement
+            && self.highlight_context == other.highlight_context
+            && self.cursor_blink_started_at == other.cursor_blink_started_at
+            && self.viewport_offset == other.viewport_offset
+            && self.fallback_mode == other.fallback_mode
+            && self.nerd_font_family == other.nerd_font_family
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GridRowViews {
+    pub(crate) backgrounds: Entity<GridRowView>,
+    pub(crate) foregrounds: Entity<GridRowView>,
+}
+
+pub(crate) struct GridRowSnapshot {
+    pub(crate) row_data: Rc<grid::GridRow>,
+    pub(crate) row: usize,
+    pub(crate) highlights: Rc<grid::HighlightTable>,
+    pub(crate) default_colors: grid::DefaultColors,
+    pub(crate) context: GridRowContext,
+    pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) font_style_cache: grid::SharedFontStyleCache,
+    pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
+}
+
+pub(crate) struct GridRowView {
+    pub(crate) snapshot: Rc<GridRowSnapshot>,
+    pub(crate) paint_phase: grid::GridPaintPhase,
 }
 
 pub(crate) struct InputRuntime {
@@ -176,6 +246,7 @@ impl Default for InputRuntime {
 pub(crate) struct CursorRuntime {
     pub(crate) cursor_blink_started_at: Instant,
     pub(crate) cursor_animation: Option<grid::CursorAnimation>,
+    pub(crate) cursor_animation_enabled: bool,
     pub(crate) multicursor_namespace_task: Option<Task<()>>,
     pub(crate) multicursor_reconcile_task: Option<Task<()>>,
     pub(crate) multicursor_reconcile_dirty: bool,
@@ -186,6 +257,7 @@ impl Default for CursorRuntime {
         Self {
             cursor_blink_started_at: Instant::now(),
             cursor_animation: None,
+            cursor_animation_enabled: true,
             multicursor_namespace_task: None,
             multicursor_reconcile_task: None,
             multicursor_reconcile_dirty: false,
@@ -198,14 +270,17 @@ pub(crate) struct EditorRuntime {
     pub(crate) presentation: RenderRuntime,
     pub(crate) input: InputRuntime,
     pub(crate) cursor: CursorRuntime,
+    pub(crate) scrolling_animation_enabled: bool,
     pub(crate) configured_grid_font_size: Option<f32>,
-    pub(crate) configured_grid_font: Option<String>,
-    pub(crate) configured_grid_wide_font: Option<String>,
+    pub(crate) configured_grid_font: Option<Vec<String>>,
+    pub(crate) configured_grid_wide_font: Option<Vec<String>>,
     pub(crate) resolved_grid_font: Option<GuiFontSpec>,
     pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) font_style_cache: grid::SharedFontStyleCache,
     pub(crate) nerd_font_family: Option<String>,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
+    pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
     pub(crate) bundled_nerd_font_registered: bool,
 }
 
@@ -216,14 +291,17 @@ impl Default for EditorRuntime {
             presentation: RenderRuntime::default(),
             input: InputRuntime::default(),
             cursor: CursorRuntime::default(),
+            scrolling_animation_enabled: true,
             configured_grid_font_size: None,
             configured_grid_font: None,
             configured_grid_wide_font: None,
             resolved_grid_font: None,
             resolved_grid_wide_font: None,
             shaping_cache: grid::ShapedLineCache::shared(),
+            font_style_cache: grid::FontStyleCache::shared(),
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
+            font_selection_cache: grid::FontSelectionCache::shared(),
             bundled_nerd_font_registered: false,
         }
     }
@@ -231,18 +309,32 @@ impl Default for EditorRuntime {
 
 impl EditorRuntime {
     pub(crate) fn apply_runtime_settings(&mut self, settings: &settings::Settings) {
+        self.cursor.cursor_animation_enabled = settings.cursor_animation;
+        if !settings.cursor_animation {
+            self.cursor.cursor_animation = None;
+        }
+        self.scrolling_animation_enabled = settings.scrolling_animation;
+        if !settings.scrolling_animation {
+            self.presentation.viewport_animations.clear();
+            self.presentation.scroll_animation_suppressed.clear();
+        }
         self.configured_grid_font_size = Some(settings.font_size as f32);
-        self.configured_grid_font =
-            (!settings.guifont.trim().is_empty()).then(|| settings.guifont.trim().to_owned());
+        self.configured_grid_font = (!settings.guifont.trim().is_empty())
+            .then(|| parse_guifont_families(settings.guifont.trim()));
         self.configured_grid_wide_font = (!settings.guifontwide.trim().is_empty())
-            .then(|| settings.guifontwide.trim().to_owned());
+            .then(|| parse_guifont_families(settings.guifontwide.trim()));
         self.resolved_grid_font = None;
         self.resolved_grid_wide_font = None;
         self.nerd_font_family = self
             .bundled_nerd_font_registered
             .then(|| settings.nerd_font.family().to_owned());
         self.shaping_cache.borrow_mut().clear();
+        self.font_style_cache.borrow_mut().clear();
         self.glyph_coverage_cache.borrow_mut().clear();
+        self.font_selection_cache.borrow_mut().clear();
+        self.presentation.grid_row_views.clear();
+        self.presentation.grid_row_contexts.clear();
+        self.presentation.grid_dirty_regions.clear();
         for image in self
             .protocol
             .presentation
