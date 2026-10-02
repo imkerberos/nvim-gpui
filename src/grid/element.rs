@@ -72,6 +72,13 @@ struct ImeGap {
     width: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GridPaintPhase {
+    Both,
+    Backgrounds,
+    Foregrounds,
+}
+
 impl ImeGap {
     fn shifted_column(self, row: usize, column: usize) -> usize {
         if row == self.row && column >= self.col {
@@ -172,6 +179,7 @@ type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App
 
 pub struct GridElement {
     source: GridSource,
+    paint_phase: GridPaintPhase,
     nerd_font_mode: bool,
     nerd_fallback_mode: FallbackMode,
     cell_width: Pixels,
@@ -222,6 +230,7 @@ impl GridElement {
     fn with_source(source: GridSource) -> Self {
         Self {
             source,
+            paint_phase: GridPaintPhase::Both,
             nerd_font_mode: false,
             nerd_fallback_mode: FallbackMode::Auto,
             cell_width: px(10.0),
@@ -249,6 +258,11 @@ impl GridElement {
 
     pub fn with_nerd_font_mode(mut self, enabled: bool) -> Self {
         self.nerd_font_mode = enabled;
+        self
+    }
+
+    pub(crate) fn with_paint_phase(mut self, phase: GridPaintPhase) -> Self {
+        self.paint_phase = phase;
         self
     }
 
@@ -834,14 +848,22 @@ impl GridElement {
     ) -> Option<Bounds<Pixels>> {
         let (top, bottom) = self.viewport_row_range();
         let (render_start, render_end) = self.render_row_range();
-        let top = top.max(render_start).min(render_end);
-        let bottom = bottom.min(render_end).max(top);
+        // A cached row still paints into the grid's full viewport. Clipping
+        // its glyphs to this one logical row cuts off vertical font overhang
+        // and leaves horizontal seams in multi-row symbols.
+        let (top, bottom) = match self.source {
+            GridSource::Full(_) => {
+                let top = top.max(render_start).min(render_end);
+                (top, bottom.min(render_end).max(top))
+            }
+            GridSource::Row { .. } => (top, bottom),
+        };
         let (left, right) = self.viewport_column_range();
         (top < bottom && left < right).then(|| {
             Bounds::new(
                 point(
                     bounds.origin.x + cell_width * left,
-                    bounds.origin.y + self.line_height * (top - render_start),
+                    bounds.origin.y + self.line_height * top - self.line_height * render_start,
                 ),
                 size(
                     cell_width * (right - left),
@@ -849,6 +871,16 @@ impl GridElement {
                 ),
             )
         })
+    }
+
+    fn paint_clip_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        match self.source {
+            GridSource::Full(_) => bounds,
+            GridSource::Row { index, height, .. } => Bounds::new(
+                point(bounds.origin.x, bounds.origin.y - self.line_height * index),
+                size(bounds.size.width, self.line_height * height),
+            ),
+        }
     }
 
     /// Convert the active GPUI content mask into logical grid coordinates.
@@ -956,6 +988,56 @@ impl Element for GridElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        if self.paint_phase == GridPaintPhase::Backgrounds {
+            let mut backgrounds = Vec::new();
+            let mut resolved_backgrounds = HashMap::new();
+            let (highlights, defaults) = self.source.style_parts();
+            let (render_row_start, _) = self.render_row_range();
+            let render_range = self.render_range(bounds, window.content_mask().bounds);
+            self.source.for_each_cell_in_range(
+                &VisualCellBuilder::new(self.nerd_font_mode),
+                render_range,
+                &mut |cell| {
+                    let background =
+                        resolved_backgrounds
+                            .entry(cell.highlight)
+                            .or_insert_with(|| {
+                                visual::resolve_highlight_from_parts(
+                                    highlights,
+                                    defaults,
+                                    cell.highlight,
+                                    self.highlight_context,
+                                )
+                                .background
+                            });
+                    if let Some(background) = background {
+                        let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
+                        let origin = point(
+                            bounds.origin.x + self.cell_width * cell.grid_start,
+                            bounds.origin.y
+                                + self.line_height * cell.row.saturating_sub(render_row_start),
+                        ) + self.offset_for_cell(cell.row, cell.grid_start);
+                        push_background(
+                            &mut backgrounds,
+                            Bounds::new(
+                                origin,
+                                size(self.cell_width * cell.grid_len, self.line_height),
+                            ),
+                            *background,
+                            in_viewport,
+                        );
+                    }
+                },
+            );
+            return GridPrepaintState {
+                backgrounds,
+                overlines: Vec::new(),
+                underlines: Vec::new(),
+                texts: Vec::new(),
+                viewport_bounds: self.viewport_bounds(bounds, self.cell_width),
+            };
+        }
+
         let (normal_font, normal_font_size) = self.normal_font(window);
         let text_system = window.text_system();
         let metric_font = self
@@ -1234,34 +1316,36 @@ impl Element for GridElement {
             // padding creates visible gaps between adjacent ASCII-art
             // glyphs, whose raster width is often smaller than the cell
             // advance.
-            if let Some(background) = background {
-                push_background(&mut backgrounds, cell_bounds, background, in_viewport);
-                if let Some(gap) = ime_gap {
-                    let cell_end = cell.grid_start.saturating_add(cell.grid_len);
-                    let gap_start = cell.grid_start.max(gap.col);
-                    let gap_end = cell_end.min(gap.end());
-                    if cell.row == gap.row && gap_start < gap_end {
-                        let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
-                        let gap_origin = point(
-                            bounds.origin.x + cell_width * gap_start,
-                            bounds.origin.y
-                                + self.line_height * cell.row.saturating_sub(render_row_start),
-                        ) + self.offset_for_cell(cell.row, gap_start);
-                        let gap_bounds = Bounds::new(
-                            gap_origin,
-                            size(cell_width * (gap_end - gap_start), self.line_height),
-                        );
-                        push_background(
-                            &mut ime_gap_backgrounds,
-                            gap_bounds,
-                            background,
-                            gap_in_viewport,
-                        );
-                        for column in gap_start..gap_end {
-                            if let Some(covered) =
-                                ime_gap_background_covered.get_mut(column.saturating_sub(gap.col))
-                            {
-                                *covered = true;
+            if self.paint_phase != GridPaintPhase::Foregrounds {
+                if let Some(background) = background {
+                    push_background(&mut backgrounds, cell_bounds, background, in_viewport);
+                    if let Some(gap) = ime_gap {
+                        let cell_end = cell.grid_start.saturating_add(cell.grid_len);
+                        let gap_start = cell.grid_start.max(gap.col);
+                        let gap_end = cell_end.min(gap.end());
+                        if cell.row == gap.row && gap_start < gap_end {
+                            let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
+                            let gap_origin = point(
+                                bounds.origin.x + cell_width * gap_start,
+                                bounds.origin.y
+                                    + self.line_height * cell.row.saturating_sub(render_row_start),
+                            ) + self.offset_for_cell(cell.row, gap_start);
+                            let gap_bounds = Bounds::new(
+                                gap_origin,
+                                size(cell_width * (gap_end - gap_start), self.line_height),
+                            );
+                            push_background(
+                                &mut ime_gap_backgrounds,
+                                gap_bounds,
+                                background,
+                                gap_in_viewport,
+                            );
+                            for column in gap_start..gap_end {
+                                if let Some(covered) = ime_gap_background_covered
+                                    .get_mut(column.saturating_sub(gap.col))
+                                {
+                                    *covered = true;
+                                }
                             }
                         }
                     }
@@ -1391,27 +1475,32 @@ impl Element for GridElement {
         // turn that overhang into visible seams at grid boundaries. The Grid
         // itself remains clipped so text and an elastic cursor cannot escape
         // the Neovim viewport.
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for painted_text in prepaint.texts.drain(..) {
-                let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
-                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                });
-                window.with_content_mask(mask, |window| {
-                    painted_text
-                        .line
-                        .paint(painted_text.origin, self.line_height, window, cx)
-                        .expect("failed to paint grid text");
-                });
-            }
-            for underline in &prepaint.underlines {
-                let mask = underline.in_viewport.then(|| gpui::ContentMask {
-                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                });
-                window.with_content_mask(mask, |window| {
-                    window.paint_underline(underline.origin, underline.width, &underline.style);
-                });
-            }
-        });
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: self.paint_clip_bounds(bounds),
+            }),
+            |window| {
+                for painted_text in prepaint.texts.drain(..) {
+                    let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
+                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                    });
+                    window.with_content_mask(mask, |window| {
+                        painted_text
+                            .line
+                            .paint(painted_text.origin, self.line_height, window, cx)
+                            .expect("failed to paint grid text");
+                    });
+                }
+                for underline in &prepaint.underlines {
+                    let mask = underline.in_viewport.then(|| gpui::ContentMask {
+                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                    });
+                    window.with_content_mask(mask, |window| {
+                        window.paint_underline(underline.origin, underline.width, &underline.style);
+                    });
+                }
+            },
+        );
     }
 }
 
@@ -1532,6 +1621,39 @@ mod tests {
         assert!(!element.cell_is_in_viewport(1, 1));
         assert_eq!(element.offset_for_cell(1, 2), point(px(0.0), px(10.0)));
         assert_eq!(element.offset_for_cell(0, 2), point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn cached_rows_clip_to_the_grid_and_shared_viewport_not_their_own_line() {
+        let model = GridModel::new(8, 4);
+        for row in 0..model.height() {
+            let element = GridElement::with_shared_row(
+                row,
+                model.row_handle(row).unwrap(),
+                model.width(),
+                model.height(),
+                model.highlight_handle(),
+                model.default_colors(),
+            )
+            .with_metrics(px(10.0), px(20.0))
+            .with_viewport_margins(1, 1, 2, 2);
+            let bounds = Bounds::new(
+                point(px(50.0), px(100.0 + row as f32 * 20.0)),
+                size(px(80.0), px(20.0)),
+            );
+
+            assert_eq!(
+                element.paint_clip_bounds(bounds),
+                Bounds::new(point(px(50.0), px(100.0)), size(px(80.0), px(80.0)))
+            );
+            assert_eq!(
+                element.viewport_bounds(bounds, px(10.0)),
+                Some(Bounds::new(
+                    point(px(70.0), px(120.0)),
+                    size(px(40.0), px(40.0))
+                ))
+            );
+        }
     }
 
     #[test]

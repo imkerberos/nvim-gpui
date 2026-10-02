@@ -135,7 +135,7 @@ pub(crate) struct RenderRuntime {
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
     pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
-    pub(crate) grid_row_views: HashMap<u64, Vec<Entity<GridRowView>>>,
+    pub(crate) grid_row_views: HashMap<u64, Vec<GridRowViews>>,
     pub(crate) grid_row_contexts: HashMap<u64, GridRowContext>,
 }
 
@@ -178,7 +178,13 @@ impl GridRowContext {
     }
 }
 
-pub(crate) struct GridRowView {
+#[derive(Clone)]
+pub(crate) struct GridRowViews {
+    pub(crate) backgrounds: Entity<GridRowView>,
+    pub(crate) foregrounds: Entity<GridRowView>,
+}
+
+pub(crate) struct GridRowSnapshot {
     pub(crate) row_data: Rc<grid::GridRow>,
     pub(crate) row: usize,
     pub(crate) highlights: Rc<grid::HighlightTable>,
@@ -188,6 +194,11 @@ pub(crate) struct GridRowView {
     pub(crate) font_style_cache: grid::SharedFontStyleCache,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
     pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
+}
+
+pub(crate) struct GridRowView {
+    pub(crate) snapshot: Rc<GridRowSnapshot>,
+    pub(crate) paint_phase: grid::GridPaintPhase,
 }
 
 pub(crate) struct InputRuntime {

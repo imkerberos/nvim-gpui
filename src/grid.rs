@@ -31,6 +31,7 @@ pub use cache::{
 };
 pub(crate) use cursor::multicursor_colors_with_context;
 pub use cursor::CursorElement;
+pub(crate) use element::GridPaintPhase;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
     AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition,

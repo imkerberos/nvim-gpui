@@ -166,15 +166,17 @@ fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::D
 
 impl Render for GridRowView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let context = &self.context;
+        let snapshot = &self.snapshot;
+        let context = &snapshot.context;
         let mut element = GridElement::with_shared_row(
-            self.row,
-            Rc::clone(&self.row_data),
+            snapshot.row,
+            Rc::clone(&snapshot.row_data),
             context.width,
             context.height,
-            Rc::clone(&self.highlights),
-            self.default_colors,
+            Rc::clone(&snapshot.highlights),
+            snapshot.default_colors,
         )
+        .with_paint_phase(self.paint_phase)
         .with_metrics(context.cell_width, context.line_height)
         .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
         .with_highlight_context(context.highlight_context)
@@ -188,10 +190,10 @@ impl Render for GridRowView {
             context.nerd_font_family.clone().unwrap_or_default(),
             px(context.gui_font.size),
         )
-        .with_font_style_cache(Rc::clone(&self.font_style_cache))
-        .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
-        .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
-        .with_shaping_cache(Rc::clone(&self.shaping_cache))
+        .with_font_style_cache(Rc::clone(&snapshot.font_style_cache))
+        .with_glyph_coverage_cache(Rc::clone(&snapshot.glyph_coverage_cache))
+        .with_font_selection_cache(Rc::clone(&snapshot.font_selection_cache))
+        .with_shaping_cache(Rc::clone(&snapshot.shaping_cache))
         .with_nerd_fallback_mode(context.fallback_mode)
         .with_cursor_blink_started_at(context.cursor_blink_started_at)
         .with_viewport_offset(point(px(0.0), context.viewport_offset))
@@ -227,11 +229,10 @@ fn grid_row_surface(
         .top(px(row as f32 * f32::from(context.line_height)))
         .w(px(context.width as f32 * f32::from(context.cell_width)))
         .h(context.line_height)
-        // Do not clip a cached row at its logical line boundary. Glyph raster
-        // bounds can extend above or below the row, just as they can extend
-        // past a terminal cell. Keep only the horizontal grid-edge clip here;
-        // the containing grid/layer clips the complete surface vertically.
-        .overflow_x_hidden()
+        // The GridElement clips text to the full grid width and height.
+        // A row-level overflow mask cuts off vertical glyph overhang; GPUI
+        // 0.2.2 also clips Y for overflow_x_hidden(), so leave this wrapper
+        // unclipped and rely on the grid/layer mask instead.
         .child(row_view)
 }
 
@@ -443,30 +444,39 @@ impl NvimGpui {
             .grid_row_views
             .remove(&grid_id)
             .unwrap_or_default();
+        let create_views = |row: usize, cx: &mut Context<Self>| {
+            let snapshot = Rc::new(GridRowSnapshot {
+                row_data: model
+                    .row_handle(row)
+                    .expect("row count is bounded by the model height"),
+                row,
+                highlights: model.highlight_handle(),
+                default_colors: model.default_colors(),
+                context: context.clone(),
+                shaping_cache: Rc::clone(&shaping_cache),
+                font_style_cache: Rc::clone(&font_style_cache),
+                glyph_coverage_cache: Rc::clone(&glyph_coverage_cache),
+                font_selection_cache: Rc::clone(&font_selection_cache),
+            });
+            GridRowViews {
+                backgrounds: cx.new({
+                    let snapshot = Rc::clone(&snapshot);
+                    move |_| GridRowView {
+                        snapshot,
+                        paint_phase: grid::GridPaintPhase::Backgrounds,
+                    }
+                }),
+                foregrounds: cx.new(move |_| GridRowView {
+                    snapshot,
+                    paint_phase: grid::GridPaintPhase::Foregrounds,
+                }),
+            }
+        };
         views.truncate(row_count);
+        let first_new_row = views.len();
         while views.len() < row_count {
             let row = views.len();
-            let row_data = model
-                .row_handle(row)
-                .expect("row count is bounded by the model height");
-            let row_context = context.clone();
-            let row_highlights = model.highlight_handle();
-            let default_colors = model.default_colors();
-            let row_shaping_cache = Rc::clone(&shaping_cache);
-            let row_font_style_cache = Rc::clone(&font_style_cache);
-            let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
-            let row_font_selection_cache = Rc::clone(&font_selection_cache);
-            views.push(cx.new(|_| GridRowView {
-                row_data,
-                row,
-                highlights: row_highlights,
-                default_colors,
-                context: row_context,
-                shaping_cache: row_shaping_cache,
-                font_style_cache: row_font_style_cache,
-                glyph_coverage_cache: row_glyph_coverage_cache,
-                font_selection_cache: row_font_selection_cache,
-            }));
+            views.push(create_views(row, cx));
         }
 
         let mut dirty_rows = vec![context_changed || dirty_region.full; row_count];
@@ -477,56 +487,40 @@ impl NvimGpui {
                 *dirty = true;
             }
         }
-        for row in 0..views.len() {
+        for row in 0..first_new_row {
             if !dirty_rows[row] {
                 continue;
             }
-            let row_data = model
-                .row_handle(row)
-                .expect("row count is bounded by the model height");
-            let row_context = context.clone();
-            let row_highlights = model.highlight_handle();
-            let default_colors = model.default_colors();
-            let row_shaping_cache = Rc::clone(&shaping_cache);
-            let row_font_style_cache = Rc::clone(&font_style_cache);
-            let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
-            let row_font_selection_cache = Rc::clone(&font_selection_cache);
-
             // A dirty row must get a new Entity identity. Updating the old
             // entity and notifying it is normally enough for GPUI, but a
             // parent that already retained the AnyView can still reuse its
             // cached layout/paint for the current frame. Replacing only the
             // affected rows makes the repaint boundary explicit while clean
             // rows keep their retained surfaces.
-            views[row] = cx.new(|_| GridRowView {
-                row_data,
-                row,
-                highlights: row_highlights,
-                default_colors,
-                context: row_context,
-                shaping_cache: row_shaping_cache,
-                font_style_cache: row_font_style_cache,
-                glyph_coverage_cache: row_glyph_coverage_cache,
-                font_selection_cache: row_font_selection_cache,
-            });
+            views[row] = create_views(row, cx);
         }
 
         self.editor
             .presentation
             .grid_row_views
             .insert(grid_id, views.clone());
-        views
-            .into_iter()
-            .enumerate()
-            .map(|(row, view)| {
-                // A dirty row is the repaint boundary. Let GPUI rebuild this
-                // row for the current presentation, while retaining cached
-                // layout/paint for rows that did not change. This is
-                // especially important for floating previews: the parent
-                // grid can repaint without a stale float row being reused.
-                grid_row_surface(view, row, &context, !dirty_rows[row]).into_any_element()
-            })
-            .collect()
+        let mut surfaces = Vec::with_capacity(row_count * 2);
+        // Paint every background before any glyph. Otherwise the next row's
+        // background erases glyph pixels extending below the previous row,
+        // leaving seams in multi-line ASCII/Nerd Font art.
+        for (row, view) in views.iter().enumerate() {
+            surfaces.push(
+                grid_row_surface(view.backgrounds.clone(), row, &context, !dirty_rows[row])
+                    .into_any_element(),
+            );
+        }
+        for (row, view) in views.into_iter().enumerate() {
+            surfaces.push(
+                grid_row_surface(view.foregrounds, row, &context, !dirty_rows[row])
+                    .into_any_element(),
+            );
+        }
+        surfaces
     }
 
     pub(crate) fn render_editor_surface(
