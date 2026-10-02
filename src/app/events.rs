@@ -67,6 +67,7 @@ impl NvimGpui {
                     "Neovim UI attached: width={width}, height={height}"
                 );
                 self.apply_redraw_commit(redraw, previous_cursor);
+                self.editor.invalidate_presentation_snapshot();
                 self.app.session.rpc_status = format!("rpc: attached {width}×{height}");
             }
             ProtocolOutcome::PendingChanged => {
@@ -110,6 +111,13 @@ impl NvimGpui {
 
         for grid in redraw.destroyed_grids {
             self.editor.presentation.viewport_animations.remove(&grid);
+            self.editor
+                .presentation
+                .scroll_animation_suppressed
+                .remove(&grid);
+            self.editor.presentation.grid_row_views.remove(&grid);
+            self.editor.presentation.grid_row_contexts.remove(&grid);
+            self.editor.presentation.grid_dirty_regions.remove(&grid);
         }
         self.editor.apply_viewport_commits(redraw.grid_commits);
         self.apply_kitty_events(redraw.kitty_events);
@@ -122,6 +130,10 @@ impl NvimGpui {
         if redraw.font_changed || redraw.font_wide_changed {
             self.editor.resolved_grid_font = None;
             self.editor.resolved_grid_wide_font = None;
+            self.editor.font_style_cache.borrow_mut().clear();
+            self.editor.font_selection_cache.borrow_mut().clear();
+            self.editor.presentation.grid_row_views.clear();
+            self.editor.presentation.grid_row_contexts.clear();
             self.editor.input.ime_coordinates_dirty = true;
             self.app.last_resize = None;
         }

@@ -162,27 +162,41 @@ impl Element for CursorElement {
             if let Some(animation) = self.animation.filter(|animation| animation.is_active(now)) {
                 window.request_animation_frame();
 
-                const TRAIL: [(u64, f32); 5] =
-                    [(56, 0.05), (42, 0.08), (28, 0.13), (14, 0.22), (0, 1.0)];
-                let trails = TRAIL
-                    .into_iter()
-                    .map(|(age_ms, opacity)| {
-                        let sample_time = now
-                            .checked_sub(Duration::from_millis(age_ms))
-                            .unwrap_or(animation.started_at);
-                        CursorTrail {
-                            bounds: animated_cursor_bounds(
-                                bounds,
-                                self.cell_width,
-                                self.line_height,
-                                animation,
-                                self.cursor_mode,
-                                sample_time,
-                            ),
-                            opacity,
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                let trails = if animation.show_trail() {
+                    const TRAIL: [(u64, f32); 5] =
+                        [(56, 0.05), (42, 0.08), (28, 0.13), (14, 0.22), (0, 1.0)];
+                    TRAIL
+                        .into_iter()
+                        .map(|(age_ms, opacity)| {
+                            let sample_time = now
+                                .checked_sub(Duration::from_millis(age_ms))
+                                .unwrap_or(animation.started_at);
+                            CursorTrail {
+                                bounds: animated_cursor_bounds(
+                                    bounds,
+                                    self.cell_width,
+                                    self.line_height,
+                                    animation,
+                                    self.cursor_mode,
+                                    sample_time,
+                                ),
+                                opacity,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![CursorTrail {
+                        bounds: animated_cursor_bounds(
+                            bounds,
+                            self.cell_width,
+                            self.line_height,
+                            animation,
+                            self.cursor_mode,
+                            now,
+                        ),
+                        opacity: 1.0,
+                    }]
+                };
                 (trails, Some(animation.position_at(now)))
             } else {
                 (

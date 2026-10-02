@@ -61,17 +61,25 @@ dnf -y install \
   wayland-devel
 
 version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/Cargo.toml" | head -n 1)"
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
   || fail "could not parse a Fedora-compatible version from Cargo.toml: $version"
+rpm_version="${version%%-*}"
+rpm_release='1'
+if [[ "$version" == *-* ]]; then
+  prerelease="${version#"$rpm_version"-}"
+  [[ "$prerelease" =~ ^[0-9A-Za-z.]+$ ]] \
+    || fail "could not convert the prerelease to an RPM release: $version"
+  rpm_release="0.$prerelease"
+fi
 spec_version="$(sed -n 's/^Version:[[:space:]]*//p' \
   "$repo_root/packaging/fedora/nvim-gpui.spec" | head -n 1)"
-[[ "$version" == "$spec_version" ]] \
-  || fail "Cargo.toml version ($version) and RPM spec version ($spec_version) differ"
+[[ "$rpm_version" == "$spec_version" ]] \
+  || fail "RPM version ($rpm_version) and RPM spec version ($spec_version) differ"
 
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT
 source_stage_parent="$temporary_dir/source"
-source_stage="$source_stage_parent/nvim-gpui-$version"
+source_stage="$source_stage_parent/nvim-gpui-$rpm_version"
 rpm_topdir="$temporary_dir/rpmbuild"
 mkdir -p "$source_stage_parent" \
   "$source_stage" \
@@ -102,9 +110,13 @@ printf 'Vendoring Rust dependencies for the RPM source archive\n'
   cargo vendor vendor > .cargo/config.toml
 )
 tar --no-xattrs -C "$source_stage_parent" -czf \
-  "$rpm_topdir/SOURCES/nvim-gpui-$version.tar.gz" \
-  "nvim-gpui-$version"
-cp "$repo_root/packaging/fedora/nvim-gpui.spec" "$rpm_topdir/SPECS/nvim-gpui.spec"
+  "$rpm_topdir/SOURCES/nvim-gpui-$rpm_version.tar.gz" \
+  "nvim-gpui-$rpm_version"
+sed \
+  -e "s/^Version:[[:space:]].*/Version:        $rpm_version/" \
+  -e "s/^Release:[[:space:]].*/Release:        $rpm_release%{?dist}/" \
+  "$repo_root/packaging/fedora/nvim-gpui.spec" \
+  > "$rpm_topdir/SPECS/nvim-gpui.spec"
 
 printf 'Building nvim-gpui %s as a Fedora %s RPM\n' "$version" "$fedora_arch"
 rpmbuild -ba \
@@ -113,7 +125,7 @@ rpmbuild -ba \
 
 mapfile -t rpm_files < <(
   find "$rpm_topdir/RPMS/$fedora_arch" -maxdepth 1 -type f \
-    -name "nvim-gpui-${version}-*.$fedora_arch.rpm" \
+    -name "nvim-gpui-${rpm_version}-*.$fedora_arch.rpm" \
     ! -name '*-debuginfo-*' -print | sort
 )
 [[ "${#rpm_files[@]}" -eq 1 ]] \
@@ -121,7 +133,7 @@ mapfile -t rpm_files < <(
 
 package_file="$output_dir/$(basename "${rpm_files[0]}")"
 mkdir -p "$output_dir"
-rm -f "$output_dir"/nvim-gpui-"$version"-*.$fedora_arch.rpm
+rm -f "$output_dir"/nvim-gpui-"$rpm_version"-*.$fedora_arch.rpm
 cp "${rpm_files[0]}" "$package_file"
 rpm -qip "$package_file" >/dev/null
 rpm -qpl "$package_file" >/dev/null

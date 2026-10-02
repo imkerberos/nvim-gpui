@@ -129,6 +129,7 @@ impl NvimGpui {
     }
 
     pub(crate) fn sync_nvim_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window.main_window_handle = Some(window.window_handle());
         let gui_font = self.editor.current_grid_font(window);
         let cell_width = gui_font.cell_width(window);
         let line_height = gui_font.line_height(window, self.editor.protocol.linespace);

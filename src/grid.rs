@@ -23,17 +23,23 @@ mod element;
 mod model;
 mod visual;
 
+pub(crate) use cache::{
+    FontSelectionCache, FontStyleCache, SharedFontSelectionCache, SharedFontStyleCache,
+};
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };
 pub(crate) use cursor::multicursor_colors_with_context;
 pub use cursor::CursorElement;
+pub(crate) use element::GridPaintPhase;
 pub use element::{GridElement, GridPrepaintState};
 pub use model::{
     AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition,
     DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow, GridRows,
     HighlightAttrs, HighlightId, DEFAULT_HIGHLIGHT,
 };
+pub(crate) type HighlightTable = HashMap<HighlightId, HighlightAttrs>;
+pub(crate) type DefaultColors = (Option<u32>, Option<u32>, Option<u32>);
 pub use visual::{HighlightContext, ResolvedHighlight};
 pub use visual::{VisualCell, VisualCellBuilder, VisualCellKind};
 

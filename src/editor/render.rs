@@ -13,6 +13,89 @@ struct GridRenderOptions<'a> {
     viewport_offset: Pixels,
 }
 
+#[derive(Clone, Copy)]
+struct ViewportRenderGeometry {
+    placement: GridPlacement,
+    width: usize,
+    height: usize,
+    clip_width: usize,
+    clip_height: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+}
+
+impl ViewportRenderGeometry {
+    fn margins(self) -> (usize, usize, usize, usize) {
+        self.placement
+            .viewport_margins
+            .map(|margins| {
+                let top = usize::try_from(margins.top)
+                    .unwrap_or(usize::MAX)
+                    .min(self.height);
+                let bottom = usize::try_from(margins.bottom)
+                    .unwrap_or(usize::MAX)
+                    .min(self.height.saturating_sub(top));
+                let left = usize::try_from(margins.left)
+                    .unwrap_or(usize::MAX)
+                    .min(self.width);
+                let right = usize::try_from(margins.right)
+                    .unwrap_or(usize::MAX)
+                    .min(self.width.saturating_sub(left));
+                (
+                    top,
+                    self.height.saturating_sub(bottom),
+                    left,
+                    self.width.saturating_sub(right),
+                )
+            })
+            .unwrap_or((0, self.height, 0, self.width))
+    }
+
+    fn viewport_content_is_visible(self, viewport_offset: Pixels) -> bool {
+        let (top, bottom, left, right) = self.margins();
+        if top >= bottom || left >= right || self.clip_width == 0 || self.clip_height == 0 {
+            return false;
+        }
+
+        let viewport_left = left as f32 * f32::from(self.cell_width);
+        let viewport_right = right as f32 * f32::from(self.cell_width);
+        let viewport_top = top as f32 * f32::from(self.line_height) + f32::from(viewport_offset);
+        let viewport_bottom =
+            bottom as f32 * f32::from(self.line_height) + f32::from(viewport_offset);
+        let clip_right = self.clip_width as f32 * f32::from(self.cell_width);
+        let clip_bottom = self.clip_height as f32 * f32::from(self.line_height);
+
+        viewport_left < clip_right
+            && viewport_right > 0.0
+            && viewport_top < clip_bottom
+            && viewport_bottom > 0.0
+    }
+}
+
+fn viewport_animation_offsets(
+    animation: Option<&ViewportAnimation>,
+    geometry: ViewportRenderGeometry,
+    now: Instant,
+) -> (Pixels, Pixels, bool, bool) {
+    let Some(animation) = animation else {
+        return (px(0.0), px(0.0), false, false);
+    };
+
+    let (old_offset, current_offset) =
+        animation.offsets(now, geometry.height, geometry.line_height);
+    let previous_visible = geometry.viewport_content_is_visible(old_offset);
+    let current_visible = geometry.viewport_content_is_visible(current_offset);
+
+    if !previous_visible && !current_visible {
+        // Neither translated viewport intersects the layer clip. Keep the
+        // committed grid visible immediately instead of showing an empty
+        // frame during a jump that is too large for a scroll transition.
+        return (px(0.0), px(0.0), false, true);
+    }
+
+    (old_offset, current_offset, previous_visible, false)
+}
+
 impl EditorRuntime {
     fn highlight_context_for_layer(&self, kind: GridLayerKind) -> grid::HighlightContext {
         match kind {
@@ -37,18 +120,21 @@ impl EditorRuntime {
         let highlight_context = self.highlight_context_for_layer(options.placement.kind);
         let mut element = GridElement::with_shared_model(model)
             .with_metrics(options.cell_width, options.line_height)
+            .with_primary_font(options.gui_font.family.clone(), px(options.gui_font.size))
             .with_highlight_context(highlight_context)
             .with_wide_font(
                 options.gui_wide_font.family.clone(),
                 px(options.gui_wide_font.size),
             )
-            .with_wide_font_fallback(options.gui_wide_font.fallback_family.clone())
-            .with_font_fallback(options.gui_font.fallback_family.clone())
+            .with_wide_font_fallback(options.gui_wide_font.fallback_families.clone())
+            .with_font_fallback(options.gui_font.fallback_families.clone())
             .with_nerd_fallback_font(
                 self.nerd_font_family.clone().unwrap_or_default(),
                 px(options.gui_font.size),
             )
+            .with_font_style_cache(Rc::clone(&self.font_style_cache))
             .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
+            .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
             .with_shaping_cache(Rc::clone(&self.shaping_cache))
             .with_nerd_fallback_mode(fallback_mode)
             .with_cursor_blink_started_at(options.cursor_blink_started_at)
@@ -76,6 +162,78 @@ fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::D
         .w(px(options.width as f32 * f32::from(options.cell_width)))
         .h(px(options.height as f32 * f32::from(options.line_height)))
         .child(element)
+}
+
+impl Render for GridRowView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = &self.snapshot;
+        let context = &snapshot.context;
+        let mut element = GridElement::with_shared_row(
+            snapshot.row,
+            Rc::clone(&snapshot.row_data),
+            context.width,
+            context.height,
+            Rc::clone(&snapshot.highlights),
+            snapshot.default_colors,
+        )
+        .with_paint_phase(self.paint_phase)
+        .with_metrics(context.cell_width, context.line_height)
+        .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
+        .with_highlight_context(context.highlight_context)
+        .with_wide_font(
+            context.gui_wide_font.family.clone(),
+            px(context.gui_wide_font.size),
+        )
+        .with_wide_font_fallback(context.gui_wide_font.fallback_families.clone())
+        .with_font_fallback(context.gui_font.fallback_families.clone())
+        .with_nerd_fallback_font(
+            context.nerd_font_family.clone().unwrap_or_default(),
+            px(context.gui_font.size),
+        )
+        .with_font_style_cache(Rc::clone(&snapshot.font_style_cache))
+        .with_glyph_coverage_cache(Rc::clone(&snapshot.glyph_coverage_cache))
+        .with_font_selection_cache(Rc::clone(&snapshot.font_selection_cache))
+        .with_shaping_cache(Rc::clone(&snapshot.shaping_cache))
+        .with_nerd_fallback_mode(context.fallback_mode)
+        .with_cursor_blink_started_at(context.cursor_blink_started_at)
+        .with_viewport_offset(point(px(0.0), context.viewport_offset))
+        .with_nerd_font_mode(true);
+
+        if let Some(margins) = context.placement.viewport_margins {
+            element = element.with_viewport_margins(
+                margins.top,
+                margins.bottom,
+                margins.left,
+                margins.right,
+            );
+        }
+
+        element
+    }
+}
+
+fn grid_row_surface(
+    view: Entity<GridRowView>,
+    row: usize,
+    context: &GridRowContext,
+    use_cache: bool,
+) -> gpui::Div {
+    let mut row_view = gpui::AnyView::from(view);
+    if use_cache {
+        row_view = row_view.cached(StyleRefinement::default());
+    }
+
+    div()
+        .absolute()
+        .left(px(0.0))
+        .top(px(row as f32 * f32::from(context.line_height)))
+        .w(px(context.width as f32 * f32::from(context.cell_width)))
+        .h(context.line_height)
+        // The GridElement clips text to the full grid width and height.
+        // A row-level overflow mask cuts off vertical glyph overhang; GPUI
+        // 0.2.2 also clips Y for overflow_x_hidden(), so leave this wrapper
+        // unclipped and rely on the grid/layer mask instead.
+        .child(row_view)
 }
 
 pub(super) fn viewport_rect(
@@ -237,6 +395,134 @@ impl EditorRuntime {
 }
 
 impl NvimGpui {
+    fn grid_row_surfaces(
+        &mut self,
+        grid_id: u64,
+        model: Rc<grid::GridModel>,
+        options: GridRenderOptions<'_>,
+        fallback_mode: settings::FallbackMode,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let row_count = options.height.min(model.height());
+        let context = GridRowContext {
+            width: options.width,
+            height: row_count,
+            cell_width: options.cell_width,
+            line_height: options.line_height,
+            gui_font: options.gui_font.clone(),
+            gui_wide_font: options.gui_wide_font.clone(),
+            placement: options.placement,
+            highlight_context: self
+                .editor
+                .highlight_context_for_layer(options.placement.kind),
+            cursor_blink_started_at: options.cursor_blink_started_at,
+            viewport_offset: options.viewport_offset,
+            fallback_mode,
+            nerd_font_family: self.editor.nerd_font_family.clone(),
+        };
+        let context_changed = self
+            .editor
+            .presentation
+            .grid_row_contexts
+            .insert(grid_id, context.clone())
+            .as_ref()
+            .is_none_or(|previous| !previous.paints_like(&context));
+        let dirty_region = self
+            .editor
+            .presentation
+            .grid_dirty_regions
+            .remove(&grid_id)
+            .unwrap_or_default();
+
+        let shaping_cache = Rc::clone(&self.editor.shaping_cache);
+        let font_style_cache = Rc::clone(&self.editor.font_style_cache);
+        let glyph_coverage_cache = Rc::clone(&self.editor.glyph_coverage_cache);
+        let font_selection_cache = Rc::clone(&self.editor.font_selection_cache);
+        let mut views = self
+            .editor
+            .presentation
+            .grid_row_views
+            .remove(&grid_id)
+            .unwrap_or_default();
+        let create_views = |row: usize, cx: &mut Context<Self>| {
+            let snapshot = Rc::new(GridRowSnapshot {
+                row_data: model
+                    .row_handle(row)
+                    .expect("row count is bounded by the model height"),
+                row,
+                highlights: model.highlight_handle(),
+                default_colors: model.default_colors(),
+                context: context.clone(),
+                shaping_cache: Rc::clone(&shaping_cache),
+                font_style_cache: Rc::clone(&font_style_cache),
+                glyph_coverage_cache: Rc::clone(&glyph_coverage_cache),
+                font_selection_cache: Rc::clone(&font_selection_cache),
+            });
+            GridRowViews {
+                backgrounds: cx.new({
+                    let snapshot = Rc::clone(&snapshot);
+                    move |_| GridRowView {
+                        snapshot,
+                        paint_phase: grid::GridPaintPhase::Backgrounds,
+                    }
+                }),
+                foregrounds: cx.new(move |_| GridRowView {
+                    snapshot,
+                    paint_phase: grid::GridPaintPhase::Foregrounds,
+                }),
+            }
+        };
+        views.truncate(row_count);
+        let first_new_row = views.len();
+        while views.len() < row_count {
+            let row = views.len();
+            views.push(create_views(row, cx));
+        }
+
+        let mut dirty_rows = vec![context_changed || dirty_region.full; row_count];
+        for rect in &dirty_region.rects {
+            let start = rect.top.min(row_count);
+            let end = rect.bottom.min(row_count);
+            for dirty in &mut dirty_rows[start..end] {
+                *dirty = true;
+            }
+        }
+        for row in 0..first_new_row {
+            if !dirty_rows[row] {
+                continue;
+            }
+            // A dirty row must get a new Entity identity. Updating the old
+            // entity and notifying it is normally enough for GPUI, but a
+            // parent that already retained the AnyView can still reuse its
+            // cached layout/paint for the current frame. Replacing only the
+            // affected rows makes the repaint boundary explicit while clean
+            // rows keep their retained surfaces.
+            views[row] = create_views(row, cx);
+        }
+
+        self.editor
+            .presentation
+            .grid_row_views
+            .insert(grid_id, views.clone());
+        let mut surfaces = Vec::with_capacity(row_count * 2);
+        // Paint every background before any glyph. Otherwise the next row's
+        // background erases glyph pixels extending below the previous row,
+        // leaving seams in multi-line ASCII/Nerd Font art.
+        for (row, view) in views.iter().enumerate() {
+            surfaces.push(
+                grid_row_surface(view.backgrounds.clone(), row, &context, !dirty_rows[row])
+                    .into_any_element(),
+            );
+        }
+        for (row, view) in views.into_iter().enumerate() {
+            surfaces.push(
+                grid_row_surface(view.foregrounds, row, &context, !dirty_rows[row])
+                    .into_any_element(),
+            );
+        }
+        surfaces
+    }
+
     pub(crate) fn render_editor_surface(
         &mut self,
         window: &mut Window,
@@ -287,66 +573,68 @@ impl NvimGpui {
         }
         let ime_composition = self.editor.active_ime_composition();
 
-        let cursor_element =
-            grid_ready.then(|| {
-                let model = self.editor.active_cursor_model()?;
-                let local_position = model.cursor_visual_position()?;
-                let position = self.editor.current_cursor_screen_position()?;
-                let position = ime_composition
-                    .as_ref()
-                    .map(|composition| {
-                        self.editor.ime_cursor_position_for_composition(
-                            composition,
-                            position,
-                            local_position,
-                        )
-                    })
-                    .unwrap_or(position);
-                let cursor_placement = self
-                    .editor
-                    .grid_placement(self.editor.protocol.cursor.cursor_grid);
-                let cursor_context = self
-                    .editor
-                    .highlight_context_for_layer(cursor_placement.kind);
-                let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
-                    &model,
-                    local_position,
-                    cursor_mode,
-                    cursor_context,
-                );
-                let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
-                    self.editor.grid_element(
-                        Rc::clone(&model),
-                        GridRenderOptions {
-                            placement: cursor_placement,
-                            width: model.width(),
-                            height: model.height(),
-                            cell_width,
-                            line_height,
-                            gui_font: &gui_font,
-                            gui_wide_font: &gui_wide_font,
-                            cursor_blink_started_at,
-                            viewport_offset: px(0.0),
-                        },
-                        self.app.settings.fallback_mode,
+        let cursor_element = grid_ready.then(|| {
+            let model = self.editor.active_cursor_model()?;
+            let local_position = model.cursor_visual_position()?;
+            let position = self.editor.current_cursor_screen_position()?;
+            let position = ime_composition
+                .as_ref()
+                .map(|composition| {
+                    self.editor.ime_cursor_position_for_composition(
+                        composition,
+                        position,
+                        local_position,
                     )
-                });
-                Some(
-                    grid::CursorElement::new(position, cursor_background, cursor_mode)
-                        .with_local_position(local_position)
-                        .with_glyph_foreground(cursor_foreground)
-                        .with_glyph_source(glyph_source)
-                        .with_animation(self.editor.cursor.cursor_animation.filter(|animation| {
-                            ime_composition.is_none() && animation.is_active(now)
-                        }))
-                        .with_metrics(cell_width, line_height)
-                        .with_grid_size(
-                            self.editor.protocol.presentation.grid.width(),
-                            self.editor.protocol.presentation.grid.height(),
-                        )
-                        .with_blink_started_at(cursor_blink_started_at),
+                })
+                .unwrap_or(position);
+            let cursor_placement = self
+                .editor
+                .grid_placement(self.editor.protocol.cursor.cursor_grid);
+            let cursor_context = self
+                .editor
+                .highlight_context_for_layer(cursor_placement.kind);
+            let (cursor_foreground, cursor_background) = grid::cursor_colors_with_context(
+                &model,
+                local_position,
+                cursor_mode,
+                cursor_context,
+            );
+            let glyph_source = (cursor_mode.shape == grid::CursorShape::Block).then(|| {
+                self.editor.grid_element(
+                    Rc::clone(&model),
+                    GridRenderOptions {
+                        placement: cursor_placement,
+                        width: model.width(),
+                        height: model.height(),
+                        cell_width,
+                        line_height,
+                        gui_font: &gui_font,
+                        gui_wide_font: &gui_wide_font,
+                        cursor_blink_started_at,
+                        viewport_offset: px(0.0),
+                    },
+                    self.app.settings.fallback_mode,
                 )
             });
+            let animation = self.editor.cursor.cursor_animation.filter(|animation| {
+                self.editor.cursor.cursor_animation_enabled
+                    && ime_composition.is_none()
+                    && animation.is_active(now)
+            });
+            Some(
+                grid::CursorElement::new(position, cursor_background, cursor_mode)
+                    .with_local_position(local_position)
+                    .with_glyph_foreground(cursor_foreground)
+                    .with_glyph_source(glyph_source)
+                    .with_animation(animation)
+                    .with_metrics(cell_width, line_height)
+                    .with_grid_size(
+                        self.editor.protocol.presentation.grid.width(),
+                        self.editor.protocol.presentation.grid.height(),
+                    )
+                    .with_blink_started_at(cursor_blink_started_at),
+            )
+        });
         let cursor_element = cursor_element.flatten();
         let multicursor_elements = if grid_ready {
             self.editor.multicursor_elements(
@@ -373,6 +661,9 @@ impl NvimGpui {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if grid_ready {
+            // This render consumes the newest committed models. A subsequent
+            // redraw may start a fresh scroll animation from this state.
+            self.editor.presentation.scroll_animation_suppressed.clear();
             let presentation = self.editor.presentation_snapshot();
             let compositor_frame = &presentation.compositor;
             let image_layers = &presentation.image_layers;
@@ -386,10 +677,24 @@ impl NvimGpui {
             let main_placement = main_layer.placement;
             let main_width = main_layer.content_rect.width as usize;
             let main_height = main_layer.content_rect.height as usize;
+            let (old_offset, current_offset, render_previous_grid, cancel_animation) =
+                viewport_animation_offsets(
+                    viewport_animations.get(&1),
+                    ViewportRenderGeometry {
+                        placement: main_placement,
+                        width: main_width,
+                        height: main_height,
+                        clip_width: main_width,
+                        clip_height: main_height,
+                        cell_width,
+                        line_height,
+                    },
+                    now,
+                );
+            if cancel_animation {
+                self.editor.presentation.viewport_animations.remove(&1);
+            }
             let main_animation = viewport_animations.get(&1);
-            let (old_offset, current_offset) = main_animation
-                .map(|animation| animation.offsets(now, main_height, line_height))
-                .unwrap_or((px(0.0), px(0.0)));
             let main_options = GridRenderOptions {
                 placement: main_placement,
                 width: main_width,
@@ -409,14 +714,18 @@ impl NvimGpui {
                 .h_full()
                 .overflow_hidden();
 
-            if let Some(animation) = main_animation {
+            if render_previous_grid {
                 let old_options = GridRenderOptions {
                     viewport_offset: old_offset,
                     ..main_options
                 };
                 main_layer = main_layer.child(grid_surface(
                     self.editor.grid_element(
-                        Rc::clone(&animation.previous_grid),
+                        Rc::clone(
+                            &main_animation
+                                .expect("previous grid must exist when it is rendered")
+                                .previous_grid,
+                        ),
                         old_options,
                         self.app.settings.fallback_mode,
                     ),
@@ -424,15 +733,32 @@ impl NvimGpui {
                 ));
             }
 
-            let main_element = self.with_ime_input_handler(
-                self.editor
-                    .grid_element(main_model, main_options, self.app.settings.fallback_mode),
-                1,
-                entity.clone(),
-                invalidate_ime_coordinates,
-                ime_composition.as_ref(),
-            );
-            main_layer = main_layer.child(grid_surface(main_element, main_options));
+            let use_cached_main_rows = !render_previous_grid
+                && current_offset == px(0.0)
+                && ime_composition.is_none()
+                && self.editor.input.ime_input_grid != Some(1);
+            if use_cached_main_rows {
+                main_layer.extend(self.grid_row_surfaces(
+                    1,
+                    main_model,
+                    main_options,
+                    self.app.settings.fallback_mode,
+                    cx,
+                ));
+            } else {
+                let main_element = self.with_ime_input_handler(
+                    self.editor.grid_element(
+                        main_model,
+                        main_options,
+                        self.app.settings.fallback_mode,
+                    ),
+                    1,
+                    entity.clone(),
+                    invalidate_ime_coordinates,
+                    ime_composition.as_ref(),
+                );
+                main_layer = main_layer.child(grid_surface(main_element, main_options));
+            }
 
             main_layer =
                 main_layer.child(image_surface(1, image_layers, image_sources, main_options));
@@ -447,10 +773,26 @@ impl NvimGpui {
                 let clip_rect = compositor_layer.clip_rect;
                 let model_width = content_rect.width as usize;
                 let model_height = content_rect.height as usize;
-                let animation = viewport_animations.get(&grid_id);
-                let (old_offset, current_offset) = animation
-                    .map(|animation| animation.offsets(now, model_height, line_height))
-                    .unwrap_or((px(0.0), px(0.0)));
+                let (old_offset, current_offset, render_previous_grid, cancel_animation) =
+                    viewport_animation_offsets(
+                        viewport_animations.get(&grid_id),
+                        ViewportRenderGeometry {
+                            placement,
+                            width: model_width,
+                            height: model_height,
+                            clip_width: clip_rect.width as usize,
+                            clip_height: clip_rect.height as usize,
+                            cell_width,
+                            line_height,
+                        },
+                        now,
+                    );
+                if cancel_animation {
+                    self.editor
+                        .presentation
+                        .viewport_animations
+                        .remove(&grid_id);
+                }
                 let options = GridRenderOptions {
                     placement,
                     width: model_width,
@@ -473,31 +815,53 @@ impl NvimGpui {
                     // bounds so it cannot cover a neighbouring picker pane
                     // or its separator.
                     .overflow_hidden();
-                if let Some(animation) = animation {
+                if render_previous_grid {
                     let old_options = GridRenderOptions {
                         viewport_offset: old_offset,
                         ..options
                     };
                     layer = layer.child(grid_surface(
                         self.editor.grid_element(
-                            Rc::clone(&animation.previous_grid),
+                            Rc::clone(
+                                &viewport_animations
+                                    .get(&grid_id)
+                                    .expect("previous grid must exist when it is rendered")
+                                    .previous_grid,
+                            ),
                             old_options,
                             self.app.settings.fallback_mode,
                         ),
                         old_options,
                     ));
                 }
-                layer = layer.child(grid_surface(
-                    self.with_ime_input_handler(
-                        self.editor
-                            .grid_element(model, options, self.app.settings.fallback_mode),
+                let use_cached_rows = !render_previous_grid
+                    && current_offset == px(0.0)
+                    && ime_composition.is_none()
+                    && self.editor.input.ime_input_grid != Some(grid_id);
+                if use_cached_rows {
+                    layer.extend(self.grid_row_surfaces(
                         grid_id,
-                        entity.clone(),
-                        invalidate_ime_coordinates,
-                        ime_composition.as_ref(),
-                    ),
-                    options,
-                ));
+                        model,
+                        options,
+                        self.app.settings.fallback_mode,
+                        cx,
+                    ));
+                } else {
+                    layer = layer.child(grid_surface(
+                        self.with_ime_input_handler(
+                            self.editor.grid_element(
+                                model,
+                                options,
+                                self.app.settings.fallback_mode,
+                            ),
+                            grid_id,
+                            entity.clone(),
+                            invalidate_ime_coordinates,
+                            ime_composition.as_ref(),
+                        ),
+                        options,
+                    ));
+                }
                 layer = layer.child(image_surface(grid_id, image_layers, image_sources, options));
                 editor = editor.child(layer);
             }
@@ -531,5 +895,150 @@ impl NvimGpui {
         }
 
         editor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::protocol::{GridViewport, GridViewportMargins};
+    use std::rc::Rc;
+
+    #[test]
+    fn cursor_viewport_metadata_does_not_invalidate_cached_rows() {
+        let placement = GridPlacement {
+            viewport: Some(GridViewport {
+                topline: 1,
+                botline: 20,
+                curline: 1,
+                curcol: 1,
+                line_count: 100,
+                scroll_delta: 0,
+            }),
+            ..GridPlacement::default()
+        };
+        let context = GridRowContext {
+            width: 80,
+            height: 20,
+            cell_width: px(10.0),
+            line_height: px(20.0),
+            gui_font: GuiFontSpec::default(),
+            gui_wide_font: GuiFontSpec::default(),
+            placement,
+            highlight_context: grid::HighlightContext::Main,
+            cursor_blink_started_at: Instant::now(),
+            viewport_offset: px(0.0),
+            fallback_mode: settings::FallbackMode::Auto,
+            nerd_font_family: None,
+        };
+        let mut moved = context.clone();
+        moved.placement.viewport.as_mut().unwrap().curline = 2;
+        moved.placement.viewport.as_mut().unwrap().curcol = 4;
+        assert!(context.paints_like(&moved));
+
+        moved.placement.viewport_margins = Some(GridViewportMargins {
+            top: 1,
+            bottom: 0,
+            left: 0,
+            right: 0,
+        });
+        assert!(!context.paints_like(&moved));
+    }
+
+    #[test]
+    fn viewport_animation_keeps_previous_grid_at_the_start_of_a_large_jump() {
+        let started_at = Instant::now();
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+
+        let (_, current_offset, render_previous, cancel_animation) = viewport_animation_offsets(
+            Some(&animation),
+            ViewportRenderGeometry {
+                placement: GridPlacement::default(),
+                width: 10,
+                height: 10,
+                clip_width: 10,
+                clip_height: 10,
+                cell_width: px(10.0),
+                line_height: px(20.0),
+            },
+            started_at,
+        );
+
+        assert_eq!(current_offset, px(200.0));
+        assert!(render_previous);
+        assert!(!cancel_animation);
+    }
+
+    #[test]
+    fn viewport_animation_drops_previous_grid_after_it_leaves_the_clip() {
+        let started_at = Instant::now() - Duration::from_millis(200);
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+
+        let (_, _, render_previous, cancel_animation) = viewport_animation_offsets(
+            Some(&animation),
+            ViewportRenderGeometry {
+                placement: GridPlacement::default(),
+                width: 10,
+                height: 10,
+                clip_width: 10,
+                clip_height: 10,
+                cell_width: px(10.0),
+                line_height: px(20.0),
+            },
+            Instant::now(),
+        );
+
+        assert!(!render_previous);
+        assert!(!cancel_animation);
+    }
+
+    #[test]
+    fn viewport_animation_falls_back_to_current_grid_when_both_are_outside_the_clip() {
+        let started_at = Instant::now();
+        let animation = ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            scroll_delta: 10,
+            started_at,
+            presented: true,
+        };
+        let placement = GridPlacement {
+            viewport_margins: Some(GridViewportMargins {
+                top: 5,
+                bottom: 4,
+                left: 0,
+                right: 0,
+            }),
+            ..GridPlacement::default()
+        };
+
+        let (old_offset, current_offset, render_previous, cancel_animation) =
+            viewport_animation_offsets(
+                Some(&animation),
+                ViewportRenderGeometry {
+                    placement,
+                    width: 10,
+                    height: 10,
+                    clip_width: 10,
+                    clip_height: 1,
+                    cell_width: px(10.0),
+                    line_height: px(20.0),
+                },
+                started_at,
+            );
+
+        assert_eq!(old_offset, px(0.0));
+        assert_eq!(current_offset, px(0.0));
+        assert!(!render_previous);
+        assert!(cancel_animation);
     }
 }

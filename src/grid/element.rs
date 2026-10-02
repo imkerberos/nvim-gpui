@@ -1,3 +1,7 @@
+use super::cache::{
+    font_with_fallback, styled_font, FontRole, FontSelection, FontStyleCache, FontStyleKind,
+    FontStyleVariants, SharedFontStyleCache,
+};
 use super::cursor::CursorGlyph;
 use super::*;
 
@@ -20,6 +24,39 @@ struct PaintedText {
     in_viewport: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct GridUnderline {
+    row: usize,
+    grid_start: usize,
+    grid_end: usize,
+    origin: gpui::Point<Pixels>,
+    width: Pixels,
+    style: UnderlineStyle,
+    in_viewport: bool,
+}
+
+fn push_grid_underline(underlines: &mut Vec<GridUnderline>, next: GridUnderline) {
+    if let Some(previous) = underlines.last_mut() {
+        if previous.row == next.row
+            && previous.in_viewport == next.in_viewport
+            && previous.style == next.style
+            && previous.origin.y == next.origin.y
+            && previous.grid_end == next.grid_start
+        {
+            previous.width += next.width;
+            previous.grid_end = next.grid_end;
+            return;
+        }
+    }
+    underlines.push(next);
+}
+
+struct CellFontRun {
+    len: usize,
+    font: Font,
+    size: Pixels,
+}
+
 struct ImePaintedText {
     row: usize,
     col: usize,
@@ -33,6 +70,13 @@ struct ImeGap {
     row: usize,
     col: usize,
     width: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GridPaintPhase {
+    Both,
+    Backgrounds,
+    Foregrounds,
 }
 
 impl ImeGap {
@@ -55,9 +99,78 @@ struct GridCellRange {
     columns: (usize, usize),
 }
 
+#[derive(Clone)]
+enum GridSource {
+    Full(Rc<GridModel>),
+    Row {
+        index: usize,
+        row: Rc<GridRow>,
+        width: usize,
+        height: usize,
+        highlights: Rc<HighlightTable>,
+        defaults: DefaultColors,
+    },
+}
+
+impl GridSource {
+    fn width(&self) -> usize {
+        match self {
+            Self::Full(model) => model.width(),
+            Self::Row { width, .. } => *width,
+        }
+    }
+
+    fn height(&self) -> usize {
+        match self {
+            Self::Full(model) => model.height(),
+            Self::Row { height, .. } => *height,
+        }
+    }
+
+    fn row_range(&self) -> (usize, usize) {
+        match self {
+            Self::Full(model) => (0, model.height()),
+            Self::Row { index, .. } => (*index, index.saturating_add(1)),
+        }
+    }
+
+    fn style_parts(&self) -> (&HighlightTable, DefaultColors) {
+        match self {
+            Self::Full(model) => (model.highlights(), model.default_colors()),
+            Self::Row {
+                highlights,
+                defaults,
+                ..
+            } => (highlights, *defaults),
+        }
+    }
+
+    fn for_each_cell_in_range(
+        &self,
+        builder: &VisualCellBuilder,
+        range: GridCellRange,
+        f: &mut impl FnMut(VisualCell),
+    ) {
+        match self {
+            Self::Full(model) => builder.for_each_cell_in_range(
+                model,
+                range.rows.0..range.rows.1,
+                range.columns.0..range.columns.1,
+                f,
+            ),
+            Self::Row { index, row, .. } => {
+                if (range.rows.0..range.rows.1).contains(index) {
+                    builder.for_each_row_in_range(*index, row, range.columns.0..range.columns.1, f);
+                }
+            }
+        }
+    }
+}
+
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
+    underlines: Vec<GridUnderline>,
     texts: Vec<PaintedText>,
     viewport_bounds: Option<Bounds<Pixels>>,
 }
@@ -65,50 +178,91 @@ pub struct GridPrepaintState {
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
 
 pub struct GridElement {
-    model: Rc<GridModel>,
+    source: GridSource,
+    paint_phase: GridPaintPhase,
     nerd_font_mode: bool,
     nerd_fallback_mode: FallbackMode,
     cell_width: Pixels,
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
+    font_style_cache: SharedFontStyleCache,
+    primary_font: Option<(String, Pixels)>,
     wide_font: Option<(String, Pixels)>,
-    wide_font_fallback: Option<String>,
-    font_fallback: Option<String>,
+    wide_font_fallback: Vec<String>,
+    font_fallback: Vec<String>,
+    normal_font_styles: Option<FontStyleVariants>,
+    wide_font_styles: Option<FontStyleVariants>,
     nerd_fallback_font: Option<(String, Pixels)>,
     highlight_context: HighlightContext,
     viewport_margins: (usize, usize, usize, usize),
     viewport_offset: gpui::Point<Pixels>,
     glyph_coverage_cache: SharedGlyphCoverageCache,
+    font_selection_cache: SharedFontSelectionCache,
     cursor_blink_started_at: Instant,
     input_handler: Option<InputHandlerRegistrar>,
     ime_composition: Option<ImeComposition>,
+    render_rows: Option<(usize, usize)>,
 }
 
 impl GridElement {
     pub fn with_shared_model(model: Rc<GridModel>) -> Self {
+        Self::with_source(GridSource::Full(model))
+    }
+
+    pub(crate) fn with_shared_row(
+        index: usize,
+        row: Rc<GridRow>,
+        width: usize,
+        height: usize,
+        highlights: Rc<HighlightTable>,
+        defaults: DefaultColors,
+    ) -> Self {
+        Self::with_source(GridSource::Row {
+            index,
+            row,
+            width,
+            height,
+            highlights,
+            defaults,
+        })
+    }
+
+    fn with_source(source: GridSource) -> Self {
         Self {
-            model,
+            source,
+            paint_phase: GridPaintPhase::Both,
             nerd_font_mode: false,
             nerd_fallback_mode: FallbackMode::Auto,
             cell_width: px(10.0),
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
+            font_style_cache: FontStyleCache::shared(),
+            primary_font: None,
             wide_font: None,
-            wide_font_fallback: None,
-            font_fallback: None,
+            wide_font_fallback: Vec::new(),
+            font_fallback: Vec::new(),
+            normal_font_styles: None,
+            wide_font_styles: None,
             nerd_fallback_font: None,
             highlight_context: HighlightContext::Main,
             viewport_margins: (0, 0, 0, 0),
             viewport_offset: point(px(0.0), px(0.0)),
             glyph_coverage_cache: GlyphCoverageCache::shared(),
+            font_selection_cache: FontSelectionCache::shared(),
             cursor_blink_started_at: Instant::now(),
             input_handler: None,
             ime_composition: None,
+            render_rows: None,
         }
     }
 
     pub fn with_nerd_font_mode(mut self, enabled: bool) -> Self {
         self.nerd_font_mode = enabled;
+        self
+    }
+
+    pub(crate) fn with_paint_phase(mut self, phase: GridPaintPhase) -> Self {
+        self.paint_phase = phase;
         self
     }
 
@@ -123,18 +277,42 @@ impl GridElement {
         self
     }
 
+    pub fn with_primary_font(mut self, family: impl Into<String>, size: Pixels) -> Self {
+        self.primary_font = Some((family.into(), size));
+        self
+    }
+
     pub fn with_wide_font(mut self, family: impl Into<String>, size: Pixels) -> Self {
         self.wide_font = Some((family.into(), size));
         self
     }
 
-    pub fn with_wide_font_fallback(mut self, family: Option<String>) -> Self {
-        self.wide_font_fallback = family;
+    pub fn with_wide_font_fallback(mut self, families: Vec<String>) -> Self {
+        self.wide_font_fallback = families;
         self
     }
 
-    pub fn with_font_fallback(mut self, family: Option<String>) -> Self {
-        self.font_fallback = family;
+    pub fn with_font_fallback(mut self, families: Vec<String>) -> Self {
+        self.font_fallback = families;
+        self
+    }
+
+    pub(crate) fn with_font_style_cache(mut self, cache: SharedFontStyleCache) -> Self {
+        self.font_style_cache = cache;
+
+        let normal_primary = self
+            .primary_font
+            .as_ref()
+            .map(|(family, _)| font(family.clone()));
+        if let Some(primary) = normal_primary {
+            let fallback_families = self.font_fallback.clone();
+            self.normal_font_styles = Some(self.font_style_cache.borrow_mut().get_or_insert(
+                FontRole::Normal,
+                primary,
+                &fallback_families,
+            ));
+        }
+
         self
     }
 
@@ -177,6 +355,11 @@ impl GridElement {
         self
     }
 
+    pub(crate) fn with_font_selection_cache(mut self, cache: SharedFontSelectionCache) -> Self {
+        self.font_selection_cache = cache;
+        self
+    }
+
     pub fn with_shaping_cache(mut self, cache: SharedShapedLineCache) -> Self {
         self.shaping_cache = cache;
         self
@@ -200,83 +383,242 @@ impl GridElement {
         self
     }
 
-    fn font_for_cell(
+    /// Restrict this element to one logical row while keeping the shared grid
+    /// model. GPUI can cache each row independently without copying its cells.
+    pub fn with_render_rows(mut self, start: usize, end: usize) -> Self {
+        self.render_rows = Some((start, end.max(start)));
+        self
+    }
+
+    fn render_row_range(&self) -> (usize, usize) {
+        let height = self.source.height();
+        let (start, end) = self.render_rows.unwrap_or_else(|| self.source.row_range());
+        let start = start.min(height);
+        let end = end.max(start).min(height);
+        (start, end)
+    }
+
+    fn font_runs_for_cell(
         &mut self,
         window: &Window,
         cell: &VisualCell,
         normal_font: &Font,
         normal_font_size: Pixels,
-    ) -> (Font, Pixels) {
-        let (base_font, size) = if cell.kind == VisualCellKind::WideCharacter {
+        bold: bool,
+        italic: bool,
+    ) -> Vec<CellFontRun> {
+        let style = FontStyleKind::from_attributes(bold, italic);
+        let (role, size) = if cell.kind == VisualCellKind::WideCharacter {
             self.wide_font
                 .as_ref()
-                .map(|(family, size)| {
-                    (
-                        font_with_fallback(
-                            font(family.clone()),
-                            self.wide_font_fallback.as_deref(),
-                        ),
-                        *size,
-                    )
-                })
-                .unwrap_or_else(|| (normal_font.clone(), normal_font_size))
+                .map(|(_, size)| (FontRole::Wide, *size))
+                .unwrap_or((FontRole::Normal, normal_font_size))
         } else {
-            (normal_font.clone(), normal_font_size)
+            (FontRole::Normal, normal_font_size)
+        };
+
+        let needs_font_styles = match role {
+            FontRole::Normal => self.normal_font_styles.is_none(),
+            FontRole::Wide => self.wide_font_styles.is_none(),
+        };
+        if needs_font_styles {
+            let primary = if role == FontRole::Wide {
+                let family = self
+                    .wide_font
+                    .as_ref()
+                    .expect("wide font role requires a wide font")
+                    .0
+                    .clone();
+                font(family)
+            } else {
+                let mut primary = normal_font.clone();
+                primary.fallbacks = None;
+                primary
+            };
+            self.ensure_font_styles(role, primary);
+        }
+        let style_variants = match role {
+            FontRole::Normal => self
+                .normal_font_styles
+                .as_ref()
+                .expect("normal font styles must be initialized"),
+            FontRole::Wide => self
+                .wide_font_styles
+                .as_ref()
+                .expect("wide font styles must be initialized"),
+        };
+        let primary_font = style_variants.font(style, false);
+        let base_font = style_variants.font(style, true);
+        let fallback_families = match role {
+            FontRole::Normal => self.font_fallback.as_slice(),
+            FontRole::Wide => self.wide_font_fallback.as_slice(),
         };
 
         if cell.kind != VisualCellKind::NerdSymbol {
-            if let Some(character) = cell.text.chars().next() {
-                let fallback_family = if cell.kind == VisualCellKind::WideCharacter {
-                    self.wide_font_fallback.as_deref()
-                } else {
-                    self.font_fallback.as_deref()
-                };
-                if let Some(fallback_family) = fallback_family {
-                    if !self
-                        .glyph_coverage_cache
-                        .borrow_mut()
-                        .contains(window, &base_font, character)
+            #[cfg(not(target_os = "linux"))]
+            {
+                let mut selection = None;
+                let mut mixed = false;
+                if !fallback_families.is_empty() {
+                    for character in cell
+                        .text
+                        .chars()
+                        .filter(|character| !is_grapheme_control(*character))
                     {
-                        let fallback_font = font(fallback_family.to_owned());
-                        if self.glyph_coverage_cache.borrow_mut().contains(
+                        let current = self.font_selection_for_character(
                             window,
-                            &fallback_font,
+                            role,
+                            &primary_font,
+                            fallback_families,
+                            bold,
+                            italic,
                             character,
-                        ) {
-                            return (fallback_font, size);
-                        }
+                        );
+                        mixed |= selection.is_some_and(|previous| previous != current);
+                        selection = Some(current);
                     }
                 }
+                return vec![CellFontRun {
+                    len: cell.text.len(),
+                    font: if mixed {
+                        base_font
+                    } else {
+                        style_variants
+                            .selected_font(style, selection.unwrap_or(FontSelection::Primary))
+                    },
+                    size,
+                }];
             }
-            return (base_font, size);
+
+            #[cfg(target_os = "linux")]
+            {
+                if fallback_families.is_empty() {
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: base_font,
+                        size,
+                    }];
+                }
+
+                let selections = cell
+                    .text
+                    .char_indices()
+                    .filter(|&(_, character)| !is_grapheme_control(character))
+                    .map(|(offset, character)| {
+                        (
+                            offset,
+                            self.font_selection_for_character(
+                                window,
+                                role,
+                                &primary_font,
+                                fallback_families,
+                                bold,
+                                italic,
+                                character,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let selection = selections
+                    .first()
+                    .map(|(_, selection)| *selection)
+                    .unwrap_or(FontSelection::Primary);
+
+                if selections.iter().all(|(_, current)| *current == selection) {
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: style_variants.selected_font(style, selection),
+                        size,
+                    }];
+                }
+
+                // GPUI's Linux text backend does not pass Font.fallbacks to
+                // cosmic-text. Split a mixed grapheme into explicit font runs
+                // so the selected application chain is still honored.
+                let mut runs = Vec::new();
+                let mut start = 0;
+                let mut current = selection;
+                for (offset, next) in selections.into_iter().skip(1) {
+                    if next != current {
+                        runs.push(CellFontRun {
+                            len: offset - start,
+                            font: style_variants.selected_font(style, current),
+                            size,
+                        });
+                        start = offset;
+                        current = next;
+                    }
+                }
+                runs.push(CellFontRun {
+                    len: cell.text.len() - start,
+                    font: style_variants.selected_font(style, current),
+                    size,
+                });
+                return runs;
+            }
         }
 
         let Some(character) = cell.text.chars().next() else {
-            return (base_font, size);
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
         };
         let Some((fallback_family, fallback_size)) = self.nerd_fallback_font.as_ref() else {
-            return (base_font, size);
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
         };
 
-        #[cfg(target_os = "windows")]
+        #[cfg(target_os = "linux")]
+        if self.nerd_fallback_mode == FallbackMode::Auto
+            && self
+                .glyph_coverage_cache
+                .borrow_mut()
+                .contains(window, &base_font, character)
+        {
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: base_font,
+                size,
+            }];
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if self.nerd_fallback_mode != FallbackMode::None {
-            // GPUI 0.2.2 builds explicit DirectWrite fallbacks from the
-            // system font collection, while bundled Nerd Fonts live in its
-            // separate in-memory collection. Use the bundled symbol font as
-            // the primary font for this single-cell run on Windows so it can
-            // still be resolved from that custom collection.
-            return (font(fallback_family.clone()), *fallback_size);
+            // GPUI 0.2.2 cannot use an explicit Font.fallbacks chain on
+            // Linux, and bundled Nerd Fonts live in a separate in-memory
+            // collection on Windows. Resolve the symbol font directly on
+            // both platforms so the bundled glyph is addressable.
+            return vec![CellFontRun {
+                len: cell.text.len(),
+                font: styled_font(font(fallback_family.clone()), bold, italic),
+                size: *fallback_size,
+            }];
         }
 
         match self.nerd_fallback_mode {
-            FallbackMode::None => return (base_font, size),
+            FallbackMode::None => {
+                return vec![CellFontRun {
+                    len: cell.text.len(),
+                    font: base_font,
+                    size,
+                }]
+            }
             FallbackMode::Auto => {
                 if self
                     .glyph_coverage_cache
                     .borrow_mut()
                     .contains(window, &base_font, character)
                 {
-                    return (base_font, size);
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: base_font,
+                        size,
+                    }];
                 }
             }
             FallbackMode::Force => {}
@@ -300,7 +642,101 @@ impl GridElement {
         }
         let mut fallback_font = base_font;
         fallback_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
-        (fallback_font, *fallback_size)
+        vec![CellFontRun {
+            len: cell.text.len(),
+            font: fallback_font,
+            size: *fallback_size,
+        }]
+    }
+
+    fn ensure_font_styles(&mut self, role: FontRole, primary: Font) {
+        let needs_initialization = match role {
+            FontRole::Normal => self.normal_font_styles.is_none(),
+            FontRole::Wide => self.wide_font_styles.is_none(),
+        };
+        if !needs_initialization {
+            return;
+        }
+
+        let fallback_families = match role {
+            FontRole::Normal => self.font_fallback.clone(),
+            FontRole::Wide => self.wide_font_fallback.clone(),
+        };
+        let variants =
+            self.font_style_cache
+                .borrow_mut()
+                .get_or_insert(role, primary, &fallback_families);
+        match role {
+            FontRole::Normal => self.normal_font_styles = Some(variants),
+            FontRole::Wide => self.wide_font_styles = Some(variants),
+        }
+    }
+
+    fn normal_font(&self, window: &Window) -> (Font, Pixels) {
+        if let Some((family, size)) = &self.primary_font {
+            if let Some(styles) = &self.normal_font_styles {
+                return (styles.font(FontStyleKind::Normal, true), *size);
+            }
+            return (
+                font_with_fallback(font(family.clone()), &self.font_fallback),
+                *size,
+            );
+        }
+
+        let text_style = window.text_style();
+        (
+            font_with_fallback(text_style.font(), &self.font_fallback),
+            text_style.font_size.to_pixels(window.rem_size()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn font_selection_for_character(
+        &self,
+        window: &Window,
+        role: FontRole,
+        primary_font: &Font,
+        fallback_families: &[String],
+        bold: bool,
+        italic: bool,
+        character: char,
+    ) -> FontSelection {
+        if let Some(selection) =
+            self.font_selection_cache
+                .borrow()
+                .get(role, primary_font, character)
+        {
+            return selection;
+        }
+
+        let selection =
+            if self
+                .glyph_coverage_cache
+                .borrow_mut()
+                .contains(window, primary_font, character)
+            {
+                FontSelection::Primary
+            } else {
+                fallback_families
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, family)| {
+                        let fallback_font = styled_font(font(family.clone()), bold, italic);
+                        self.glyph_coverage_cache
+                            .borrow_mut()
+                            .contains(window, &fallback_font, character)
+                            .then_some(FontSelection::Fallback(index))
+                    })
+                    .unwrap_or(FontSelection::Unavailable)
+            };
+
+        self.font_selection_cache.borrow_mut().insert(
+            role,
+            primary_font.clone(),
+            character,
+            selection,
+        );
+        selection
     }
 
     /// Shape the active cell again using the cursor foreground color.
@@ -315,24 +751,31 @@ impl GridElement {
         position: CursorVisualPosition,
         foreground: Hsla,
     ) -> Option<CursorGlyph> {
-        let row = self.model.rows().get(position.row)?;
-        let cell = VisualCellBuilder::new(self.nerd_font_mode)
-            .build_row(position.row, row)
-            .into_iter()
-            .find(|cell| {
-                (cell.grid_start..cell.grid_start + cell.grid_len).contains(&position.col)
-            })?;
-        let resolved = resolve_highlight(&self.model, cell.highlight, self.highlight_context);
+        let model = match &self.source {
+            GridSource::Full(model) => model,
+            GridSource::Row { .. } => return None,
+        };
+        let row = model.rows().get(position.row)?;
+        let cell = VisualCellBuilder::new(self.nerd_font_mode).build_cell_at(
+            position.row,
+            row,
+            position.col,
+        )?;
+        let resolved = resolve_highlight(model, cell.highlight, self.highlight_context);
         let attrs = resolved.attrs;
         if cell.text.is_empty() || is_kitty_placeholder(&cell.text) || attrs.conceal {
             return None;
         }
 
-        let text_style = window.text_style();
-        let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), self.font_fallback.as_deref());
-        let (cell_font, cell_font_size) =
-            self.font_for_cell(window, &cell, &normal_font, normal_font_size);
+        let (normal_font, normal_font_size) = self.normal_font(window);
+        let cell_font_runs = self.font_runs_for_cell(
+            window,
+            &cell,
+            &normal_font,
+            normal_font_size,
+            attrs.bold,
+            attrs.italic,
+        );
         let underline = (attrs.underline
             || attrs.undercurl
             || attrs.underdouble
@@ -347,33 +790,35 @@ impl GridElement {
             thickness: px(1.0),
             color: Some(foreground),
         });
-        let text_len = cell.text.len();
-        let line = self.shaping_cache.borrow_mut().shape_line(
-            window,
-            cell.text,
-            vec![StyledTextRun {
-                len: text_len,
+        let runs: Vec<_> = cell_font_runs
+            .into_iter()
+            .map(|run| StyledTextRun {
+                len: run.len,
                 style: ShapingStyle {
-                    font: cell_font,
-                    font_size: cell_font_size,
+                    font: run.font,
+                    font_size: run.size,
                     foreground,
                     underline,
                     strikethrough,
                 },
-            }],
-        );
+            })
+            .collect();
+        let line = self
+            .shaping_cache
+            .borrow_mut()
+            .shape_line(window, cell.text, runs);
         Some(CursorGlyph { line })
     }
 
     fn viewport_row_range(&self) -> (usize, usize) {
-        let height = self.model.height();
+        let height = self.source.height();
         let top = self.viewport_margins.0.min(height);
         let bottom = self.viewport_margins.1.min(height.saturating_sub(top));
         (top, height.saturating_sub(bottom))
     }
 
     fn viewport_column_range(&self) -> (usize, usize) {
-        let width = self.model.width();
+        let width = self.source.width();
         let left = self.viewport_margins.2.min(width);
         let right = self.viewport_margins.3.min(width.saturating_sub(left));
         (left, width.saturating_sub(right))
@@ -381,6 +826,9 @@ impl GridElement {
 
     fn cell_is_in_viewport(&self, row: usize, column: usize) -> bool {
         let (top, bottom) = self.viewport_row_range();
+        let (render_start, render_end) = self.render_row_range();
+        let top = top.max(render_start).min(render_end);
+        let bottom = bottom.min(render_end).max(top);
         let (left, right) = self.viewport_column_range();
         (top..bottom).contains(&row) && (left..right).contains(&column)
     }
@@ -399,12 +847,23 @@ impl GridElement {
         cell_width: Pixels,
     ) -> Option<Bounds<Pixels>> {
         let (top, bottom) = self.viewport_row_range();
+        let (render_start, render_end) = self.render_row_range();
+        // A cached row still paints into the grid's full viewport. Clipping
+        // its glyphs to this one logical row cuts off vertical font overhang
+        // and leaves horizontal seams in multi-row symbols.
+        let (top, bottom) = match self.source {
+            GridSource::Full(_) => {
+                let top = top.max(render_start).min(render_end);
+                (top, bottom.min(render_end).max(top))
+            }
+            GridSource::Row { .. } => (top, bottom),
+        };
         let (left, right) = self.viewport_column_range();
         (top < bottom && left < right).then(|| {
             Bounds::new(
                 point(
                     bounds.origin.x + cell_width * left,
-                    bounds.origin.y + self.line_height * top,
+                    bounds.origin.y + self.line_height * top - self.line_height * render_start,
                 ),
                 size(
                     cell_width * (right - left),
@@ -412,6 +871,16 @@ impl GridElement {
                 ),
             )
         })
+    }
+
+    fn paint_clip_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        match self.source {
+            GridSource::Full(_) => bounds,
+            GridSource::Row { index, height, .. } => Bounds::new(
+                point(bounds.origin.x, bounds.origin.y - self.line_height * index),
+                size(bounds.size.width, self.line_height * height),
+            ),
+        }
     }
 
     /// Convert the active GPUI content mask into logical grid coordinates.
@@ -423,41 +892,35 @@ impl GridElement {
         content_bounds: Bounds<Pixels>,
     ) -> GridCellRange {
         let clipped = bounds.intersect(&content_bounds);
+        let (render_start, render_end) = self.render_row_range();
+        let local_rows = clipped_cell_range(
+            bounds.origin.y,
+            clipped.origin.y,
+            clipped.size.height,
+            self.line_height,
+            render_end.saturating_sub(render_start),
+        );
         GridCellRange {
-            rows: clipped_cell_range(
-                bounds.origin.y,
-                clipped.origin.y,
-                clipped.size.height,
-                self.line_height,
-                self.model.height(),
-            ),
+            rows: (render_start + local_rows.0, render_start + local_rows.1),
             columns: clipped_cell_range(
                 bounds.origin.x,
                 clipped.origin.x,
                 clipped.size.width,
                 self.cell_width,
-                self.model.width(),
+                self.source.width(),
             ),
         }
     }
 }
 
-fn font_with_fallback(mut base_font: Font, fallback_family: Option<&str>) -> Font {
-    let Some(fallback_family) = fallback_family.filter(|family| !family.is_empty()) else {
-        return base_font;
-    };
-    let mut fallback_families = vec![fallback_family.to_owned()];
-    if let Some(fallbacks) = base_font.fallbacks.as_ref() {
-        fallback_families.extend(
-            fallbacks
-                .fallback_list()
-                .iter()
-                .filter(|family| family.as_str() != fallback_family)
-                .cloned(),
-        );
-    }
-    base_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
-    base_font
+fn is_grapheme_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200c}'
+            | '\u{200d}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
 }
 
 fn clipped_cell_range(
@@ -510,8 +973,9 @@ impl Element for GridElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = (self.cell_width * self.model.width()).into();
-        style.size.height = (self.line_height * self.model.height()).into();
+        style.size.width = (self.cell_width * self.source.width()).into();
+        let (render_start, render_end) = self.render_row_range();
+        style.size.height = (self.line_height * render_end.saturating_sub(render_start)).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -524,31 +988,98 @@ impl Element for GridElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        let text_style = window.text_style();
-        let normal_font_size = text_style.font_size.to_pixels(window.rem_size());
-        let normal_font = font_with_fallback(text_style.font(), self.font_fallback.as_deref());
+        if self.paint_phase == GridPaintPhase::Backgrounds {
+            let mut backgrounds = Vec::new();
+            let mut resolved_backgrounds = HashMap::new();
+            let (highlights, defaults) = self.source.style_parts();
+            let (render_row_start, _) = self.render_row_range();
+            let render_range = self.render_range(bounds, window.content_mask().bounds);
+            self.source.for_each_cell_in_range(
+                &VisualCellBuilder::new(self.nerd_font_mode),
+                render_range,
+                &mut |cell| {
+                    let background =
+                        resolved_backgrounds
+                            .entry(cell.highlight)
+                            .or_insert_with(|| {
+                                visual::resolve_highlight_from_parts(
+                                    highlights,
+                                    defaults,
+                                    cell.highlight,
+                                    self.highlight_context,
+                                )
+                                .background
+                            });
+                    if let Some(background) = background {
+                        let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
+                        let origin = point(
+                            bounds.origin.x + self.cell_width * cell.grid_start,
+                            bounds.origin.y
+                                + self.line_height * cell.row.saturating_sub(render_row_start),
+                        ) + self.offset_for_cell(cell.row, cell.grid_start);
+                        push_background(
+                            &mut backgrounds,
+                            Bounds::new(
+                                origin,
+                                size(self.cell_width * cell.grid_len, self.line_height),
+                            ),
+                            *background,
+                            in_viewport,
+                        );
+                    }
+                },
+            );
+            return GridPrepaintState {
+                backgrounds,
+                overlines: Vec::new(),
+                underlines: Vec::new(),
+                texts: Vec::new(),
+                viewport_bounds: self.viewport_bounds(bounds, self.cell_width),
+            };
+        }
+
+        let (normal_font, normal_font_size) = self.normal_font(window);
+        let text_system = window.text_system();
+        let metric_font = self
+            .normal_font_styles
+            .as_ref()
+            .map(|styles| styles.font(FontStyleKind::Normal, false))
+            .unwrap_or_else(|| normal_font.clone());
+        let normal_font_id = text_system.resolve_font(&metric_font);
+        let underline_offset =
+            text_system.baseline_offset(normal_font_id, normal_font_size, self.line_height)
+                + text_system.descent(normal_font_id, normal_font_size) * 0.618;
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
-        let model = Rc::clone(&self.model);
+        let source = self.source.clone();
+        let (highlights, defaults) = source.style_parts();
+        let model_width = self.source.width();
+        let model_height = self.source.height();
         let now = Instant::now();
+        let (render_row_start, _) = self.render_row_range();
         let render_range = self.render_range(bounds, window.content_mask().bounds);
         let mut resolved_highlights = HashMap::new();
         let mut has_blinking_text = false;
         let mut backgrounds = Vec::new();
         let mut ime_gap_backgrounds = Vec::new();
         let mut overlines = Vec::new();
+        let mut underlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
         // Inline composition contributes glyphs only. Its background must
         // remain the background of the underlying grid cell (for example,
         // CursorLine), including after the composition is cleared.
-        let ime_style =
-            resolve_highlight(model.as_ref(), DEFAULT_HIGHLIGHT, self.highlight_context);
+        let ime_style = visual::resolve_highlight_from_parts(
+            highlights,
+            defaults,
+            DEFAULT_HIGHLIGHT,
+            self.highlight_context,
+        );
         let ime_foreground = ime_style.foreground;
         let ime_paint = self.ime_composition.as_ref().and_then(|composition| {
             if composition.text.is_empty()
-                || composition.row >= model.height()
-                || composition.col > model.width()
+                || composition.row >= model_height
+                || composition.col > model_width
             {
                 return None;
             }
@@ -608,7 +1139,7 @@ impl Element for GridElement {
                 col: composition.col,
                 grid_width: composition.grid_width.max(1),
                 line,
-                in_viewport: composition.col < model.width()
+                in_viewport: composition.col < model_width
                     && self.cell_is_in_viewport(composition.row, composition.col),
             })
         });
@@ -629,7 +1160,12 @@ impl Element for GridElement {
             let resolved = resolved_highlights
                 .entry(cell.highlight)
                 .or_insert_with(|| {
-                    resolve_highlight(model.as_ref(), cell.highlight, self.highlight_context)
+                    visual::resolve_highlight_from_parts(
+                        highlights,
+                        defaults,
+                        cell.highlight,
+                        self.highlight_context,
+                    )
                 });
             let attrs = &resolved.attrs;
             let foreground = resolved.foreground;
@@ -637,53 +1173,80 @@ impl Element for GridElement {
             if attrs.blink {
                 has_blinking_text = true;
             }
-            let style = if cell.text.is_empty()
+            let visible_text = !(cell.text.is_empty()
                 || is_kitty_placeholder(&cell.text)
                 || attrs.conceal
-                || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
-            {
+                || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500)));
+            let styles = if !visible_text {
                 None
             } else {
-                let (cell_font, cell_font_size) =
-                    self.font_for_cell(window, &cell, &normal_font, normal_font_size);
-                let cell_font = if attrs.italic {
-                    cell_font.italic()
-                } else {
-                    cell_font
-                };
-                let cell_font = if attrs.bold {
-                    cell_font.bold()
-                } else {
-                    cell_font
-                };
-                let underline = (attrs.underline
-                    || attrs.undercurl
-                    || attrs.underdouble
-                    || attrs.underdotted
-                    || attrs.underdashed)
-                    .then(|| UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(resolved.special),
-                        wavy: attrs.undercurl,
-                    });
+                let cell_font_runs = self.font_runs_for_cell(
+                    window,
+                    &cell,
+                    &normal_font,
+                    normal_font_size,
+                    attrs.bold,
+                    attrs.italic,
+                );
                 let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
                     thickness: px(1.0),
                     color: Some(resolved.special),
                 });
-                Some(ShapingStyle {
-                    font: cell_font,
-                    font_size: cell_font_size,
-                    foreground,
-                    underline,
-                    strikethrough,
-                })
+                Some(
+                    cell_font_runs
+                        .into_iter()
+                        .map(|run| StyledTextRun {
+                            len: run.len,
+                            style: ShapingStyle {
+                                font: run.font,
+                                font_size: run.size,
+                                foreground,
+                                // Grid decorations span terminal cells, including
+                                // separate wide-glyph shaping groups.
+                                underline: None,
+                                strikethrough,
+                            },
+                        })
+                        .collect::<Vec<_>>(),
+                )
             };
             let origin = point(
                 bounds.origin.x + cell_width * render_start,
-                bounds.origin.y + self.line_height * cell.row,
+                bounds.origin.y + self.line_height * cell.row.saturating_sub(render_row_start),
             ) + self.offset_for_cell(cell.row, render_start);
             let cell_bounds =
                 Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
+            if visible_text
+                && (attrs.underline
+                    || attrs.undercurl
+                    || attrs.underdouble
+                    || attrs.underdotted
+                    || attrs.underdashed)
+            {
+                let wavy = attrs.undercurl;
+                push_grid_underline(
+                    &mut underlines,
+                    GridUnderline {
+                        row: cell.row,
+                        grid_start: render_start,
+                        grid_end: render_start + cell.grid_len,
+                        origin: point(
+                            cell_bounds.origin.x,
+                            cell_bounds.origin.y
+                                + underline_offset
+                                    .min(self.line_height - if wavy { px(3.0) } else { px(1.0) })
+                                    .max(px(0.0)),
+                        ),
+                        width: cell_bounds.size.width,
+                        style: UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(resolved.special),
+                            wavy,
+                        },
+                        in_viewport,
+                    },
+                );
+            }
             let overline = attrs.overline.then(|| {
                 let overline_color = attrs
                     .special
@@ -698,7 +1261,7 @@ impl Element for GridElement {
                 )
             });
 
-            if let Some(style) = style {
+            if let Some(cell_runs) = styles {
                 let can_merge = cell.kind == VisualCellKind::Text
                     && cell.grid_len == 1
                     && pending_text.as_ref().is_some_and(|pending| {
@@ -706,6 +1269,17 @@ impl Element for GridElement {
                             && pending.in_viewport == in_viewport
                             && pending.row == cell.row
                             && pending.render_end == render_start
+                            // Keep a font/style transition as a shaping
+                            // boundary. CoreText can collapse a later bold
+                            // run back to the regular face when a long grid
+                            // row containing trailing cells is shaped as one
+                            // line. The row cache still combines adjacent
+                            // cells with the same style.
+                            && pending.runs.last().is_some_and(|last| {
+                                cell_runs
+                                    .first()
+                                    .is_some_and(|first| last.style == first.style)
+                            })
                     });
                 if can_merge {
                     let pending = pending_text
@@ -713,13 +1287,11 @@ impl Element for GridElement {
                         .expect("a mergeable cell must have pending text");
                     pending.text.push_str(&cell.text);
                     pending.render_end = render_start + cell.grid_len;
-                    let text_len = cell.text.len();
-                    match pending.runs.last_mut() {
-                        Some(last) if last.style == style => last.len += text_len,
-                        _ => pending.runs.push(StyledTextRun {
-                            len: text_len,
-                            style,
-                        }),
+                    for cell_run in cell_runs {
+                        match pending.runs.last_mut() {
+                            Some(last) if last.style == cell_run.style => last.len += cell_run.len,
+                            _ => pending.runs.push(cell_run),
+                        }
                     }
                 } else {
                     if let Some(pending) = pending_text.take() {
@@ -730,10 +1302,7 @@ impl Element for GridElement {
                         render_start,
                         render_end: render_start + cell.grid_len,
                         text: cell.text.to_string(),
-                        runs: vec![StyledTextRun {
-                            len: cell.text.len(),
-                            style,
-                        }],
+                        runs: cell_runs,
                         mergeable: cell.kind == VisualCellKind::Text,
                         in_viewport,
                     });
@@ -747,33 +1316,36 @@ impl Element for GridElement {
             // padding creates visible gaps between adjacent ASCII-art
             // glyphs, whose raster width is often smaller than the cell
             // advance.
-            if let Some(background) = background {
-                push_background(&mut backgrounds, cell_bounds, background, in_viewport);
-                if let Some(gap) = ime_gap {
-                    let cell_end = cell.grid_start.saturating_add(cell.grid_len);
-                    let gap_start = cell.grid_start.max(gap.col);
-                    let gap_end = cell_end.min(gap.end());
-                    if cell.row == gap.row && gap_start < gap_end {
-                        let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
-                        let gap_origin = point(
-                            bounds.origin.x + cell_width * gap_start,
-                            bounds.origin.y + self.line_height * cell.row,
-                        ) + self.offset_for_cell(cell.row, gap_start);
-                        let gap_bounds = Bounds::new(
-                            gap_origin,
-                            size(cell_width * (gap_end - gap_start), self.line_height),
-                        );
-                        push_background(
-                            &mut ime_gap_backgrounds,
-                            gap_bounds,
-                            background,
-                            gap_in_viewport,
-                        );
-                        for column in gap_start..gap_end {
-                            if let Some(covered) =
-                                ime_gap_background_covered.get_mut(column.saturating_sub(gap.col))
-                            {
-                                *covered = true;
+            if self.paint_phase != GridPaintPhase::Foregrounds {
+                if let Some(background) = background {
+                    push_background(&mut backgrounds, cell_bounds, background, in_viewport);
+                    if let Some(gap) = ime_gap {
+                        let cell_end = cell.grid_start.saturating_add(cell.grid_len);
+                        let gap_start = cell.grid_start.max(gap.col);
+                        let gap_end = cell_end.min(gap.end());
+                        if cell.row == gap.row && gap_start < gap_end {
+                            let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
+                            let gap_origin = point(
+                                bounds.origin.x + cell_width * gap_start,
+                                bounds.origin.y
+                                    + self.line_height * cell.row.saturating_sub(render_row_start),
+                            ) + self.offset_for_cell(cell.row, gap_start);
+                            let gap_bounds = Bounds::new(
+                                gap_origin,
+                                size(cell_width * (gap_end - gap_start), self.line_height),
+                            );
+                            push_background(
+                                &mut ime_gap_backgrounds,
+                                gap_bounds,
+                                background,
+                                gap_in_viewport,
+                            );
+                            for column in gap_start..gap_end {
+                                if let Some(covered) = ime_gap_background_covered
+                                    .get_mut(column.saturating_sub(gap.col))
+                                {
+                                    *covered = true;
+                                }
                             }
                         }
                     }
@@ -783,12 +1355,7 @@ impl Element for GridElement {
                 overlines.push((overline.0, overline.1, in_viewport));
             }
         };
-        builder.for_each_cell_in_range(
-            model.as_ref(),
-            render_range.rows.0..render_range.rows.1,
-            render_range.columns.0..render_range.columns.1,
-            &mut paint_cell,
-        );
+        source.for_each_cell_in_range(&builder, render_range, &mut paint_cell);
 
         if let Some(gap) = ime_gap {
             // Usually every gap cell gets its background from the original
@@ -806,7 +1373,7 @@ impl Element for GridElement {
                 let in_viewport = self.cell_is_in_viewport(gap.row, column);
                 let origin = point(
                     bounds.origin.x + cell_width * column,
-                    bounds.origin.y + self.line_height * gap.row,
+                    bounds.origin.y + self.line_height * gap.row.saturating_sub(render_row_start),
                 ) + self.offset_for_cell(gap.row, column);
                 ime_gap_backgrounds.push((
                     Bounds::new(origin, size(cell_width, self.line_height)),
@@ -826,7 +1393,8 @@ impl Element for GridElement {
             .map(|pending| {
                 let origin = point(
                     bounds.origin.x + cell_width * pending.render_start,
-                    bounds.origin.y + self.line_height * pending.row,
+                    bounds.origin.y
+                        + self.line_height * pending.row.saturating_sub(render_row_start),
                 ) + self.offset_for_cell(pending.row, pending.render_start);
                 let text: SharedString = pending.text.into();
                 let line = self
@@ -844,7 +1412,7 @@ impl Element for GridElement {
         if let Some(ime) = ime_paint {
             let origin = point(
                 bounds.origin.x + cell_width * ime.col,
-                bounds.origin.y + self.line_height * ime.row,
+                bounds.origin.y + self.line_height * ime.row.saturating_sub(render_row_start),
             ) + self.offset_for_cell(ime.row, ime.col);
             texts.push(PaintedText {
                 line: ime.line,
@@ -863,6 +1431,7 @@ impl Element for GridElement {
         GridPrepaintState {
             backgrounds,
             overlines,
+            underlines,
             texts,
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
@@ -906,25 +1475,112 @@ impl Element for GridElement {
         // turn that overhang into visible seams at grid boundaries. The Grid
         // itself remains clipped so text and an elastic cursor cannot escape
         // the Neovim viewport.
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for painted_text in prepaint.texts.drain(..) {
-                let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
-                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                });
-                window.with_content_mask(mask, |window| {
-                    painted_text
-                        .line
-                        .paint(painted_text.origin, self.line_height, window, cx)
-                        .expect("failed to paint grid text");
-                });
-            }
-        });
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: self.paint_clip_bounds(bounds),
+            }),
+            |window| {
+                for painted_text in prepaint.texts.drain(..) {
+                    let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
+                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                    });
+                    window.with_content_mask(mask, |window| {
+                        painted_text
+                            .line
+                            .paint(painted_text.origin, self.line_height, window, cx)
+                            .expect("failed to paint grid text");
+                    });
+                }
+                for underline in &prepaint.underlines {
+                    let mask = underline.in_viewport.then(|| gpui::ContentMask {
+                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                    });
+                    window.with_content_mask(mask, |window| {
+                        window.paint_underline(underline.origin, underline.width, &underline.style);
+                    });
+                }
+            },
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_row_does_not_keep_the_whole_grid_model_alive() {
+        let mut model = Rc::new(GridModel::from_rows(vec![
+            GridRow::new(vec![GridCell::text("other", DEFAULT_HIGHLIGHT)]),
+            GridRow::new(vec![
+                GridCell::wide_lead("界", HighlightId(7)),
+                GridCell::wide_continuation(HighlightId(7)),
+            ]),
+        ]));
+        Rc::make_mut(&mut model).set_highlight(
+            HighlightId(7),
+            HighlightAttrs {
+                bold: true,
+                ..Default::default()
+            },
+        );
+        let weak_model = Rc::downgrade(&model);
+        let source = GridSource::Row {
+            index: 1,
+            row: model.row_handle(1).unwrap(),
+            width: model.width(),
+            height: model.height(),
+            highlights: model.highlight_handle(),
+            defaults: model.default_colors(),
+        };
+        let full_source = GridSource::Full(Rc::clone(&model));
+        let range = GridCellRange {
+            rows: (1, 2),
+            columns: (1, 2),
+        };
+        let builder = VisualCellBuilder::new(false);
+        let mut full_cells = Vec::new();
+        full_source.for_each_cell_in_range(&builder, range, &mut |cell| full_cells.push(cell));
+        let mut row_cells = Vec::new();
+        source.for_each_cell_in_range(&builder, range, &mut |cell| row_cells.push(cell));
+        assert_eq!(row_cells, full_cells);
+        assert_eq!(row_cells[0].text, "界");
+        assert_eq!(row_cells[0].highlight, HighlightId(7));
+        assert!(source.style_parts().0[&HighlightId(7)].bold);
+
+        drop(full_source);
+        drop(model);
+        assert!(weak_model.upgrade().is_none());
+        assert_eq!(source.width(), 2);
+        assert_eq!(source.row_range(), (1, 2));
+    }
+
+    #[test]
+    fn adjacent_wide_cells_share_one_grid_underline() {
+        let style = UnderlineStyle {
+            thickness: px(1.0),
+            color: Some(rgb(0xffffff).into()),
+            wavy: false,
+        };
+        let underline = |row, col| GridUnderline {
+            row,
+            grid_start: col,
+            grid_end: col + 2,
+            origin: point(px(col as f32 * 10.0), px(20.0)),
+            width: px(20.0),
+            style,
+            in_viewport: true,
+        };
+        let mut underlines = Vec::new();
+        push_grid_underline(&mut underlines, underline(0, 0));
+        push_grid_underline(&mut underlines, underline(0, 2));
+        push_grid_underline(&mut underlines, underline(0, 6));
+
+        assert_eq!(underlines.len(), 2);
+        assert_eq!(underlines[0].width, px(40.0));
+        assert_eq!(underlines[0].grid_end, 4);
+        assert_eq!(underlines[1].origin.x, px(60.0));
+    }
 
     #[test]
     fn ime_gap_shifts_only_the_composition_row_after_its_anchor() {
@@ -965,6 +1621,39 @@ mod tests {
         assert!(!element.cell_is_in_viewport(1, 1));
         assert_eq!(element.offset_for_cell(1, 2), point(px(0.0), px(10.0)));
         assert_eq!(element.offset_for_cell(0, 2), point(px(0.0), px(0.0)));
+    }
+
+    #[test]
+    fn cached_rows_clip_to_the_grid_and_shared_viewport_not_their_own_line() {
+        let model = GridModel::new(8, 4);
+        for row in 0..model.height() {
+            let element = GridElement::with_shared_row(
+                row,
+                model.row_handle(row).unwrap(),
+                model.width(),
+                model.height(),
+                model.highlight_handle(),
+                model.default_colors(),
+            )
+            .with_metrics(px(10.0), px(20.0))
+            .with_viewport_margins(1, 1, 2, 2);
+            let bounds = Bounds::new(
+                point(px(50.0), px(100.0 + row as f32 * 20.0)),
+                size(px(80.0), px(20.0)),
+            );
+
+            assert_eq!(
+                element.paint_clip_bounds(bounds),
+                Bounds::new(point(px(50.0), px(100.0)), size(px(80.0), px(80.0)))
+            );
+            assert_eq!(
+                element.viewport_bounds(bounds, px(10.0)),
+                Some(Bounds::new(
+                    point(px(70.0), px(120.0)),
+                    size(px(40.0), px(40.0))
+                ))
+            );
+        }
     }
 
     #[test]
