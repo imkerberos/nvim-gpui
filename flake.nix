@@ -36,9 +36,6 @@
             pkg-config
           ];
           rimeStarterData = pkgs.rime-data;
-          treesitterMarkdown = pkgs.vimPlugins.nvim-treesitter.withPlugins (plugins: [
-            plugins.tree-sitter-markdown
-          ]);
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -46,9 +43,9 @@
               clippy
               cmake
               gh
+              git
               gnumake
               just
-              vimPlugins.markview-nvim
               neovim
               imagemagick
               python3
@@ -74,10 +71,6 @@
             shellHook = ''
               export NVIM_GPUI_CACHE_DIR="$PWD/.cache"
               export NVIM_GPUI_CONFIG_DIR="$PWD/config"
-              export NVIM_GPUI_LAZY="${pkgs.vimPlugins.lazy-nvim}"
-              export NVIM_GPUI_SNACKS="${pkgs.vimPlugins.snacks-nvim}"
-              export NVIM_GPUI_TREESITTER="${treesitterMarkdown}"
-              export NVIM_GPUI_MARKVIEW="${pkgs.vimPlugins.markview-nvim}"
               export NVIM_GPUI_IMAGEMAGICK="${pkgs.imagemagick}"
               # Runtime builders download the pinned official starter-data
               # archives by default. Set NVIM_GPUI_RIME_STARTER_DATA when a
