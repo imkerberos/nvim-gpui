@@ -73,6 +73,26 @@ impl VisualCellBuilder {
         visual_cells
     }
 
+    /// Build only the visual cell that contains a logical grid column.
+    ///
+    /// Cursor rendering uses this path for every repaint. Avoiding a full row
+    /// allocation keeps cursor movement independent of the width of the row.
+    pub fn build_cell_at(
+        &self,
+        row: usize,
+        grid_row: &GridRow,
+        column: usize,
+    ) -> Option<VisualCell> {
+        let mut result = None;
+        let end = column.saturating_add(1);
+        self.for_each_row(row, grid_row, column..end, &mut |cell| {
+            if (cell.grid_start..cell.grid_start.saturating_add(cell.grid_len)).contains(&column) {
+                result = Some(cell);
+            }
+        });
+        result
+    }
+
     fn for_each_row(
         &self,
         row: usize,

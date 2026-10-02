@@ -653,28 +653,37 @@ impl GridModel {
 
         if cols == 0 && left == 0 && right == self.width() {
             // Neovim uses this shape for the hot path of ordinary vertical
-            // window scrolling. Reuse immutable row allocations instead of
-            // cloning every cell and touching every destination row.
-            let original = self.rows.clone();
+            // window scrolling. Rotate only the affected row references;
+            // cloning the whole grid's row vector on every scroll would
+            // also touch unrelated rows and increment every Rc count.
+            let width = self.width();
+            let region = &mut self.rows[top..bot];
+            let region_len = region.len();
+            let shift = rows.unsigned_abs().min(region_len);
+            if rows > 0 {
+                region.rotate_left(shift);
+            } else {
+                region.rotate_right(shift);
+            }
             let blank = Rc::new(GridRow::new(
-                (0..self.width())
+                (0..width)
                     .map(|_| GridCell::blank(DEFAULT_HIGHLIGHT))
                     .collect(),
             ));
-            for row in top..bot {
-                let source_row = row as isize + rows;
-                self.rows[row] = if (top as isize..bot as isize).contains(&source_row) {
-                    Rc::clone(&original[source_row as usize])
-                } else {
-                    Rc::clone(&blank)
-                };
+            let exposed = if rows > 0 {
+                &mut region[region_len - shift..]
+            } else {
+                &mut region[..shift]
+            };
+            for row in exposed {
+                *row = Rc::clone(&blank);
             }
             return;
         }
 
-        // Row references are copied here, not cell storage. Each destination
-        // row is cloned lazily by `replace_cell` only when it is modified.
-        let original = self.rows.clone();
+        // Snapshot only the scrolling region's row references, not the whole
+        // grid. Each destination row is cloned lazily by `replace_cell`.
+        let original = self.rows[top..bot].to_vec();
         for row in top..bot {
             for col in left..right {
                 let source_row = row as isize + rows;
@@ -682,7 +691,7 @@ impl GridModel {
                 let cell = if (top as isize..bot as isize).contains(&source_row)
                     && (left as isize..right as isize).contains(&source_col)
                 {
-                    original[source_row as usize].cells[source_col as usize].clone()
+                    original[source_row as usize - top].cells[source_col as usize].clone()
                 } else {
                     GridCell::blank(DEFAULT_HIGHLIGHT)
                 };
@@ -693,7 +702,7 @@ impl GridModel {
         for row in top..bot {
             Rc::make_mut(&mut self.rows[row]).wraps_to_next =
                 if (top as isize..bot as isize).contains(&(row as isize + rows)) {
-                    original[(row as isize + rows) as usize].wraps_to_next
+                    original[(row as isize + rows) as usize - top].wraps_to_next
                 } else {
                     false
                 };

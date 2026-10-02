@@ -132,6 +132,7 @@ impl EditorRuntime {
                 self.nerd_font_family.clone().unwrap_or_default(),
                 px(options.gui_font.size),
             )
+            .with_font_style_cache(Rc::clone(&self.font_style_cache))
             .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
             .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
             .with_shaping_cache(Rc::clone(&self.shaping_cache))
@@ -181,6 +182,7 @@ impl Render for GridRowView {
                 context.nerd_font_family.clone().unwrap_or_default(),
                 px(context.gui_font.size),
             )
+            .with_font_style_cache(Rc::clone(&self.font_style_cache))
             .with_glyph_coverage_cache(Rc::clone(&self.glyph_coverage_cache))
             .with_font_selection_cache(Rc::clone(&self.font_selection_cache))
             .with_shaping_cache(Rc::clone(&self.shaping_cache))
@@ -417,7 +419,7 @@ impl NvimGpui {
             .grid_row_contexts
             .insert(grid_id, context.clone())
             .as_ref()
-            != Some(&context);
+            .is_none_or(|previous| !previous.paints_like(&context));
         let dirty_region = self
             .editor
             .presentation
@@ -426,6 +428,7 @@ impl NvimGpui {
             .unwrap_or_default();
 
         let shaping_cache = Rc::clone(&self.editor.shaping_cache);
+        let font_style_cache = Rc::clone(&self.editor.font_style_cache);
         let glyph_coverage_cache = Rc::clone(&self.editor.glyph_coverage_cache);
         let font_selection_cache = Rc::clone(&self.editor.font_selection_cache);
         let mut views = self
@@ -440,6 +443,7 @@ impl NvimGpui {
             let row_model = Rc::clone(&model);
             let row_context = context.clone();
             let row_shaping_cache = Rc::clone(&shaping_cache);
+            let row_font_style_cache = Rc::clone(&font_style_cache);
             let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
             let row_font_selection_cache = Rc::clone(&font_selection_cache);
             views.push(cx.new(|_| GridRowView {
@@ -447,6 +451,7 @@ impl NvimGpui {
                 row,
                 context: row_context,
                 shaping_cache: row_shaping_cache,
+                font_style_cache: row_font_style_cache,
                 glyph_coverage_cache: row_glyph_coverage_cache,
                 font_selection_cache: row_font_selection_cache,
             }));
@@ -467,6 +472,7 @@ impl NvimGpui {
             let row_model = Rc::clone(&model);
             let row_context = context.clone();
             let row_shaping_cache = Rc::clone(&shaping_cache);
+            let row_font_style_cache = Rc::clone(&font_style_cache);
             let row_glyph_coverage_cache = Rc::clone(&glyph_coverage_cache);
             let row_font_selection_cache = Rc::clone(&font_selection_cache);
 
@@ -481,6 +487,7 @@ impl NvimGpui {
                 row,
                 context: row_context,
                 shaping_cache: row_shaping_cache,
+                font_style_cache: row_font_style_cache,
                 glyph_coverage_cache: row_glyph_coverage_cache,
                 font_selection_cache: row_font_selection_cache,
             });
@@ -642,6 +649,9 @@ impl NvimGpui {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel));
 
         if grid_ready {
+            // This render consumes the newest committed models. A subsequent
+            // redraw may start a fresh scroll animation from this state.
+            self.editor.presentation.scroll_animation_suppressed.clear();
             let presentation = self.editor.presentation_snapshot();
             let compositor_frame = &presentation.compositor;
             let image_layers = &presentation.image_layers;
@@ -879,8 +889,49 @@ impl NvimGpui {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::protocol::GridViewportMargins;
+    use crate::editor::protocol::{GridViewport, GridViewportMargins};
     use std::rc::Rc;
+
+    #[test]
+    fn cursor_viewport_metadata_does_not_invalidate_cached_rows() {
+        let placement = GridPlacement {
+            viewport: Some(GridViewport {
+                topline: 1,
+                botline: 20,
+                curline: 1,
+                curcol: 1,
+                line_count: 100,
+                scroll_delta: 0,
+            }),
+            ..GridPlacement::default()
+        };
+        let context = GridRowContext {
+            width: 80,
+            height: 20,
+            cell_width: px(10.0),
+            line_height: px(20.0),
+            gui_font: GuiFontSpec::default(),
+            gui_wide_font: GuiFontSpec::default(),
+            placement,
+            highlight_context: grid::HighlightContext::Main,
+            cursor_blink_started_at: Instant::now(),
+            viewport_offset: px(0.0),
+            fallback_mode: settings::FallbackMode::Auto,
+            nerd_font_family: None,
+        };
+        let mut moved = context.clone();
+        moved.placement.viewport.as_mut().unwrap().curline = 2;
+        moved.placement.viewport.as_mut().unwrap().curcol = 4;
+        assert!(context.paints_like(&moved));
+
+        moved.placement.viewport_margins = Some(GridViewportMargins {
+            top: 1,
+            bottom: 0,
+            left: 0,
+            right: 0,
+        });
+        assert!(!context.paints_like(&moved));
+    }
 
     #[test]
     fn viewport_animation_keeps_previous_grid_at_the_start_of_a_large_jump() {

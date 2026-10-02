@@ -16,7 +16,7 @@ use gpui::{
 };
 use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     rc::Rc,
     sync::Arc,
@@ -129,6 +129,9 @@ impl ViewportAnimation {
 #[derive(Default)]
 pub(crate) struct RenderRuntime {
     pub(crate) viewport_animations: HashMap<u64, ViewportAnimation>,
+    /// A newer commit arrived before the preceding scroll frame was drawn.
+    /// Show the latest grid directly until a render has caught up.
+    pub(crate) scroll_animation_suppressed: HashSet<u64>,
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
     pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
@@ -152,11 +155,35 @@ pub(crate) struct GridRowContext {
     pub(crate) nerd_font_family: Option<String>,
 }
 
+impl GridRowContext {
+    pub(crate) fn paints_like(&self, other: &Self) -> bool {
+        let mut placement = self.placement;
+        let mut other_placement = other.placement;
+        // Viewport line and cursor metadata drive scrolling decisions outside
+        // the row view. They do not change a stationary row's pixels.
+        placement.viewport = None;
+        other_placement.viewport = None;
+        self.width == other.width
+            && self.height == other.height
+            && self.cell_width == other.cell_width
+            && self.line_height == other.line_height
+            && self.gui_font == other.gui_font
+            && self.gui_wide_font == other.gui_wide_font
+            && placement == other_placement
+            && self.highlight_context == other.highlight_context
+            && self.cursor_blink_started_at == other.cursor_blink_started_at
+            && self.viewport_offset == other.viewport_offset
+            && self.fallback_mode == other.fallback_mode
+            && self.nerd_font_family == other.nerd_font_family
+    }
+}
+
 pub(crate) struct GridRowView {
     pub(crate) model: Rc<grid::GridModel>,
     pub(crate) row: usize,
     pub(crate) context: GridRowContext,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) font_style_cache: grid::SharedFontStyleCache,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
     pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
 }
@@ -237,6 +264,7 @@ pub(crate) struct EditorRuntime {
     pub(crate) resolved_grid_font: Option<GuiFontSpec>,
     pub(crate) resolved_grid_wide_font: Option<GuiFontSpec>,
     pub(crate) shaping_cache: grid::SharedShapedLineCache,
+    pub(crate) font_style_cache: grid::SharedFontStyleCache,
     pub(crate) nerd_font_family: Option<String>,
     pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
     pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
@@ -257,6 +285,7 @@ impl Default for EditorRuntime {
             resolved_grid_font: None,
             resolved_grid_wide_font: None,
             shaping_cache: grid::ShapedLineCache::shared(),
+            font_style_cache: grid::FontStyleCache::shared(),
             nerd_font_family: None,
             glyph_coverage_cache: grid::GlyphCoverageCache::shared(),
             font_selection_cache: grid::FontSelectionCache::shared(),
@@ -274,6 +303,7 @@ impl EditorRuntime {
         self.scrolling_animation_enabled = settings.scrolling_animation;
         if !settings.scrolling_animation {
             self.presentation.viewport_animations.clear();
+            self.presentation.scroll_animation_suppressed.clear();
         }
         self.configured_grid_font_size = Some(settings.font_size as f32);
         self.configured_grid_font = (!settings.guifont.trim().is_empty())
@@ -286,6 +316,7 @@ impl EditorRuntime {
             .bundled_nerd_font_registered
             .then(|| settings.nerd_font.family().to_owned());
         self.shaping_cache.borrow_mut().clear();
+        self.font_style_cache.borrow_mut().clear();
         self.glyph_coverage_cache.borrow_mut().clear();
         self.font_selection_cache.borrow_mut().clear();
         self.presentation.grid_row_views.clear();

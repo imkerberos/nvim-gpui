@@ -44,6 +44,32 @@ fn ranged_visual_cells_include_wide_lead_overlapping_the_range_start() {
 }
 
 #[test]
+fn visual_cell_at_returns_the_wide_lead_for_either_grid_column() {
+    let row = GridRow::new(vec![
+        GridCell::wide_lead("界", DEFAULT_HIGHLIGHT),
+        GridCell::wide_continuation(DEFAULT_HIGHLIGHT),
+        GridCell::text("x", DEFAULT_HIGHLIGHT),
+    ]);
+    let builder = VisualCellBuilder::new(false);
+
+    let lead = builder
+        .build_cell_at(0, &row, 0)
+        .expect("wide lead should be visible at its first column");
+    let continuation = builder
+        .build_cell_at(0, &row, 1)
+        .expect("wide lead should be visible at its continuation column");
+    let trailing = builder
+        .build_cell_at(0, &row, 2)
+        .expect("trailing text should be visible at its column");
+
+    assert_eq!(lead, continuation);
+    assert_eq!(lead.grid_start, 0);
+    assert_eq!(lead.grid_len, 2);
+    assert_eq!(trailing.text, "x");
+    assert!(builder.build_cell_at(0, &row, 3).is_none());
+}
+
+#[test]
 fn display_options_parse_known_values_without_corrupting_state() {
     let mut options = DisplayOptions::default();
 
@@ -423,6 +449,57 @@ fn full_width_vertical_scroll_reuses_rows_and_their_wrap_state() {
     assert_eq!(model.rows()[1].cells()[0].text, "c");
     assert!(model.rows()[1].wraps_to_next);
     assert!(!model.rows()[2].wraps_to_next);
+}
+
+#[test]
+fn full_width_scroll_preserves_unaffected_rows_in_both_directions() {
+    let make_model = || {
+        GridModel::from_rows(
+            ["outside-top", "a", "b", "c", "outside-bottom"]
+                .map(|text| GridRow::new(vec![GridCell::text(text, DEFAULT_HIGHLIGHT)]))
+                .into(),
+        )
+    };
+
+    let mut down = make_model();
+    down.scroll(1, 4, 0, 1, -1, 0);
+    assert_eq!(down.rows()[0].cells()[0].text, "outside-top");
+    assert_eq!(down.rows()[1].cells()[0].kind, CellKind::Blank);
+    assert_eq!(down.rows()[2].cells()[0].text, "a");
+    assert_eq!(down.rows()[3].cells()[0].text, "b");
+    assert_eq!(down.rows()[4].cells()[0].text, "outside-bottom");
+
+    let mut oversized = make_model();
+    oversized.scroll(1, 4, 0, 1, 5, 0);
+    assert_eq!(oversized.rows()[0].cells()[0].text, "outside-top");
+    for row in 1..4 {
+        assert_eq!(oversized.rows()[row].cells()[0].kind, CellKind::Blank);
+    }
+    assert_eq!(oversized.rows()[4].cells()[0].text, "outside-bottom");
+}
+
+#[test]
+fn partial_width_scroll_reads_from_the_original_subregion() {
+    let mut model = GridModel::from_rows(
+        ["ab", "cd", "ef", "gh"]
+            .map(|text| {
+                GridRow::new(
+                    text.chars()
+                        .map(|character| GridCell::text(character.to_string(), DEFAULT_HIGHLIGHT))
+                        .collect(),
+                )
+            })
+            .into(),
+    );
+
+    model.scroll(1, 3, 0, 1, 1, 0);
+
+    assert_eq!(model.rows()[0].cells()[0].text, "a");
+    assert_eq!(model.rows()[1].cells()[0].text, "e");
+    assert_eq!(model.rows()[1].cells()[1].text, "d");
+    assert_eq!(model.rows()[2].cells()[0].kind, CellKind::Blank);
+    assert_eq!(model.rows()[2].cells()[1].text, "f");
+    assert_eq!(model.rows()[3].cells()[0].text, "g");
 }
 
 #[test]

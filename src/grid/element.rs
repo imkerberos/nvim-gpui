@@ -1,4 +1,7 @@
-use super::cache::{FontRole, FontSelection};
+use super::cache::{
+    font_with_fallback, styled_font, FontRole, FontSelection, FontStyleCache, FontStyleKind,
+    FontStyleVariants, SharedFontStyleCache,
+};
 use super::cursor::CursorGlyph;
 use super::*;
 
@@ -19,6 +22,33 @@ struct PaintedText {
     line: ShapedLine,
     origin: gpui::Point<Pixels>,
     in_viewport: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GridUnderline {
+    row: usize,
+    grid_start: usize,
+    grid_end: usize,
+    origin: gpui::Point<Pixels>,
+    width: Pixels,
+    style: UnderlineStyle,
+    in_viewport: bool,
+}
+
+fn push_grid_underline(underlines: &mut Vec<GridUnderline>, next: GridUnderline) {
+    if let Some(previous) = underlines.last_mut() {
+        if previous.row == next.row
+            && previous.in_viewport == next.in_viewport
+            && previous.style == next.style
+            && previous.origin.y == next.origin.y
+            && previous.grid_end == next.grid_start
+        {
+            previous.width += next.width;
+            previous.grid_end = next.grid_end;
+            return;
+        }
+    }
+    underlines.push(next);
 }
 
 struct CellFontRun {
@@ -65,6 +95,7 @@ struct GridCellRange {
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
+    underlines: Vec<GridUnderline>,
     texts: Vec<PaintedText>,
     viewport_bounds: Option<Bounds<Pixels>>,
 }
@@ -78,10 +109,13 @@ pub struct GridElement {
     cell_width: Pixels,
     line_height: Pixels,
     shaping_cache: SharedShapedLineCache,
+    font_style_cache: SharedFontStyleCache,
     primary_font: Option<(String, Pixels)>,
     wide_font: Option<(String, Pixels)>,
     wide_font_fallback: Vec<String>,
     font_fallback: Vec<String>,
+    normal_font_styles: Option<FontStyleVariants>,
+    wide_font_styles: Option<FontStyleVariants>,
     nerd_fallback_font: Option<(String, Pixels)>,
     highlight_context: HighlightContext,
     viewport_margins: (usize, usize, usize, usize),
@@ -103,10 +137,13 @@ impl GridElement {
             cell_width: px(10.0),
             line_height: px(22.0),
             shaping_cache: ShapedLineCache::shared(),
+            font_style_cache: FontStyleCache::shared(),
             primary_font: None,
             wide_font: None,
             wide_font_fallback: Vec::new(),
             font_fallback: Vec::new(),
+            normal_font_styles: None,
+            wide_font_styles: None,
             nerd_fallback_font: None,
             highlight_context: HighlightContext::Main,
             viewport_margins: (0, 0, 0, 0),
@@ -153,6 +190,25 @@ impl GridElement {
 
     pub fn with_font_fallback(mut self, families: Vec<String>) -> Self {
         self.font_fallback = families;
+        self
+    }
+
+    pub(crate) fn with_font_style_cache(mut self, cache: SharedFontStyleCache) -> Self {
+        self.font_style_cache = cache;
+
+        let normal_primary = self
+            .primary_font
+            .as_ref()
+            .map(|(family, _)| font(family.clone()));
+        if let Some(primary) = normal_primary {
+            let fallback_families = self.font_fallback.clone();
+            self.normal_font_styles = Some(self.font_style_cache.borrow_mut().get_or_insert(
+                FontRole::Normal,
+                primary,
+                &fallback_families,
+            ));
+        }
+
         self
     }
 
@@ -247,85 +303,134 @@ impl GridElement {
         bold: bool,
         italic: bool,
     ) -> Vec<CellFontRun> {
-        let (primary_font, size, role, fallback_families) =
-            if cell.kind == VisualCellKind::WideCharacter {
-                self.wide_font
+        let style = FontStyleKind::from_attributes(bold, italic);
+        let (role, size) = if cell.kind == VisualCellKind::WideCharacter {
+            self.wide_font
+                .as_ref()
+                .map(|(_, size)| (FontRole::Wide, *size))
+                .unwrap_or((FontRole::Normal, normal_font_size))
+        } else {
+            (FontRole::Normal, normal_font_size)
+        };
+
+        let needs_font_styles = match role {
+            FontRole::Normal => self.normal_font_styles.is_none(),
+            FontRole::Wide => self.wide_font_styles.is_none(),
+        };
+        if needs_font_styles {
+            let primary = if role == FontRole::Wide {
+                let family = self
+                    .wide_font
                     .as_ref()
-                    .map(|(family, size)| {
-                        (
-                            styled_font(font(family.clone()), bold, italic),
-                            *size,
-                            FontRole::Wide,
-                            self.wide_font_fallback.clone(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        let mut primary_font = normal_font.clone();
-                        primary_font.fallbacks = None;
-                        (
-                            styled_font(primary_font, bold, italic),
-                            normal_font_size,
-                            FontRole::Normal,
-                            self.font_fallback.clone(),
-                        )
-                    })
+                    .expect("wide font role requires a wide font")
+                    .0
+                    .clone();
+                font(family)
             } else {
-                let mut primary_font = normal_font.clone();
-                primary_font.fallbacks = None;
-                (
-                    styled_font(primary_font, bold, italic),
-                    normal_font_size,
-                    FontRole::Normal,
-                    self.font_fallback.clone(),
-                )
+                let mut primary = normal_font.clone();
+                primary.fallbacks = None;
+                primary
             };
-        let base_font = font_with_fallback(primary_font.clone(), &fallback_families);
+            self.ensure_font_styles(role, primary);
+        }
+        let style_variants = match role {
+            FontRole::Normal => self
+                .normal_font_styles
+                .as_ref()
+                .expect("normal font styles must be initialized"),
+            FontRole::Wide => self
+                .wide_font_styles
+                .as_ref()
+                .expect("wide font styles must be initialized"),
+        };
+        let primary_font = style_variants.font(style, false);
+        let base_font = style_variants.font(style, true);
+        let fallback_families = match role {
+            FontRole::Normal => self.font_fallback.as_slice(),
+            FontRole::Wide => self.wide_font_fallback.as_slice(),
+        };
 
         if cell.kind != VisualCellKind::NerdSymbol {
-            let selections = cell
-                .text
-                .char_indices()
-                .filter(|&(_, character)| !is_grapheme_control(character))
-                .map(|(offset, character)| {
-                    (
-                        offset,
-                        self.font_selection_for_character(
+            #[cfg(not(target_os = "linux"))]
+            {
+                let mut selection = None;
+                let mut mixed = false;
+                if !fallback_families.is_empty() {
+                    for character in cell
+                        .text
+                        .chars()
+                        .filter(|character| !is_grapheme_control(*character))
+                    {
+                        let current = self.font_selection_for_character(
                             window,
                             role,
                             &primary_font,
-                            &fallback_families,
+                            fallback_families,
                             bold,
                             italic,
                             character,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let selection = selections
-                .first()
-                .map(|(_, selection)| *selection)
-                .unwrap_or(FontSelection::Primary);
-
-            if selections.iter().all(|(_, current)| *current == selection) {
+                        );
+                        mixed |= selection.is_some_and(|previous| previous != current);
+                        selection = Some(current);
+                    }
+                }
                 return vec![CellFontRun {
                     len: cell.text.len(),
-                    font: font_for_selection(
-                        &primary_font,
-                        &base_font,
-                        &fallback_families,
-                        selection,
-                        bold,
-                        italic,
-                    ),
+                    font: if mixed {
+                        base_font
+                    } else {
+                        style_variants
+                            .selected_font(style, selection.unwrap_or(FontSelection::Primary))
+                    },
                     size,
                 }];
             }
 
             #[cfg(target_os = "linux")]
             {
+                if fallback_families.is_empty() {
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: base_font,
+                        size,
+                    }];
+                }
+
+                let selections = cell
+                    .text
+                    .char_indices()
+                    .filter(|&(_, character)| !is_grapheme_control(character))
+                    .map(|(offset, character)| {
+                        (
+                            offset,
+                            self.font_selection_for_character(
+                                window,
+                                role,
+                                &primary_font,
+                                fallback_families,
+                                bold,
+                                italic,
+                                character,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let selection = selections
+                    .first()
+                    .map(|(_, selection)| *selection)
+                    .unwrap_or(FontSelection::Primary);
+
+                if selections.iter().all(|(_, current)| *current == selection) {
+                    return vec![CellFontRun {
+                        len: cell.text.len(),
+                        font: style_variants.selected_font(style, selection),
+                        size,
+                    }];
+                }
+
                 // GPUI's Linux text backend does not pass Font.fallbacks to
-                // cosmic-text. Split a mixed grapheme into explicit font
-                // runs so the selected application chain is still honored.
+                // cosmic-text. Split a mixed grapheme into explicit font runs
+                // so the selected application chain is still honored.
                 let mut runs = Vec::new();
                 let mut start = 0;
                 let mut current = selection;
@@ -333,14 +438,7 @@ impl GridElement {
                     if next != current {
                         runs.push(CellFontRun {
                             len: offset - start,
-                            font: font_for_selection(
-                                &primary_font,
-                                &base_font,
-                                &fallback_families,
-                                current,
-                                bold,
-                                italic,
-                            ),
+                            font: style_variants.selected_font(style, current),
                             size,
                         });
                         start = offset;
@@ -349,28 +447,10 @@ impl GridElement {
                 }
                 runs.push(CellFontRun {
                     len: cell.text.len() - start,
-                    font: font_for_selection(
-                        &primary_font,
-                        &base_font,
-                        &fallback_families,
-                        current,
-                        bold,
-                        italic,
-                    ),
+                    font: style_variants.selected_font(style, current),
                     size,
                 });
                 return runs;
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                // CoreText and DirectWrite can consume the explicit cascade
-                // while preserving shaping across the whole grapheme.
-                return vec![CellFontRun {
-                    len: cell.text.len(),
-                    font: base_font,
-                    size,
-                }];
             }
         }
 
@@ -465,8 +545,34 @@ impl GridElement {
         }]
     }
 
+    fn ensure_font_styles(&mut self, role: FontRole, primary: Font) {
+        let needs_initialization = match role {
+            FontRole::Normal => self.normal_font_styles.is_none(),
+            FontRole::Wide => self.wide_font_styles.is_none(),
+        };
+        if !needs_initialization {
+            return;
+        }
+
+        let fallback_families = match role {
+            FontRole::Normal => self.font_fallback.clone(),
+            FontRole::Wide => self.wide_font_fallback.clone(),
+        };
+        let variants =
+            self.font_style_cache
+                .borrow_mut()
+                .get_or_insert(role, primary, &fallback_families);
+        match role {
+            FontRole::Normal => self.normal_font_styles = Some(variants),
+            FontRole::Wide => self.wide_font_styles = Some(variants),
+        }
+    }
+
     fn normal_font(&self, window: &Window) -> (Font, Pixels) {
         if let Some((family, size)) = &self.primary_font {
+            if let Some(styles) = &self.normal_font_styles {
+                return (styles.font(FontStyleKind::Normal, true), *size);
+            }
             return (
                 font_with_fallback(font(family.clone()), &self.font_fallback),
                 *size,
@@ -482,7 +588,7 @@ impl GridElement {
 
     #[allow(clippy::too_many_arguments)]
     fn font_selection_for_character(
-        &mut self,
+        &self,
         window: &Window,
         role: FontRole,
         primary_font: &Font,
@@ -542,12 +648,11 @@ impl GridElement {
         foreground: Hsla,
     ) -> Option<CursorGlyph> {
         let row = self.model.rows().get(position.row)?;
-        let cell = VisualCellBuilder::new(self.nerd_font_mode)
-            .build_row(position.row, row)
-            .into_iter()
-            .find(|cell| {
-                (cell.grid_start..cell.grid_start + cell.grid_len).contains(&position.col)
-            })?;
+        let cell = VisualCellBuilder::new(self.nerd_font_mode).build_cell_at(
+            position.row,
+            row,
+            position.col,
+        )?;
         let resolved = resolve_highlight(&self.model, cell.highlight, self.highlight_context);
         let attrs = resolved.attrs;
         if cell.text.is_empty() || is_kitty_placeholder(&cell.text) || attrs.conceal {
@@ -577,7 +682,7 @@ impl GridElement {
             thickness: px(1.0),
             color: Some(foreground),
         });
-        let runs = cell_font_runs
+        let runs: Vec<_> = cell_font_runs
             .into_iter()
             .map(|run| StyledTextRun {
                 len: run.len,
@@ -682,51 +787,6 @@ impl GridElement {
     }
 }
 
-fn font_with_fallback(mut base_font: Font, fallback_families: &[String]) -> Font {
-    if fallback_families.is_empty() {
-        return base_font;
-    }
-    let mut fallback_families = fallback_families.to_vec();
-    if let Some(fallbacks) = base_font.fallbacks.as_ref() {
-        let existing_fallbacks = fallbacks.fallback_list().to_vec();
-        for family in existing_fallbacks {
-            if !fallback_families.iter().any(|item| item == &family) {
-                fallback_families.push(family);
-            }
-        }
-    }
-    base_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
-    base_font
-}
-
-fn font_for_selection(
-    primary_font: &Font,
-    base_font: &Font,
-    fallback_families: &[String],
-    selection: FontSelection,
-    bold: bool,
-    italic: bool,
-) -> Font {
-    match selection {
-        FontSelection::Primary => primary_font.clone(),
-        FontSelection::Fallback(index) => {
-            let fallback_font = styled_font(font(fallback_families[index].clone()), bold, italic);
-            font_with_fallback(fallback_font, &fallback_families[index + 1..])
-        }
-        FontSelection::Unavailable => base_font.clone(),
-    }
-}
-
-fn styled_font(mut font: Font, bold: bool, italic: bool) -> Font {
-    if italic {
-        font = font.italic();
-    }
-    if bold {
-        font = font.bold();
-    }
-    font
-}
-
 fn is_grapheme_control(character: char) -> bool {
     matches!(
         character,
@@ -803,6 +863,16 @@ impl Element for GridElement {
         _cx: &mut App,
     ) -> Self::PrepaintState {
         let (normal_font, normal_font_size) = self.normal_font(window);
+        let text_system = window.text_system();
+        let metric_font = self
+            .normal_font_styles
+            .as_ref()
+            .map(|styles| styles.font(FontStyleKind::Normal, false))
+            .unwrap_or_else(|| normal_font.clone());
+        let normal_font_id = text_system.resolve_font(&metric_font);
+        let underline_offset =
+            text_system.baseline_offset(normal_font_id, normal_font_size, self.line_height)
+                + text_system.descent(normal_font_id, normal_font_size) * 0.618;
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
         let model = Rc::clone(&self.model);
@@ -814,6 +884,7 @@ impl Element for GridElement {
         let mut backgrounds = Vec::new();
         let mut ime_gap_backgrounds = Vec::new();
         let mut overlines = Vec::new();
+        let mut underlines = Vec::new();
         let mut text_groups = Vec::new();
         let mut pending_text: Option<PendingText> = None;
         // Inline composition contributes glyphs only. Its background must
@@ -914,11 +985,11 @@ impl Element for GridElement {
             if attrs.blink {
                 has_blinking_text = true;
             }
-            let styles = if cell.text.is_empty()
+            let visible_text = !(cell.text.is_empty()
                 || is_kitty_placeholder(&cell.text)
                 || attrs.conceal
-                || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500))
-            {
+                || (attrs.blink && !blink_visible(self.cursor_blink_started_at, now, 0, 500, 500)));
+            let styles = if !visible_text {
                 None
             } else {
                 let cell_font_runs = self.font_runs_for_cell(
@@ -929,16 +1000,6 @@ impl Element for GridElement {
                     attrs.bold,
                     attrs.italic,
                 );
-                let underline = (attrs.underline
-                    || attrs.undercurl
-                    || attrs.underdouble
-                    || attrs.underdotted
-                    || attrs.underdashed)
-                    .then(|| UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(resolved.special),
-                        wavy: attrs.undercurl,
-                    });
                 let strikethrough = attrs.strikethrough.then(|| StrikethroughStyle {
                     thickness: px(1.0),
                     color: Some(resolved.special),
@@ -952,7 +1013,9 @@ impl Element for GridElement {
                                 font: run.font,
                                 font_size: run.size,
                                 foreground,
-                                underline,
+                                // Grid decorations span terminal cells, including
+                                // separate wide-glyph shaping groups.
+                                underline: None,
                                 strikethrough,
                             },
                         })
@@ -965,6 +1028,37 @@ impl Element for GridElement {
             ) + self.offset_for_cell(cell.row, render_start);
             let cell_bounds =
                 Bounds::new(origin, size(cell_width * cell.grid_len, self.line_height));
+            if visible_text
+                && (attrs.underline
+                    || attrs.undercurl
+                    || attrs.underdouble
+                    || attrs.underdotted
+                    || attrs.underdashed)
+            {
+                let wavy = attrs.undercurl;
+                push_grid_underline(
+                    &mut underlines,
+                    GridUnderline {
+                        row: cell.row,
+                        grid_start: render_start,
+                        grid_end: render_start + cell.grid_len,
+                        origin: point(
+                            cell_bounds.origin.x,
+                            cell_bounds.origin.y
+                                + underline_offset
+                                    .min(self.line_height - if wavy { px(3.0) } else { px(1.0) })
+                                    .max(px(0.0)),
+                        ),
+                        width: cell_bounds.size.width,
+                        style: UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(resolved.special),
+                            wavy,
+                        },
+                        in_viewport,
+                    },
+                );
+            }
             let overline = attrs.overline.then(|| {
                 let overline_color = attrs
                     .special
@@ -1152,6 +1246,7 @@ impl Element for GridElement {
         GridPrepaintState {
             backgrounds,
             overlines,
+            underlines,
             texts,
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
         }
@@ -1207,6 +1302,14 @@ impl Element for GridElement {
                         .expect("failed to paint grid text");
                 });
             }
+            for underline in &prepaint.underlines {
+                let mask = underline.in_viewport.then(|| gpui::ContentMask {
+                    bounds: prepaint.viewport_bounds.unwrap_or(bounds),
+                });
+                window.with_content_mask(mask, |window| {
+                    window.paint_underline(underline.origin, underline.width, &underline.style);
+                });
+            }
         });
     }
 }
@@ -1214,6 +1317,33 @@ impl Element for GridElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjacent_wide_cells_share_one_grid_underline() {
+        let style = UnderlineStyle {
+            thickness: px(1.0),
+            color: Some(rgb(0xffffff).into()),
+            wavy: false,
+        };
+        let underline = |row, col| GridUnderline {
+            row,
+            grid_start: col,
+            grid_end: col + 2,
+            origin: point(px(col as f32 * 10.0), px(20.0)),
+            width: px(20.0),
+            style,
+            in_viewport: true,
+        };
+        let mut underlines = Vec::new();
+        push_grid_underline(&mut underlines, underline(0, 0));
+        push_grid_underline(&mut underlines, underline(0, 2));
+        push_grid_underline(&mut underlines, underline(0, 6));
+
+        assert_eq!(underlines.len(), 2);
+        assert_eq!(underlines[0].width, px(40.0));
+        assert_eq!(underlines[0].grid_end, 4);
+        assert_eq!(underlines[1].origin.x, px(60.0));
+    }
 
     #[test]
     fn ime_gap_shifts_only_the_composition_row_after_its_anchor() {

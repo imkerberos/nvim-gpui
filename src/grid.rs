@@ -23,7 +23,9 @@ mod element;
 mod model;
 mod visual;
 
-pub(crate) use cache::{FontSelectionCache, SharedFontSelectionCache};
+pub(crate) use cache::{
+    FontSelectionCache, FontStyleCache, SharedFontSelectionCache, SharedFontStyleCache,
+};
 pub use cache::{
     GlyphCoverageCache, ShapedLineCache, SharedGlyphCoverageCache, SharedShapedLineCache,
 };

@@ -505,24 +505,8 @@ impl ProtocolState {
             }
             NvimEvent::GridCursorGoto { grid, row, col } => {
                 self.cursor.pending_cursor_grid = Some(grid);
-                let (previous_row, current_row) = {
-                    let pending_grid = self.pending_grid_mut_for(grid);
-                    let previous_row = pending_grid.cursor().map(|cursor| cursor.row);
-                    pending_grid.set_cursor(row as usize, col as usize);
-                    (previous_row, row as usize)
-                };
-
-                // Cursor movement can change the effective grid contents even
-                // when Neovim only sends grid_cursor_goto. Markdown preview
-                // plugins, for example, may clear and restore conceal/extmark
-                // decorations around the cursor without emitting a separate
-                // GridLine for every affected row. Invalidate both sides of
-                // the move so retained row surfaces cannot preserve the old
-                // visual state.
-                if let Some(previous_row) = previous_row {
-                    self.mark_grid_dirty_row(grid, previous_row);
-                }
-                self.mark_grid_dirty_row(grid, current_row);
+                self.pending_grid_mut_for(grid)
+                    .set_cursor(row as usize, col as usize);
                 self.pending_geometry_changed = true;
                 ProtocolOutcome::PendingChanged
             }
@@ -1024,13 +1008,6 @@ impl ProtocolState {
             });
     }
 
-    fn mark_grid_dirty_row(&mut self, grid: u64, row: usize) {
-        let width = usize::try_from(self.grid_dimensions(grid).0)
-            .unwrap_or_default()
-            .max(1);
-        self.mark_grid_dirty_rect(grid, row, row.saturating_add(1), 0, width);
-    }
-
     fn mark_grid_dirty_full(&mut self, grid: u64) {
         self.pending_dirty_regions
             .entry(grid)
@@ -1441,17 +1418,11 @@ mod tests {
     }
 
     #[test]
-    fn cursor_movement_marks_previous_and_current_rows_dirty() {
+    fn cursor_only_grid_commit_has_no_content_dirty_region() {
         let mut protocol = ProtocolState::default();
         protocol.apply(NvimEvent::GridCursorGoto {
             grid: 1,
             row: 2,
-            col: 3,
-        });
-        protocol.apply(NvimEvent::Flush);
-        protocol.apply(NvimEvent::GridCursorGoto {
-            grid: 1,
-            row: 5,
             col: 3,
         });
 
@@ -1462,22 +1433,6 @@ mod tests {
         let dirty_region = &redraw.grid_commits[0].dirty_region;
 
         assert!(!dirty_region.full);
-        assert_eq!(
-            dirty_region.rects,
-            vec![
-                GridDirtyRect {
-                    top: 2,
-                    bottom: 3,
-                    left: 0,
-                    right: DEFAULT_GRID_WIDTH as usize,
-                },
-                GridDirtyRect {
-                    top: 5,
-                    bottom: 6,
-                    left: 0,
-                    right: DEFAULT_GRID_WIDTH as usize,
-                },
-            ]
-        );
+        assert!(dirty_region.rects.is_empty());
     }
 }

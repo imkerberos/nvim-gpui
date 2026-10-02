@@ -8,6 +8,180 @@ pub(crate) enum FontRole {
     Wide,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum FontStyleKind {
+    Normal,
+    Bold,
+    Italic,
+    BoldItalic,
+}
+
+impl FontStyleKind {
+    pub(crate) fn from_attributes(bold: bool, italic: bool) -> Self {
+        match (bold, italic) {
+            (false, false) => Self::Normal,
+            (true, false) => Self::Bold,
+            (false, true) => Self::Italic,
+            (true, true) => Self::BoldItalic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FontStyleCacheKey {
+    role: FontRole,
+    primary: Font,
+    fallback_families: Vec<String>,
+}
+
+/// The four style variants for one primary font and one configured fallback
+/// chain. Both the primary-only and cascading variants are retained so Linux
+/// can keep splitting runs while CoreText and DirectWrite use one cascading
+/// font for the whole cell.
+#[derive(Clone)]
+pub(crate) struct FontStyleVariants {
+    primary: [Font; 4],
+    fallback: [Font; 4],
+    selected_fallbacks: Vec<[Font; 4]>,
+}
+
+impl FontStyleVariants {
+    fn index(style: FontStyleKind) -> usize {
+        match style {
+            FontStyleKind::Normal => 0,
+            FontStyleKind::Bold => 1,
+            FontStyleKind::Italic => 2,
+            FontStyleKind::BoldItalic => 3,
+        }
+    }
+
+    pub(crate) fn font(&self, style: FontStyleKind, with_fallback: bool) -> Font {
+        let index = Self::index(style);
+        if with_fallback {
+            self.fallback[index].clone()
+        } else {
+            self.primary[index].clone()
+        }
+    }
+
+    pub(crate) fn selected_font(&self, style: FontStyleKind, selection: FontSelection) -> Font {
+        let index = Self::index(style);
+        match selection {
+            FontSelection::Primary => self.primary[index].clone(),
+            FontSelection::Fallback(fallback_index) => {
+                self.selected_fallbacks[fallback_index][index].clone()
+            }
+            FontSelection::Unavailable => self.fallback[index].clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct FontStyleCache {
+    entries: HashMap<FontStyleCacheKey, FontStyleVariants>,
+}
+
+pub(crate) type SharedFontStyleCache = Rc<RefCell<FontStyleCache>>;
+
+impl FontStyleCache {
+    pub(crate) fn shared() -> SharedFontStyleCache {
+        Rc::new(RefCell::new(Self::default()))
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn get_or_insert(
+        &mut self,
+        role: FontRole,
+        primary: Font,
+        fallback_families: &[String],
+    ) -> FontStyleVariants {
+        let key = FontStyleCacheKey {
+            role,
+            primary: primary.clone(),
+            fallback_families: fallback_families.to_vec(),
+        };
+        if let Some(variants) = self.entries.get(&key) {
+            return variants.clone();
+        }
+
+        let build = |bold, italic| {
+            let primary_font = styled_font(primary.clone(), bold, italic);
+            let fallback_font = font_with_fallback(primary_font.clone(), fallback_families);
+            (primary_font, fallback_font)
+        };
+        let [(normal_primary, normal_fallback), (bold_primary, bold_fallback), (italic_primary, italic_fallback), (bold_italic_primary, bold_italic_fallback)] = [
+            build(false, false),
+            build(true, false),
+            build(false, true),
+            build(true, true),
+        ];
+        let variants = FontStyleVariants {
+            primary: [
+                normal_primary,
+                bold_primary,
+                italic_primary,
+                bold_italic_primary,
+            ],
+            fallback: [
+                normal_fallback,
+                bold_fallback,
+                italic_fallback,
+                bold_italic_fallback,
+            ],
+            selected_fallbacks: fallback_families
+                .iter()
+                .enumerate()
+                .map(|(index, family)| {
+                    let build_selected = |bold, italic| {
+                        font_with_fallback(
+                            styled_font(font(family.clone()), bold, italic),
+                            &fallback_families[index + 1..],
+                        )
+                    };
+                    [
+                        build_selected(false, false),
+                        build_selected(true, false),
+                        build_selected(false, true),
+                        build_selected(true, true),
+                    ]
+                })
+                .collect(),
+        };
+        self.entries.insert(key, variants.clone());
+        variants
+    }
+}
+
+pub(super) fn font_with_fallback(mut base_font: Font, fallback_families: &[String]) -> Font {
+    if fallback_families.is_empty() {
+        return base_font;
+    }
+    let mut fallback_families = fallback_families.to_vec();
+    if let Some(fallbacks) = base_font.fallbacks.as_ref() {
+        let existing_fallbacks = fallbacks.fallback_list().to_vec();
+        for family in existing_fallbacks {
+            if !fallback_families.iter().any(|item| item == &family) {
+                fallback_families.push(family);
+            }
+        }
+    }
+    base_font.fallbacks = Some(FontFallbacks::from_fonts(fallback_families));
+    base_font
+}
+
+pub(super) fn styled_font(mut font: Font, bold: bool, italic: bool) -> Font {
+    if italic {
+        font = font.italic();
+    }
+    if bold {
+        font = font.bold();
+    }
+    font
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FontSelection {
     Primary,
@@ -228,5 +402,47 @@ impl ShapedLineCache {
             },
         );
         line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn font_style_cache_keeps_four_styles_per_font_chain() {
+        let mut cache = FontStyleCache::default();
+        let fallback_families = vec!["Fallback Font".to_owned()];
+        let variants =
+            cache.get_or_insert(FontRole::Normal, font("Primary Font"), &fallback_families);
+
+        assert_eq!(
+            variants.font(FontStyleKind::Normal, false),
+            font("Primary Font")
+        );
+        assert_eq!(
+            variants.font(FontStyleKind::Bold, false),
+            font("Primary Font").bold()
+        );
+        assert_eq!(
+            variants.font(FontStyleKind::Italic, false),
+            font("Primary Font").italic()
+        );
+        assert_eq!(
+            variants.font(FontStyleKind::BoldItalic, false),
+            font("Primary Font").italic().bold()
+        );
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(
+            variants
+                .font(FontStyleKind::BoldItalic, true)
+                .fallbacks
+                .expect("fallback chain")
+                .fallback_list(),
+            fallback_families.as_slice()
+        );
+        let selected = variants.selected_font(FontStyleKind::Bold, FontSelection::Fallback(0));
+        assert_eq!(selected.family.as_ref(), "Fallback Font");
+        assert_eq!(selected.weight, font("Fallback Font").bold().weight);
     }
 }

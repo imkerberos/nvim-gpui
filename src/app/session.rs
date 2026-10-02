@@ -486,6 +486,7 @@ impl NvimGpui {
         self.editor.protocol.startup.nvim_grid_ready = false;
         self.app.last_resize = None;
         self.editor.presentation.viewport_animations.clear();
+        self.editor.presentation.scroll_animation_suppressed.clear();
         self.editor.presentation.grid_row_views.clear();
         self.editor.presentation.grid_row_contexts.clear();
         self.editor.presentation.grid_dirty_regions.clear();
@@ -500,6 +501,7 @@ impl NvimGpui {
         self.editor.resolved_grid_font = None;
         self.editor.resolved_grid_wide_font = None;
         self.editor.shaping_cache.borrow_mut().clear();
+        self.editor.font_style_cache.borrow_mut().clear();
         self.editor.glyph_coverage_cache.borrow_mut().clear();
         self.editor.font_selection_cache.borrow_mut().clear();
         self.editor.invalidate_presentation_snapshot();

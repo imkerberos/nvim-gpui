@@ -10,6 +10,27 @@ impl EditorRuntime {
                 .entry(commit.grid)
                 .or_default()
                 .merge(&commit.dirty_region);
+            if self
+                .presentation
+                .viewport_animations
+                .get(&commit.grid)
+                .is_some_and(|animation| !animation.presented)
+            {
+                // The old animation's previous grid was never displayed.
+                // Starting another transition from the intermediate commit
+                // would put an unseen, already-obsolete frame on screen.
+                self.presentation.viewport_animations.remove(&commit.grid);
+                self.presentation
+                    .scroll_animation_suppressed
+                    .insert(commit.grid);
+            }
+            if self
+                .presentation
+                .scroll_animation_suppressed
+                .contains(&commit.grid)
+            {
+                continue;
+            }
             if !self.scrolling_animation_enabled {
                 self.presentation.viewport_animations.remove(&commit.grid);
                 continue;
@@ -250,7 +271,45 @@ impl EditorRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::protocol::GridViewport;
     use std::rc::Rc;
+
+    #[test]
+    fn back_to_back_scroll_commits_skip_an_unpresented_old_frame() {
+        let mut editor = EditorRuntime::default();
+        let grid = Rc::new(crate::grid::GridModel::new(8, 8));
+        let placement = GridPlacement {
+            viewport: Some(GridViewport {
+                topline: 1,
+                botline: 9,
+                curline: 1,
+                curcol: 0,
+                line_count: 100,
+                scroll_delta: 1,
+            }),
+            ..GridPlacement::default()
+        };
+        let commit = || GridCommit {
+            grid: 2,
+            previous_grid: Rc::clone(&grid),
+            next_grid: Rc::clone(&grid),
+            previous_placement: Some(placement),
+            next_placement: Some(placement),
+            dirty_region: GridDirtyRegion::default(),
+        };
+
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(editor.presentation.viewport_animations.contains_key(&2));
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(!editor.presentation.viewport_animations.contains_key(&2));
+        assert!(editor.presentation.scroll_animation_suppressed.contains(&2));
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(!editor.presentation.viewport_animations.contains_key(&2));
+
+        editor.presentation.scroll_animation_suppressed.clear();
+        editor.apply_viewport_commits(vec![commit()]);
+        assert!(editor.presentation.viewport_animations.contains_key(&2));
+    }
 
     #[test]
     fn viewport_commits_accumulate_dirty_regions_for_the_same_grid() {
