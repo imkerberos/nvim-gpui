@@ -34,6 +34,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn spawn_test_nvim() -> NvimProcess {
+    // These protocol tests exercise Neovim itself, not the developer's plugin
+    // configuration. In a fresh CI checkout, loading init.lua would bootstrap
+    // lazy.nvim in several Neovim processes at once and delay their RPC events.
+    NvimProcess::spawn(80, 24, [OsString::from("-u"), OsString::from("NONE")])
+        .expect("embedded Neovim should start")
+}
+
 #[test]
 fn request_frame_uses_msgpack_rpc_shape() {
     let mut bytes = Vec::new();
@@ -244,8 +252,7 @@ fn protocol_adapter_selects_ui_event_schema_from_neovim_version() {
 
 #[test]
 fn embedded_nvim_reports_protocol_metadata_before_ui_events() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let protocol = process
         .protocol()
         .expect("protocol metadata should be available after startup");
@@ -285,8 +292,7 @@ fn remote_connect_rejects_endpoint_without_rpc_handshake() {
 
 #[test]
 fn embedded_nvim_reports_and_accepts_mouse_input() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let events = process.events();
 
     let mut saw_mouse_option = false;
@@ -339,8 +345,7 @@ fn embedded_nvim_reports_and_accepts_mouse_input() {
 
 #[test]
 fn embedded_nvim_rpc_request_round_trips_a_response() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let response = process
         .request("nvim_get_mode", Value::Array(Vec::new()))
         .expect("RPC request should queue");
@@ -365,8 +370,7 @@ fn embedded_nvim_rpc_request_round_trips_a_response() {
 
 #[test]
 fn embedded_nvim_replies_to_a_nvim_rpc_request() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let called = Arc::new(AtomicBool::new(false));
     let called_by_handler = Arc::clone(&called);
     process
@@ -409,8 +413,7 @@ fn embedded_nvim_replies_to_a_nvim_rpc_request() {
 
 #[test]
 fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let (set_tx, set_rx) = channel();
     process
         .register_request_handler(CLIPBOARD_GET_METHOD, |_| {
@@ -474,8 +477,7 @@ fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
 
 #[test]
 fn embedded_nvim_accepts_multiline_paste() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     process
         .send_input("i")
         .expect("insert mode input should queue");
@@ -510,8 +512,7 @@ fn embedded_nvim_accepts_multiline_paste() {
 
 #[test]
 fn embedded_nvim_can_be_reconnected_after_a_clean_exit() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let events = process.events();
     process
         .send_input(":qa!\n")
@@ -549,8 +550,7 @@ fn embedded_nvim_can_be_reconnected_after_a_clean_exit() {
 
 #[test]
 fn embedded_nvim_forwards_nvim_ui_send_event() {
-    let process = NvimProcess::spawn(80, 24, std::iter::empty::<OsString>())
-        .expect("embedded Neovim should start");
+    let process = spawn_test_nvim();
     let events = process.events();
     while events.try_recv().is_ok() {}
 
