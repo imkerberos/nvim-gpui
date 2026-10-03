@@ -164,78 +164,6 @@ fn grid_surface(element: GridElement, options: GridRenderOptions<'_>) -> gpui::D
         .child(element)
 }
 
-impl Render for GridRowView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = &self.snapshot;
-        let context = &snapshot.context;
-        let mut element = GridElement::with_shared_row(
-            snapshot.row,
-            Rc::clone(&snapshot.row_data),
-            context.width,
-            context.height,
-            Rc::clone(&snapshot.highlights),
-            snapshot.default_colors,
-        )
-        .with_paint_phase(self.paint_phase)
-        .with_metrics(context.cell_width, context.line_height)
-        .with_primary_font(context.gui_font.family.clone(), px(context.gui_font.size))
-        .with_highlight_context(context.highlight_context)
-        .with_wide_font(
-            context.gui_wide_font.family.clone(),
-            px(context.gui_wide_font.size),
-        )
-        .with_wide_font_fallback(context.gui_wide_font.fallback_families.clone())
-        .with_font_fallback(context.gui_font.fallback_families.clone())
-        .with_nerd_fallback_font(
-            context.nerd_font_family.clone().unwrap_or_default(),
-            px(context.gui_font.size),
-        )
-        .with_font_style_cache(Rc::clone(&snapshot.font_style_cache))
-        .with_glyph_coverage_cache(Rc::clone(&snapshot.glyph_coverage_cache))
-        .with_font_selection_cache(Rc::clone(&snapshot.font_selection_cache))
-        .with_shaping_cache(Rc::clone(&snapshot.shaping_cache))
-        .with_nerd_fallback_mode(context.fallback_mode)
-        .with_cursor_blink_started_at(context.cursor_blink_started_at)
-        .with_viewport_offset(point(px(0.0), context.viewport_offset))
-        .with_nerd_font_mode(true);
-
-        if let Some(margins) = context.placement.viewport_margins {
-            element = element.with_viewport_margins(
-                margins.top,
-                margins.bottom,
-                margins.left,
-                margins.right,
-            );
-        }
-
-        element
-    }
-}
-
-fn grid_row_surface(
-    view: Entity<GridRowView>,
-    row: usize,
-    context: &GridRowContext,
-    use_cache: bool,
-) -> gpui::Div {
-    let mut row_view = gpui::AnyView::from(view);
-    if use_cache {
-        row_view = row_view.cached(StyleRefinement::default());
-    }
-
-    div()
-        .absolute()
-        .left(px(0.0))
-        .top(px(row as f32 * f32::from(context.line_height)))
-        .w(px(context.width as f32 * f32::from(context.cell_width)))
-        .h(context.line_height)
-        // The GridElement clips text to the full grid width and height.
-        // A row-level overflow mask cuts off vertical glyph overhang; GPUI
-        // 0.2.2 also clips Y for overflow_x_hidden(), so leave this wrapper
-        // unclipped and rely on the grid/layer mask instead.
-        .child(row_view)
-}
-
 pub(super) fn viewport_rect(
     placement: GridPlacement,
     width: usize,
@@ -395,132 +323,33 @@ impl EditorRuntime {
 }
 
 impl NvimGpui {
-    fn grid_row_surfaces(
+    fn cached_grid_element(
         &mut self,
         grid_id: u64,
         model: Rc<grid::GridModel>,
         options: GridRenderOptions<'_>,
         fallback_mode: settings::FallbackMode,
-        cx: &mut Context<Self>,
-    ) -> Vec<gpui::AnyElement> {
-        let row_count = options.height.min(model.height());
-        let context = GridRowContext {
-            width: options.width,
-            height: row_count,
-            cell_width: options.cell_width,
-            line_height: options.line_height,
-            gui_font: options.gui_font.clone(),
-            gui_wide_font: options.gui_wide_font.clone(),
-            placement: options.placement,
-            highlight_context: self
-                .editor
-                .highlight_context_for_layer(options.placement.kind),
-            cursor_blink_started_at: options.cursor_blink_started_at,
-            viewport_offset: options.viewport_offset,
-            fallback_mode,
-            nerd_font_family: self.editor.nerd_font_family.clone(),
-        };
-        let context_changed = self
-            .editor
-            .presentation
-            .grid_row_contexts
-            .insert(grid_id, context.clone())
-            .as_ref()
-            .is_none_or(|previous| !previous.paints_like(&context));
-        let dirty_region = self
-            .editor
-            .presentation
-            .grid_dirty_regions
-            .remove(&grid_id)
-            .unwrap_or_default();
-
-        let shaping_cache = Rc::clone(&self.editor.shaping_cache);
-        let font_style_cache = Rc::clone(&self.editor.font_style_cache);
-        let glyph_coverage_cache = Rc::clone(&self.editor.glyph_coverage_cache);
-        let font_selection_cache = Rc::clone(&self.editor.font_selection_cache);
-        let mut views = self
-            .editor
-            .presentation
-            .grid_row_views
-            .remove(&grid_id)
-            .unwrap_or_default();
-        let create_views = |row: usize, cx: &mut Context<Self>| {
-            let snapshot = Rc::new(GridRowSnapshot {
-                row_data: model
-                    .row_handle(row)
-                    .expect("row count is bounded by the model height"),
-                row,
-                highlights: model.highlight_handle(),
-                default_colors: model.default_colors(),
-                context: context.clone(),
-                shaping_cache: Rc::clone(&shaping_cache),
-                font_style_cache: Rc::clone(&font_style_cache),
-                glyph_coverage_cache: Rc::clone(&glyph_coverage_cache),
-                font_selection_cache: Rc::clone(&font_selection_cache),
-            });
-            GridRowViews {
-                backgrounds: cx.new({
-                    let snapshot = Rc::clone(&snapshot);
-                    move |_| GridRowView {
-                        snapshot,
-                        paint_phase: grid::GridPaintPhase::Backgrounds,
-                    }
-                }),
-                foregrounds: cx.new(move |_| GridRowView {
-                    snapshot,
-                    paint_phase: grid::GridPaintPhase::Foregrounds,
-                }),
-            }
-        };
-        views.truncate(row_count);
-        let first_new_row = views.len();
-        while views.len() < row_count {
-            let row = views.len();
-            views.push(create_views(row, cx));
-        }
-
-        let mut dirty_rows = vec![context_changed || dirty_region.full; row_count];
-        for rect in &dirty_region.rects {
-            let start = rect.top.min(row_count);
-            let end = rect.bottom.min(row_count);
-            for dirty in &mut dirty_rows[start..end] {
-                *dirty = true;
+    ) -> GridElement {
+        let cache = Rc::clone(
+            self.editor
+                .presentation
+                .grid_paint_caches
+                .entry(grid_id)
+                .or_insert_with(grid::GridPaintCache::shared),
+        );
+        if let Some(dirty) = self.editor.presentation.grid_dirty_regions.remove(&grid_id) {
+            let mut cache = cache.borrow_mut();
+            if dirty.full {
+                cache.invalidate_all();
+            } else {
+                for rect in dirty.rects {
+                    cache.invalidate_rows(rect.top..rect.bottom);
+                }
             }
         }
-        for row in 0..first_new_row {
-            if !dirty_rows[row] {
-                continue;
-            }
-            // A dirty row must get a new Entity identity. Updating the old
-            // entity and notifying it is normally enough for GPUI, but a
-            // parent that already retained the AnyView can still reuse its
-            // cached layout/paint for the current frame. Replacing only the
-            // affected rows makes the repaint boundary explicit while clean
-            // rows keep their retained surfaces.
-            views[row] = create_views(row, cx);
-        }
-
         self.editor
-            .presentation
-            .grid_row_views
-            .insert(grid_id, views.clone());
-        let mut surfaces = Vec::with_capacity(row_count * 2);
-        // Paint every background before any glyph. Otherwise the next row's
-        // background erases glyph pixels extending below the previous row,
-        // leaving seams in multi-line ASCII/Nerd Font art.
-        for (row, view) in views.iter().enumerate() {
-            surfaces.push(
-                grid_row_surface(view.backgrounds.clone(), row, &context, !dirty_rows[row])
-                    .into_any_element(),
-            );
-        }
-        for (row, view) in views.into_iter().enumerate() {
-            surfaces.push(
-                grid_row_surface(view.foregrounds, row, &context, !dirty_rows[row])
-                    .into_any_element(),
-            );
-        }
-        surfaces
+            .grid_element(model, options, fallback_mode)
+            .with_paint_cache(cache)
     }
 
     pub(crate) fn render_editor_surface(
@@ -733,17 +562,19 @@ impl NvimGpui {
                 ));
             }
 
-            let use_cached_main_rows = !render_previous_grid
+            let use_cached_main_grid = !render_previous_grid
                 && current_offset == px(0.0)
                 && ime_composition.is_none()
                 && self.editor.input.ime_input_grid != Some(1);
-            if use_cached_main_rows {
-                main_layer.extend(self.grid_row_surfaces(
-                    1,
-                    main_model,
+            if use_cached_main_grid {
+                main_layer = main_layer.child(grid_surface(
+                    self.cached_grid_element(
+                        1,
+                        main_model,
+                        main_options,
+                        self.app.settings.fallback_mode,
+                    ),
                     main_options,
-                    self.app.settings.fallback_mode,
-                    cx,
                 ));
             } else {
                 let main_element = self.with_ime_input_handler(
@@ -834,17 +665,19 @@ impl NvimGpui {
                         old_options,
                     ));
                 }
-                let use_cached_rows = !render_previous_grid
+                let use_cached_grid = !render_previous_grid
                     && current_offset == px(0.0)
                     && ime_composition.is_none()
                     && self.editor.input.ime_input_grid != Some(grid_id);
-                if use_cached_rows {
-                    layer.extend(self.grid_row_surfaces(
-                        grid_id,
-                        model,
+                if use_cached_grid {
+                    layer = layer.child(grid_surface(
+                        self.cached_grid_element(
+                            grid_id,
+                            model,
+                            options,
+                            self.app.settings.fallback_mode,
+                        ),
                         options,
-                        self.app.settings.fallback_mode,
-                        cx,
                     ));
                 } else {
                     layer = layer.child(grid_surface(
@@ -901,49 +734,8 @@ impl NvimGpui {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::protocol::{GridViewport, GridViewportMargins};
+    use crate::editor::protocol::GridViewportMargins;
     use std::rc::Rc;
-
-    #[test]
-    fn cursor_viewport_metadata_does_not_invalidate_cached_rows() {
-        let placement = GridPlacement {
-            viewport: Some(GridViewport {
-                topline: 1,
-                botline: 20,
-                curline: 1,
-                curcol: 1,
-                line_count: 100,
-                scroll_delta: 0,
-            }),
-            ..GridPlacement::default()
-        };
-        let context = GridRowContext {
-            width: 80,
-            height: 20,
-            cell_width: px(10.0),
-            line_height: px(20.0),
-            gui_font: GuiFontSpec::default(),
-            gui_wide_font: GuiFontSpec::default(),
-            placement,
-            highlight_context: grid::HighlightContext::Main,
-            cursor_blink_started_at: Instant::now(),
-            viewport_offset: px(0.0),
-            fallback_mode: settings::FallbackMode::Auto,
-            nerd_font_family: None,
-        };
-        let mut moved = context.clone();
-        moved.placement.viewport.as_mut().unwrap().curline = 2;
-        moved.placement.viewport.as_mut().unwrap().curcol = 4;
-        assert!(context.paints_like(&moved));
-
-        moved.placement.viewport_margins = Some(GridViewportMargins {
-            top: 1,
-            bottom: 0,
-            left: 0,
-            right: 0,
-        });
-        assert!(!context.paints_like(&moved));
-    }
 
     #[test]
     fn viewport_animation_keeps_previous_grid_at_the_start_of_a_large_jump() {

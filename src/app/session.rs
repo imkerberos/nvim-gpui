@@ -487,8 +487,7 @@ impl NvimGpui {
         self.app.last_resize = None;
         self.editor.presentation.viewport_animations.clear();
         self.editor.presentation.scroll_animation_suppressed.clear();
-        self.editor.presentation.grid_row_views.clear();
-        self.editor.presentation.grid_row_contexts.clear();
+        self.editor.presentation.grid_paint_caches.clear();
         self.editor.presentation.grid_dirty_regions.clear();
         self.editor.cursor.multicursor_namespace_task = None;
         self.editor.cursor.multicursor_reconcile_task = None;

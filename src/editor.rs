@@ -11,8 +11,7 @@ use crate::{
 use gpui::{
     div, font, img, point, prelude::*, px, rgb, size, App, Bounds, Context, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, FontFallbacks, Image, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollWheelEvent, StyleRefinement, Task, TextRun,
-    Window,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent, Task, TextRun, Window,
 };
 use nvim_gpui::rime::{RimeContextSnapshot, RimeService};
 use std::{
@@ -135,70 +134,7 @@ pub(crate) struct RenderRuntime {
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
     pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
-    pub(crate) grid_row_views: HashMap<u64, Vec<GridRowViews>>,
-    pub(crate) grid_row_contexts: HashMap<u64, GridRowContext>,
-}
-
-#[derive(Clone, PartialEq)]
-pub(crate) struct GridRowContext {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
-    pub(crate) cell_width: Pixels,
-    pub(crate) line_height: Pixels,
-    pub(crate) gui_font: GuiFontSpec,
-    pub(crate) gui_wide_font: GuiFontSpec,
-    pub(crate) placement: GridPlacement,
-    pub(crate) highlight_context: grid::HighlightContext,
-    pub(crate) cursor_blink_started_at: Instant,
-    pub(crate) viewport_offset: Pixels,
-    pub(crate) fallback_mode: settings::FallbackMode,
-    pub(crate) nerd_font_family: Option<String>,
-}
-
-impl GridRowContext {
-    pub(crate) fn paints_like(&self, other: &Self) -> bool {
-        let mut placement = self.placement;
-        let mut other_placement = other.placement;
-        // Viewport line and cursor metadata drive scrolling decisions outside
-        // the row view. They do not change a stationary row's pixels.
-        placement.viewport = None;
-        other_placement.viewport = None;
-        self.width == other.width
-            && self.height == other.height
-            && self.cell_width == other.cell_width
-            && self.line_height == other.line_height
-            && self.gui_font == other.gui_font
-            && self.gui_wide_font == other.gui_wide_font
-            && placement == other_placement
-            && self.highlight_context == other.highlight_context
-            && self.cursor_blink_started_at == other.cursor_blink_started_at
-            && self.viewport_offset == other.viewport_offset
-            && self.fallback_mode == other.fallback_mode
-            && self.nerd_font_family == other.nerd_font_family
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct GridRowViews {
-    pub(crate) backgrounds: Entity<GridRowView>,
-    pub(crate) foregrounds: Entity<GridRowView>,
-}
-
-pub(crate) struct GridRowSnapshot {
-    pub(crate) row_data: Rc<grid::GridRow>,
-    pub(crate) row: usize,
-    pub(crate) highlights: Rc<grid::HighlightTable>,
-    pub(crate) default_colors: grid::DefaultColors,
-    pub(crate) context: GridRowContext,
-    pub(crate) shaping_cache: grid::SharedShapedLineCache,
-    pub(crate) font_style_cache: grid::SharedFontStyleCache,
-    pub(crate) glyph_coverage_cache: grid::SharedGlyphCoverageCache,
-    pub(crate) font_selection_cache: grid::SharedFontSelectionCache,
-}
-
-pub(crate) struct GridRowView {
-    pub(crate) snapshot: Rc<GridRowSnapshot>,
-    pub(crate) paint_phase: grid::GridPaintPhase,
+    pub(crate) grid_paint_caches: HashMap<u64, grid::SharedGridPaintCache>,
 }
 
 pub(crate) struct InputRuntime {
@@ -332,8 +268,7 @@ impl EditorRuntime {
         self.font_style_cache.borrow_mut().clear();
         self.glyph_coverage_cache.borrow_mut().clear();
         self.font_selection_cache.borrow_mut().clear();
-        self.presentation.grid_row_views.clear();
-        self.presentation.grid_row_contexts.clear();
+        self.presentation.grid_paint_caches.clear();
         self.presentation.grid_dirty_regions.clear();
         for image in self
             .protocol

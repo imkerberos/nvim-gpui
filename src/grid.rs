@@ -31,8 +31,8 @@ pub use cache::{
 };
 pub(crate) use cursor::multicursor_colors_with_context;
 pub use cursor::CursorElement;
-pub(crate) use element::GridPaintPhase;
 pub use element::{GridElement, GridPrepaintState};
+pub(crate) use element::{GridPaintCache, SharedGridPaintCache};
 pub use model::{
     AmbiguousWidth, CellKind, CursorAnimation, CursorModeInfo, CursorShape, CursorVisualPosition,
     DisplayOptions, EmojiWidth, GridCell, GridCursor, GridLineCell, GridModel, GridRow, GridRows,
@@ -84,7 +84,7 @@ use model::{blink_visible, CursorVisualPositionF};
 use visual::highlight_colors;
 #[cfg(test)]
 use visual::visual_cell_overlaps_cursor;
-use visual::{push_background, resolve_highlight};
+use visual::{push_background, resolve_highlight, BackgroundSpan};
 
 #[cfg(test)]
 mod tests;

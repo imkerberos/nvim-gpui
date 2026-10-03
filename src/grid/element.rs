@@ -72,13 +72,6 @@ struct ImeGap {
     width: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GridPaintPhase {
-    Both,
-    Backgrounds,
-    Foregrounds,
-}
-
 impl ImeGap {
     fn shifted_column(self, row: usize, column: usize) -> usize {
         if row == self.row && column >= self.col {
@@ -99,87 +92,106 @@ struct GridCellRange {
     columns: (usize, usize),
 }
 
-#[derive(Clone)]
-enum GridSource {
-    Full(Rc<GridModel>),
-    Row {
-        index: usize,
-        row: Rc<GridRow>,
-        width: usize,
-        height: usize,
-        highlights: Rc<HighlightTable>,
-        defaults: DefaultColors,
-    },
+/// Prepared rows belong to a grid, not to GPUI views. Coordinates are local
+/// to the grid so moving a compositor layer does not invalidate its rows.
+#[derive(Default)]
+pub(crate) struct GridPaintCache {
+    context: Option<GridPaintContext>,
+    highlights: Option<Rc<HighlightTable>>,
+    defaults: DefaultColors,
+    rows: Vec<Option<CachedGridRow>>,
 }
 
-impl GridSource {
-    fn width(&self) -> usize {
-        match self {
-            Self::Full(model) => model.width(),
-            Self::Row { width, .. } => *width,
+pub(crate) type SharedGridPaintCache = Rc<RefCell<GridPaintCache>>;
+
+#[derive(Clone, PartialEq)]
+struct GridPaintContext {
+    width: usize,
+    height: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+    primary_font: Option<(String, Pixels)>,
+    wide_font: Option<(String, Pixels)>,
+    wide_font_fallback: Vec<String>,
+    font_fallback: Vec<String>,
+    nerd_fallback_font: Option<(String, Pixels)>,
+    nerd_font_mode: bool,
+    nerd_fallback_mode: FallbackMode,
+    highlight_context: HighlightContext,
+    viewport_margins: (usize, usize, usize, usize),
+    scale_factor: f32,
+}
+
+struct CachedGridRow {
+    row: Rc<GridRow>,
+    columns: (usize, usize),
+    paint: Rc<GridPrepaintState>,
+}
+
+impl GridPaintCache {
+    pub(crate) fn shared() -> SharedGridPaintCache {
+        Rc::new(RefCell::new(Self::default()))
+    }
+
+    pub(crate) fn invalidate_all(&mut self) {
+        self.rows.clear();
+    }
+
+    pub(crate) fn invalidate_rows(&mut self, rows: Range<usize>) {
+        let end = rows.end.min(self.rows.len());
+        let start = rows.start.min(end);
+        for row in &mut self.rows[start..end] {
+            *row = None;
         }
     }
 
-    fn height(&self) -> usize {
-        match self {
-            Self::Full(model) => model.height(),
-            Self::Row { height, .. } => *height,
+    fn update_context(&mut self, context: GridPaintContext, model: &GridModel) {
+        let highlights = model.highlight_handle();
+        if self.context.as_ref() != Some(&context)
+            || self
+                .highlights
+                .as_ref()
+                .is_none_or(|previous| !Rc::ptr_eq(previous, &highlights))
+            || self.defaults != model.default_colors()
+        {
+            self.invalidate_all();
         }
+        self.rows.resize_with(context.height, || None);
+        self.context = Some(context);
+        self.highlights = Some(highlights);
+        self.defaults = model.default_colors();
     }
 
-    fn row_range(&self) -> (usize, usize) {
-        match self {
-            Self::Full(model) => (0, model.height()),
-            Self::Row { index, .. } => (*index, index.saturating_add(1)),
-        }
-    }
-
-    fn style_parts(&self) -> (&HighlightTable, DefaultColors) {
-        match self {
-            Self::Full(model) => (model.highlights(), model.default_colors()),
-            Self::Row {
-                highlights,
-                defaults,
-                ..
-            } => (highlights, *defaults),
-        }
-    }
-
-    fn for_each_cell_in_range(
+    fn get(
         &self,
-        builder: &VisualCellBuilder,
-        range: GridCellRange,
-        f: &mut impl FnMut(VisualCell),
-    ) {
-        match self {
-            Self::Full(model) => builder.for_each_cell_in_range(
-                model,
-                range.rows.0..range.rows.1,
-                range.columns.0..range.columns.1,
-                f,
-            ),
-            Self::Row { index, row, .. } => {
-                if (range.rows.0..range.rows.1).contains(index) {
-                    builder.for_each_row_in_range(*index, row, range.columns.0..range.columns.1, f);
-                }
-            }
-        }
+        index: usize,
+        row: &Rc<GridRow>,
+        columns: (usize, usize),
+    ) -> Option<Rc<GridPrepaintState>> {
+        let cached = self.rows.get(index)?.as_ref()?;
+        (Rc::ptr_eq(&cached.row, row)
+            && cached.columns == columns
+            && !cached.paint.has_blinking_text)
+            .then(|| Rc::clone(&cached.paint))
     }
 }
 
+#[derive(Default)]
 pub struct GridPrepaintState {
     backgrounds: Vec<(Bounds<Pixels>, Hsla, bool)>,
     overlines: Vec<(Bounds<Pixels>, Hsla, bool)>,
     underlines: Vec<GridUnderline>,
     texts: Vec<PaintedText>,
     viewport_bounds: Option<Bounds<Pixels>>,
+    has_blinking_text: bool,
+    cached_rows: Vec<Rc<GridPrepaintState>>,
 }
 
 type InputHandlerRegistrar = Box<dyn FnMut(Bounds<Pixels>, &mut Window, &mut App)>;
 
 pub struct GridElement {
-    source: GridSource,
-    paint_phase: GridPaintPhase,
+    model: Rc<GridModel>,
+    paint_cache: Option<SharedGridPaintCache>,
     nerd_font_mode: bool,
     nerd_fallback_mode: FallbackMode,
     cell_width: Pixels,
@@ -206,31 +218,9 @@ pub struct GridElement {
 
 impl GridElement {
     pub fn with_shared_model(model: Rc<GridModel>) -> Self {
-        Self::with_source(GridSource::Full(model))
-    }
-
-    pub(crate) fn with_shared_row(
-        index: usize,
-        row: Rc<GridRow>,
-        width: usize,
-        height: usize,
-        highlights: Rc<HighlightTable>,
-        defaults: DefaultColors,
-    ) -> Self {
-        Self::with_source(GridSource::Row {
-            index,
-            row,
-            width,
-            height,
-            highlights,
-            defaults,
-        })
-    }
-
-    fn with_source(source: GridSource) -> Self {
         Self {
-            source,
-            paint_phase: GridPaintPhase::Both,
+            model,
+            paint_cache: None,
             nerd_font_mode: false,
             nerd_fallback_mode: FallbackMode::Auto,
             cell_width: px(10.0),
@@ -261,8 +251,8 @@ impl GridElement {
         self
     }
 
-    pub(crate) fn with_paint_phase(mut self, phase: GridPaintPhase) -> Self {
-        self.paint_phase = phase;
+    pub(crate) fn with_paint_cache(mut self, cache: SharedGridPaintCache) -> Self {
+        self.paint_cache = Some(cache);
         self
     }
 
@@ -383,16 +373,15 @@ impl GridElement {
         self
     }
 
-    /// Restrict this element to one logical row while keeping the shared grid
-    /// model. GPUI can cache each row independently without copying its cells.
+    /// Restrict layout and painting to a range of logical rows.
     pub fn with_render_rows(mut self, start: usize, end: usize) -> Self {
         self.render_rows = Some((start, end.max(start)));
         self
     }
 
     fn render_row_range(&self) -> (usize, usize) {
-        let height = self.source.height();
-        let (start, end) = self.render_rows.unwrap_or_else(|| self.source.row_range());
+        let height = self.model.height();
+        let (start, end) = self.render_rows.unwrap_or((0, height));
         let start = start.min(height);
         let end = end.max(start).min(height);
         (start, end)
@@ -751,10 +740,7 @@ impl GridElement {
         position: CursorVisualPosition,
         foreground: Hsla,
     ) -> Option<CursorGlyph> {
-        let model = match &self.source {
-            GridSource::Full(model) => model,
-            GridSource::Row { .. } => return None,
-        };
+        let model = &self.model;
         let row = model.rows().get(position.row)?;
         let cell = VisualCellBuilder::new(self.nerd_font_mode).build_cell_at(
             position.row,
@@ -811,14 +797,14 @@ impl GridElement {
     }
 
     fn viewport_row_range(&self) -> (usize, usize) {
-        let height = self.source.height();
+        let height = self.model.height();
         let top = self.viewport_margins.0.min(height);
         let bottom = self.viewport_margins.1.min(height.saturating_sub(top));
         (top, height.saturating_sub(bottom))
     }
 
     fn viewport_column_range(&self) -> (usize, usize) {
-        let width = self.source.width();
+        let width = self.model.width();
         let left = self.viewport_margins.2.min(width);
         let right = self.viewport_margins.3.min(width.saturating_sub(left));
         (left, width.saturating_sub(right))
@@ -848,16 +834,8 @@ impl GridElement {
     ) -> Option<Bounds<Pixels>> {
         let (top, bottom) = self.viewport_row_range();
         let (render_start, render_end) = self.render_row_range();
-        // A cached row still paints into the grid's full viewport. Clipping
-        // its glyphs to this one logical row cuts off vertical font overhang
-        // and leaves horizontal seams in multi-row symbols.
-        let (top, bottom) = match self.source {
-            GridSource::Full(_) => {
-                let top = top.max(render_start).min(render_end);
-                (top, bottom.min(render_end).max(top))
-            }
-            GridSource::Row { .. } => (top, bottom),
-        };
+        let top = top.max(render_start).min(render_end);
+        let bottom = bottom.min(render_end).max(top);
         let (left, right) = self.viewport_column_range();
         (top < bottom && left < right).then(|| {
             Bounds::new(
@@ -871,16 +849,6 @@ impl GridElement {
                 ),
             )
         })
-    }
-
-    fn paint_clip_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
-        match self.source {
-            GridSource::Full(_) => bounds,
-            GridSource::Row { index, height, .. } => Bounds::new(
-                point(bounds.origin.x, bounds.origin.y - self.line_height * index),
-                size(bounds.size.width, self.line_height * height),
-            ),
-        }
     }
 
     /// Convert the active GPUI content mask into logical grid coordinates.
@@ -907,7 +875,7 @@ impl GridElement {
                 clipped.origin.x,
                 clipped.size.width,
                 self.cell_width,
-                self.source.width(),
+                self.model.width(),
             ),
         }
     }
@@ -973,7 +941,7 @@ impl Element for GridElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        style.size.width = (self.cell_width * self.source.width()).into();
+        style.size.width = (self.cell_width * self.model.width()).into();
         let (render_start, render_end) = self.render_row_range();
         style.size.height = (self.line_height * render_end.saturating_sub(render_start)).into();
         (window.request_layout(style, [], cx), ())
@@ -988,56 +956,120 @@ impl Element for GridElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        if self.paint_phase == GridPaintPhase::Backgrounds {
-            let mut backgrounds = Vec::new();
-            let mut resolved_backgrounds = HashMap::new();
-            let (highlights, defaults) = self.source.style_parts();
-            let (render_row_start, _) = self.render_row_range();
-            let render_range = self.render_range(bounds, window.content_mask().bounds);
-            self.source.for_each_cell_in_range(
-                &VisualCellBuilder::new(self.nerd_font_mode),
-                render_range,
-                &mut |cell| {
-                    let background =
-                        resolved_backgrounds
-                            .entry(cell.highlight)
-                            .or_insert_with(|| {
-                                visual::resolve_highlight_from_parts(
-                                    highlights,
-                                    defaults,
-                                    cell.highlight,
-                                    self.highlight_context,
-                                )
-                                .background
-                            });
-                    if let Some(background) = background {
-                        let in_viewport = self.cell_is_in_viewport(cell.row, cell.grid_start);
-                        let origin = point(
-                            bounds.origin.x + self.cell_width * cell.grid_start,
-                            bounds.origin.y
-                                + self.line_height * cell.row.saturating_sub(render_row_start),
-                        ) + self.offset_for_cell(cell.row, cell.grid_start);
-                        push_background(
-                            &mut backgrounds,
-                            Bounds::new(
-                                origin,
-                                size(self.cell_width * cell.grid_len, self.line_height),
-                            ),
-                            *background,
-                            in_viewport,
-                        );
-                    }
-                },
-            );
-            return GridPrepaintState {
-                backgrounds,
-                overlines: Vec::new(),
-                underlines: Vec::new(),
-                texts: Vec::new(),
-                viewport_bounds: self.viewport_bounds(bounds, self.cell_width),
-            };
+        let range = self.render_range(bounds, window.content_mask().bounds);
+        if self.paint_cache.is_some()
+            && self.ime_composition.is_none()
+            && self.viewport_offset == point(px(0.0), px(0.0))
+            && self.render_rows.is_none()
+        {
+            self.prepare_cached_rows(bounds, range, window)
+        } else {
+            self.prepare_grid(bounds, range, window)
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(input_handler) = self.input_handler.as_mut() {
+            input_handler(bounds, window, cx);
         }
 
+        if prepaint.cached_rows.is_empty() {
+            Self::paint_backgrounds(prepaint, point(px(0.0), px(0.0)), window);
+            self.paint_foregrounds(prepaint, bounds, point(px(0.0), px(0.0)), window, cx);
+        } else {
+            // All row backgrounds must precede every glyph so a following
+            // row cannot erase a glyph extending below its logical cell.
+            // Static grid backgrounds are non-overlapping. Batch their draw
+            // order so GPUI need not insert every rectangle into its bounds
+            // tree on every cursor animation frame. Keep glyphs in a separate
+            // phase: their overhang can overlap neighboring rows.
+            window.paint_layer(bounds, |window| {
+                for row in &prepaint.cached_rows {
+                    Self::paint_backgrounds(row, bounds.origin, window);
+                }
+            });
+            for row in &prepaint.cached_rows {
+                self.paint_foregrounds(row, bounds, bounds.origin, window, cx);
+            }
+        }
+    }
+}
+
+impl GridElement {
+    fn paint_context(&self, scale_factor: f32) -> GridPaintContext {
+        GridPaintContext {
+            width: self.model.width(),
+            height: self.model.height(),
+            cell_width: self.cell_width,
+            line_height: self.line_height,
+            primary_font: self.primary_font.clone(),
+            wide_font: self.wide_font.clone(),
+            wide_font_fallback: self.wide_font_fallback.clone(),
+            font_fallback: self.font_fallback.clone(),
+            nerd_fallback_font: self.nerd_fallback_font.clone(),
+            nerd_font_mode: self.nerd_font_mode,
+            nerd_fallback_mode: self.nerd_fallback_mode,
+            highlight_context: self.highlight_context,
+            viewport_margins: self.viewport_margins,
+            scale_factor,
+        }
+    }
+
+    fn prepare_cached_rows(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        range: GridCellRange,
+        window: &mut Window,
+    ) -> GridPrepaintState {
+        let shared = Rc::clone(self.paint_cache.as_ref().expect("row caching is enabled"));
+        let mut cache = shared.borrow_mut();
+        cache.update_context(self.paint_context(window.scale_factor()), &self.model);
+        let local_bounds = Bounds::new(point(px(0.0), px(0.0)), bounds.size);
+        let mut cached_rows = Vec::with_capacity(range.rows.1.saturating_sub(range.rows.0));
+        for index in range.rows.0..range.rows.1 {
+            let row = self
+                .model
+                .row_handle(index)
+                .expect("render range is within the model");
+            let paint = cache.get(index, &row, range.columns).unwrap_or_else(|| {
+                let paint = Rc::new(self.prepare_grid(
+                    local_bounds,
+                    GridCellRange {
+                        rows: (index, index + 1),
+                        columns: range.columns,
+                    },
+                    window,
+                ));
+                cache.rows[index] = Some(CachedGridRow {
+                    row,
+                    columns: range.columns,
+                    paint: Rc::clone(&paint),
+                });
+                paint
+            });
+            cached_rows.push(paint);
+        }
+        GridPrepaintState {
+            cached_rows,
+            ..Default::default()
+        }
+    }
+
+    fn prepare_grid(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        render_range: GridCellRange,
+        window: &mut Window,
+    ) -> GridPrepaintState {
         let (normal_font, normal_font_size) = self.normal_font(window);
         let text_system = window.text_system();
         let metric_font = self
@@ -1051,17 +1083,19 @@ impl Element for GridElement {
                 + text_system.descent(normal_font_id, normal_font_size) * 0.618;
         let cell_width = self.cell_width;
         let builder = VisualCellBuilder::new(self.nerd_font_mode);
-        let source = self.source.clone();
-        let (highlights, defaults) = source.style_parts();
-        let model_width = self.source.width();
-        let model_height = self.source.height();
+        let model = Rc::clone(&self.model);
+        let highlights = model.highlights();
+        let defaults = model.default_colors();
+        let model_width = self.model.width();
+        let model_height = self.model.height();
         let now = Instant::now();
         let (render_row_start, _) = self.render_row_range();
-        let render_range = self.render_range(bounds, window.content_mask().bounds);
         let mut resolved_highlights = HashMap::new();
         let mut has_blinking_text = false;
         let mut backgrounds = Vec::new();
         let mut ime_gap_backgrounds = Vec::new();
+        let mut background_span = None;
+        let mut ime_background_span = None;
         let mut overlines = Vec::new();
         let mut underlines = Vec::new();
         let mut text_groups = Vec::new();
@@ -1316,36 +1350,51 @@ impl Element for GridElement {
             // padding creates visible gaps between adjacent ASCII-art
             // glyphs, whose raster width is often smaller than the cell
             // advance.
-            if self.paint_phase != GridPaintPhase::Foregrounds {
-                if let Some(background) = background {
-                    push_background(&mut backgrounds, cell_bounds, background, in_viewport);
-                    if let Some(gap) = ime_gap {
-                        let cell_end = cell.grid_start.saturating_add(cell.grid_len);
-                        let gap_start = cell.grid_start.max(gap.col);
-                        let gap_end = cell_end.min(gap.end());
-                        if cell.row == gap.row && gap_start < gap_end {
-                            let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
-                            let gap_origin = point(
-                                bounds.origin.x + cell_width * gap_start,
-                                bounds.origin.y
-                                    + self.line_height * cell.row.saturating_sub(render_row_start),
-                            ) + self.offset_for_cell(cell.row, gap_start);
-                            let gap_bounds = Bounds::new(
-                                gap_origin,
-                                size(cell_width * (gap_end - gap_start), self.line_height),
-                            );
-                            push_background(
-                                &mut ime_gap_backgrounds,
-                                gap_bounds,
-                                background,
-                                gap_in_viewport,
-                            );
-                            for column in gap_start..gap_end {
-                                if let Some(covered) = ime_gap_background_covered
-                                    .get_mut(column.saturating_sub(gap.col))
-                                {
-                                    *covered = true;
-                                }
+            if let Some(background) = background {
+                push_background(
+                    &mut backgrounds,
+                    &mut background_span,
+                    BackgroundSpan {
+                        row: cell.row,
+                        columns: render_start..render_start + cell.grid_len,
+                        offset: self.offset_for_cell(cell.row, render_start),
+                    },
+                    cell_bounds,
+                    background,
+                    in_viewport,
+                );
+                if let Some(gap) = ime_gap {
+                    let cell_end = cell.grid_start.saturating_add(cell.grid_len);
+                    let gap_start = cell.grid_start.max(gap.col);
+                    let gap_end = cell_end.min(gap.end());
+                    if cell.row == gap.row && gap_start < gap_end {
+                        let gap_in_viewport = self.cell_is_in_viewport(cell.row, gap_start);
+                        let gap_origin = point(
+                            bounds.origin.x + cell_width * gap_start,
+                            bounds.origin.y
+                                + self.line_height * cell.row.saturating_sub(render_row_start),
+                        ) + self.offset_for_cell(cell.row, gap_start);
+                        let gap_bounds = Bounds::new(
+                            gap_origin,
+                            size(cell_width * (gap_end - gap_start), self.line_height),
+                        );
+                        push_background(
+                            &mut ime_gap_backgrounds,
+                            &mut ime_background_span,
+                            BackgroundSpan {
+                                row: cell.row,
+                                columns: gap_start..gap_end,
+                                offset: self.offset_for_cell(cell.row, gap_start),
+                            },
+                            gap_bounds,
+                            background,
+                            gap_in_viewport,
+                        );
+                        for column in gap_start..gap_end {
+                            if let Some(covered) =
+                                ime_gap_background_covered.get_mut(column.saturating_sub(gap.col))
+                            {
+                                *covered = true;
                             }
                         }
                     }
@@ -1355,7 +1404,12 @@ impl Element for GridElement {
                 overlines.push((overline.0, overline.1, in_viewport));
             }
         };
-        source.for_each_cell_in_range(&builder, render_range, &mut paint_cell);
+        builder.for_each_cell_in_range(
+            &model,
+            render_range.rows.0..render_range.rows.1,
+            render_range.columns.0..render_range.columns.1,
+            &mut paint_cell,
+        );
 
         if let Some(gap) = ime_gap {
             // Usually every gap cell gets its background from the original
@@ -1434,73 +1488,77 @@ impl Element for GridElement {
             underlines,
             texts,
             viewport_bounds: self.viewport_bounds(bounds, cell_width),
+            has_blinking_text,
+            cached_rows: Vec::new(),
         }
     }
 
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+    fn paint_backgrounds(
+        state: &GridPrepaintState,
+        offset: gpui::Point<Pixels>,
+        window: &mut Window,
+    ) {
+        for (bounds, background, in_viewport) in &state.backgrounds {
+            let bounds = Bounds::new(bounds.origin + offset, bounds.size);
+            let mask = (*in_viewport).then(|| gpui::ContentMask {
+                bounds: state
+                    .viewport_bounds
+                    .map(|viewport| Bounds::new(viewport.origin + offset, viewport.size))
+                    .unwrap_or(bounds),
+            });
+            window.with_content_mask(mask, |window| {
+                window.paint_quad(fill(bounds, *background));
+            });
+        }
+    }
+
+    fn paint_foregrounds(
+        &self,
+        state: &GridPrepaintState,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
+        offset: gpui::Point<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(input_handler) = self.input_handler.as_mut() {
-            input_handler(bounds, window, cx);
-        }
-
-        for (bounds, background, in_viewport) in &prepaint.backgrounds {
-            let mask = (*in_viewport).then(|| gpui::ContentMask {
-                bounds: prepaint.viewport_bounds.unwrap_or(*bounds),
+        let viewport_bounds = state
+            .viewport_bounds
+            .map(|viewport| Bounds::new(viewport.origin + offset, viewport.size))
+            .unwrap_or(bounds);
+        for (quad, color, in_viewport) in &state.overlines {
+            let mask = (*in_viewport).then_some(gpui::ContentMask {
+                bounds: viewport_bounds,
             });
             window.with_content_mask(mask, |window| {
-                window.paint_quad(fill(*bounds, *background));
-            });
-        }
-        for (bounds, color, in_viewport) in &prepaint.overlines {
-            let mask = (*in_viewport).then(|| gpui::ContentMask {
-                bounds: prepaint.viewport_bounds.unwrap_or(*bounds),
-            });
-            window.with_content_mask(mask, |window| {
-                window.paint_quad(fill(*bounds, *color));
+                window.paint_quad(fill(Bounds::new(quad.origin + offset, quad.size), *color));
             });
         }
 
-        // Keep the terminal's cell coordinates for placement, but do not clip
-        // every glyph to its individual cell. GPUI's glyph raster bounds can
-        // extend past the logical cell (especially for ASCII art, Nerd Font
-        // symbols, and fonts with a generous ascent/descent). Per-cell masks
-        // turn that overhang into visible seams at grid boundaries. The Grid
-        // itself remains clipped so text and an elastic cursor cannot escape
-        // the Neovim viewport.
-        window.with_content_mask(
-            Some(gpui::ContentMask {
-                bounds: self.paint_clip_bounds(bounds),
-            }),
-            |window| {
-                for painted_text in prepaint.texts.drain(..) {
-                    let mask = painted_text.in_viewport.then(|| gpui::ContentMask {
-                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                    });
-                    window.with_content_mask(mask, |window| {
-                        painted_text
-                            .line
-                            .paint(painted_text.origin, self.line_height, window, cx)
-                            .expect("failed to paint grid text");
-                    });
-                }
-                for underline in &prepaint.underlines {
-                    let mask = underline.in_viewport.then(|| gpui::ContentMask {
-                        bounds: prepaint.viewport_bounds.unwrap_or(bounds),
-                    });
-                    window.with_content_mask(mask, |window| {
-                        window.paint_underline(underline.origin, underline.width, &underline.style);
-                    });
-                }
-            },
-        );
+        // Keep glyph overhang across cells and rows, but clip to the grid
+        // and to the shared viewport rather than each cached row.
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for text in &state.texts {
+                let mask = text.in_viewport.then_some(gpui::ContentMask {
+                    bounds: viewport_bounds,
+                });
+                window.with_content_mask(mask, |window| {
+                    text.line
+                        .paint(text.origin + offset, self.line_height, window, cx)
+                        .expect("failed to paint grid text");
+                });
+            }
+            for underline in &state.underlines {
+                let mask = underline.in_viewport.then_some(gpui::ContentMask {
+                    bounds: viewport_bounds,
+                });
+                window.with_content_mask(mask, |window| {
+                    window.paint_underline(
+                        underline.origin + offset,
+                        underline.width,
+                        &underline.style,
+                    );
+                });
+            }
+        });
     }
 }
 
@@ -1508,15 +1566,89 @@ impl Element for GridElement {
 mod tests {
     use super::*;
 
+    fn populated_cache(model: &Rc<GridModel>) -> GridPaintCache {
+        let element = GridElement::with_shared_model(Rc::clone(model));
+        let mut cache = GridPaintCache::default();
+        cache.update_context(element.paint_context(1.0), model);
+        for index in 0..model.height() {
+            cache.rows[index] = Some(CachedGridRow {
+                row: model.row_handle(index).unwrap(),
+                columns: (0, model.width()),
+                paint: Rc::new(GridPrepaintState::default()),
+            });
+        }
+        cache
+    }
+
     #[test]
-    fn cached_row_does_not_keep_the_whole_grid_model_alive() {
-        let mut model = Rc::new(GridModel::from_rows(vec![
-            GridRow::new(vec![GridCell::text("other", DEFAULT_HIGHLIGHT)]),
-            GridRow::new(vec![
-                GridCell::wide_lead("界", HighlightId(7)),
-                GridCell::wide_continuation(HighlightId(7)),
-            ]),
-        ]));
+    fn row_cache_reuses_clean_rows_and_detects_changed_cells() {
+        let mut model = Rc::new(GridModel::new(8, 4));
+        let cache = populated_cache(&model);
+        let original = cache.get(0, &model.row_handle(0).unwrap(), (0, 8)).unwrap();
+        Rc::make_mut(&mut model).apply_grid_line(
+            1,
+            0,
+            &[GridLineCell::new("x", HighlightId(0), 1)],
+            false,
+        );
+        assert!(Rc::ptr_eq(
+            &original,
+            &cache.get(0, &model.row_handle(0).unwrap(), (0, 8)).unwrap()
+        ));
+        assert!(cache
+            .get(1, &model.row_handle(1).unwrap(), (0, 8))
+            .is_none());
+        assert!(cache
+            .get(0, &model.row_handle(0).unwrap(), (1, 8))
+            .is_none());
+    }
+
+    #[test]
+    fn row_cache_invalidates_dirty_rows_and_time_dependent_text() {
+        let model = Rc::new(GridModel::new(8, 4));
+        let mut cache = populated_cache(&model);
+        cache.invalidate_rows(1..3);
+        assert!(cache
+            .get(0, &model.row_handle(0).unwrap(), (0, 8))
+            .is_some());
+        assert!(cache
+            .get(1, &model.row_handle(1).unwrap(), (0, 8))
+            .is_none());
+        assert!(cache
+            .get(2, &model.row_handle(2).unwrap(), (0, 8))
+            .is_none());
+        let paint = &mut cache.rows[0].as_mut().unwrap().paint;
+        Rc::get_mut(paint).unwrap().has_blinking_text = true;
+        assert!(cache
+            .get(0, &model.row_handle(0).unwrap(), (0, 8))
+            .is_none());
+        cache.invalidate_rows(usize::MAX..usize::MAX);
+    }
+
+    #[test]
+    fn row_cache_tracks_font_metrics_viewport_highlights_and_scale() {
+        let mut model = Rc::new(GridModel::new(8, 4));
+        let element = GridElement::with_shared_model(Rc::clone(&model));
+        let context = element.paint_context(1.0);
+        let mut variants = Vec::new();
+        let mut changed = context.clone();
+        changed.line_height = px(24.0);
+        variants.push(changed);
+        let mut changed = context.clone();
+        changed.primary_font = Some(("Other Font".into(), px(14.0)));
+        variants.push(changed);
+        let mut changed = context.clone();
+        changed.viewport_margins = (1, 0, 0, 0);
+        variants.push(changed);
+        let mut changed = context.clone();
+        changed.scale_factor = 2.0;
+        variants.push(changed);
+        for changed in variants {
+            let mut cache = populated_cache(&model);
+            cache.update_context(changed, &model);
+            assert!(cache.rows.iter().all(Option::is_none));
+        }
+        let mut cache = populated_cache(&model);
         Rc::make_mut(&mut model).set_highlight(
             HighlightId(7),
             HighlightAttrs {
@@ -1524,35 +1656,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let weak_model = Rc::downgrade(&model);
-        let source = GridSource::Row {
-            index: 1,
-            row: model.row_handle(1).unwrap(),
-            width: model.width(),
-            height: model.height(),
-            highlights: model.highlight_handle(),
-            defaults: model.default_colors(),
-        };
-        let full_source = GridSource::Full(Rc::clone(&model));
-        let range = GridCellRange {
-            rows: (1, 2),
-            columns: (1, 2),
-        };
-        let builder = VisualCellBuilder::new(false);
-        let mut full_cells = Vec::new();
-        full_source.for_each_cell_in_range(&builder, range, &mut |cell| full_cells.push(cell));
-        let mut row_cells = Vec::new();
-        source.for_each_cell_in_range(&builder, range, &mut |cell| row_cells.push(cell));
-        assert_eq!(row_cells, full_cells);
-        assert_eq!(row_cells[0].text, "界");
-        assert_eq!(row_cells[0].highlight, HighlightId(7));
-        assert!(source.style_parts().0[&HighlightId(7)].bold);
+        cache.update_context(context, &model);
+        assert!(cache.rows.iter().all(Option::is_none));
+    }
 
-        drop(full_source);
+    #[test]
+    fn row_cache_does_not_keep_the_whole_grid_model_alive() {
+        let model = Rc::new(GridModel::new(8, 4));
+        let weak = Rc::downgrade(&model);
+        let cache = populated_cache(&model);
         drop(model);
-        assert!(weak_model.upgrade().is_none());
-        assert_eq!(source.width(), 2);
-        assert_eq!(source.row_range(), (1, 2));
+        assert!(weak.upgrade().is_none());
+        assert!(cache.rows[0].is_some());
     }
 
     #[test]
@@ -1624,36 +1739,18 @@ mod tests {
     }
 
     #[test]
-    fn cached_rows_clip_to_the_grid_and_shared_viewport_not_their_own_line() {
-        let model = GridModel::new(8, 4);
-        for row in 0..model.height() {
-            let element = GridElement::with_shared_row(
-                row,
-                model.row_handle(row).unwrap(),
-                model.width(),
-                model.height(),
-                model.highlight_handle(),
-                model.default_colors(),
-            )
+    fn cached_rows_use_the_shared_viewport_in_grid_local_coordinates() {
+        let element = GridElement::with_shared_model(Rc::new(GridModel::new(8, 4)))
             .with_metrics(px(10.0), px(20.0))
             .with_viewport_margins(1, 1, 2, 2);
-            let bounds = Bounds::new(
-                point(px(50.0), px(100.0 + row as f32 * 20.0)),
-                size(px(80.0), px(20.0)),
-            );
-
-            assert_eq!(
-                element.paint_clip_bounds(bounds),
-                Bounds::new(point(px(50.0), px(100.0)), size(px(80.0), px(80.0)))
-            );
-            assert_eq!(
-                element.viewport_bounds(bounds, px(10.0)),
-                Some(Bounds::new(
-                    point(px(70.0), px(120.0)),
-                    size(px(40.0), px(40.0))
-                ))
-            );
-        }
+        let local_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(80.0), px(80.0)));
+        assert_eq!(
+            element.viewport_bounds(local_bounds, px(10.0)),
+            Some(Bounds::new(
+                point(px(20.0), px(20.0)),
+                size(px(40.0), px(40.0))
+            ))
+        );
     }
 
     #[test]

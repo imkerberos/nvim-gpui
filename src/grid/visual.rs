@@ -65,16 +65,6 @@ impl VisualCellBuilder {
         }
     }
 
-    pub(crate) fn for_each_row_in_range(
-        &self,
-        row: usize,
-        grid_row: &GridRow,
-        columns: std::ops::Range<usize>,
-        f: &mut impl FnMut(VisualCell),
-    ) {
-        self.for_each_row(row, grid_row, columns, f);
-    }
-
     pub fn build_row(&self, row: usize, grid_row: &GridRow) -> Vec<VisualCell> {
         let mut visual_cells = Vec::new();
         self.for_each_row(row, grid_row, 0..grid_row.cells().len(), &mut |cell| {
@@ -327,24 +317,137 @@ fn blend_alpha(blend: Option<u8>) -> f32 {
         .unwrap_or(1.0)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct BackgroundSpan {
+    pub row: usize,
+    pub columns: Range<usize>,
+    pub offset: gpui::Point<Pixels>,
+}
+
 pub(super) fn push_background(
     backgrounds: &mut Vec<(Bounds<Pixels>, Hsla, bool)>,
+    previous_span: &mut Option<BackgroundSpan>,
+    span: BackgroundSpan,
     bounds: Bounds<Pixels>,
     color: Hsla,
     in_viewport: bool,
 ) {
     if let Some((previous_bounds, previous_color, previous_in_viewport)) = backgrounds.last_mut() {
-        let previous_right = previous_bounds.origin.x + previous_bounds.size.width;
         if *previous_color == color
             && *previous_in_viewport == in_viewport
             && previous_bounds.origin.y == bounds.origin.y
             && previous_bounds.size.height == bounds.size.height
-            && previous_right == bounds.origin.x
+            && previous_span.as_ref().is_some_and(|previous| {
+                previous.row == span.row
+                    && previous.columns.end == span.columns.start
+                    && previous.offset == span.offset
+            })
         {
-            previous_bounds.size.width += bounds.size.width;
+            // Adjacency is a grid property, not a floating-point comparison.
+            // Derive the right edge from the new cell instead of repeatedly
+            // adding fractional advances (e.g. 0xProto's 9.92px cells).
+            previous_bounds.size.width =
+                bounds.origin.x + bounds.size.width - previous_bounds.origin.x;
+            *previous_span = Some(span);
             return;
         }
     }
 
     backgrounds.push((bounds, color, in_viewport));
+    *previous_span = Some(span);
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    fn append(
+        backgrounds: &mut Vec<(Bounds<Pixels>, Hsla, bool)>,
+        previous: &mut Option<BackgroundSpan>,
+        span: BackgroundSpan,
+        color: Hsla,
+        in_viewport: bool,
+    ) {
+        let bounds = Bounds::new(
+            point(
+                px(13.25) + px(9.92) * span.columns.start,
+                px(20.0) * span.row,
+            ) + span.offset,
+            size(px(9.92) * span.columns.len(), px(20.0)),
+        );
+        push_background(backgrounds, previous, span, bounds, color, in_viewport);
+    }
+
+    fn span(row: usize, columns: Range<usize>) -> BackgroundSpan {
+        BackgroundSpan {
+            row,
+            columns,
+            offset: point(px(0.0), px(0.0)),
+        }
+    }
+
+    #[test]
+    fn fractional_cell_backgrounds_merge_at_any_grid_width() {
+        for columns in [64, 160, 320, 1000] {
+            let mut backgrounds = Vec::new();
+            let mut previous = None;
+            for column in 0..columns {
+                append(
+                    &mut backgrounds,
+                    &mut previous,
+                    span(0, column..column + 1),
+                    rgb(0x123456).into(),
+                    true,
+                );
+            }
+            assert_eq!(backgrounds.len(), 1, "{columns} columns");
+            let bounds = backgrounds[0].0;
+            let expected_right = px(13.25) + px(9.92) * (columns - 1) + px(9.92);
+            assert_eq!(bounds.origin.x + bounds.size.width, expected_right);
+        }
+    }
+
+    #[test]
+    fn wide_cells_merge_but_gaps_rows_colors_masks_and_offsets_do_not() {
+        let mut backgrounds = Vec::new();
+        let mut previous = None;
+        let color = rgb(0x123456).into();
+        for columns in [0..1, 1..3, 3..4] {
+            append(
+                &mut backgrounds,
+                &mut previous,
+                span(0, columns),
+                color,
+                true,
+            );
+        }
+        assert_eq!(backgrounds.len(), 1);
+        append(&mut backgrounds, &mut previous, span(0, 5..6), color, true);
+        append(&mut backgrounds, &mut previous, span(1, 6..7), color, true);
+        append(
+            &mut backgrounds,
+            &mut previous,
+            span(1, 7..8),
+            rgb(0x654321).into(),
+            true,
+        );
+        append(
+            &mut backgrounds,
+            &mut previous,
+            span(1, 8..9),
+            rgb(0x654321).into(),
+            false,
+        );
+        append(
+            &mut backgrounds,
+            &mut previous,
+            BackgroundSpan {
+                offset: point(px(0.25), px(0.0)),
+                ..span(1, 9..10)
+            },
+            rgb(0x654321).into(),
+            false,
+        );
+        assert_eq!(backgrounds.len(), 6);
+    }
 }
