@@ -13,7 +13,7 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, px, rgb, svg, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    SharedString, Subscription, Task, Window,
+    ScrollHandle, SharedString, Subscription, Task, Window,
 };
 use nvim_gpui::rime::RimeRuntimeResolver;
 use std::env;
@@ -41,6 +41,7 @@ pub(crate) struct SettingsWindow {
     unicode_families: Option<Vec<String>>,
     font_scan_task: Option<Task<()>>,
     font_chain_focus_handles: [FocusHandle; 2],
+    font_chain_scroll_handles: [ScrollHandle; 2],
     font_chain_editing: Option<font_chain::FontChainEdit>,
     open_combo: Option<SettingsCombo>,
 }
@@ -130,6 +131,7 @@ impl SettingsWindow {
                 cx.focus_handle().tab_stop(true),
                 cx.focus_handle().tab_stop(true),
             ],
+            font_chain_scroll_handles: [ScrollHandle::new(), ScrollHandle::new()],
             font_chain_editing: None,
             open_combo: None,
         }

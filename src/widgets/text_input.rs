@@ -694,6 +694,31 @@ pub(crate) fn text_input(config: TextInputConfig) -> Stateful<gpui::Div> {
         )
 }
 
+pub(super) fn inline_text_input(
+    state: TextInputState,
+    focus_handle: FocusHandle,
+    on_mouse: impl Fn(TextInputMouseEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let width = (state.value.graphemes(true).count() as f32 * 9.0 + 16.0).clamp(16.0, 240.0);
+    let text = TextInputText {
+        display: TextInputDisplay::new(&state.value, state.cursor),
+        editing: true,
+        selection: state.selected_range(),
+        focus_handle,
+        on_mouse: Some(Box::new(on_mouse)),
+    };
+    div()
+        .id("token-edit-input")
+        .w(px(width))
+        .h_full()
+        .overflow_hidden()
+        .text_sm()
+        .text_color(rgb(TEXT))
+        .cursor(CursorStyle::IBeam)
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::TextInputDisplay;
