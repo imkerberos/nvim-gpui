@@ -38,8 +38,20 @@ fn spawn_test_nvim() -> NvimProcess {
     // These protocol tests exercise Neovim itself, not the developer's plugin
     // configuration. In a fresh CI checkout, loading init.lua would bootstrap
     // lazy.nvim in several Neovim processes at once and delay their RPC events.
-    NvimProcess::spawn(80, 24, [OsString::from("-u"), OsString::from("NONE")])
-        .expect("embedded Neovim should start")
+    // Also disable ShaDa and swap files so parallel processes do not share
+    // state through the repository's isolated development profile.
+    NvimProcess::spawn(
+        80,
+        24,
+        [
+            OsString::from("-u"),
+            OsString::from("NONE"),
+            OsString::from("-i"),
+            OsString::from("NONE"),
+            OsString::from("-n"),
+        ],
+    )
+    .expect("embedded Neovim should start")
 }
 
 #[test]

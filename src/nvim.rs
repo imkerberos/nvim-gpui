@@ -49,7 +49,10 @@ pub use version::{NvimCapabilities, NvimProtocolInfo, NvimVersion};
 const CLIENT_NAME: &str = "nvim-gpui";
 const NVIM_GPUI_STARTUP_COMMAND: &str = "let g:nvim_gpui = v:true";
 const NVIM_EXITED: &str = "nvim process exited";
-const STARTUP_THEME_TIMEOUT: Duration = Duration::from_secs(1);
+// Rosetta and cold CI runners can take longer than one second to start an
+// embedded Neovim process, especially when several protocol tests run in
+// parallel. Keep the startup handshake from being abandoned prematurely.
+const STARTUP_THEME_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const COMMAND_QUEUE_CAPACITY: usize = 256;
 const EVENT_QUEUE_CAPACITY: usize = 4096;
