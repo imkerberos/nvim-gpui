@@ -217,6 +217,88 @@ with:
 nvim --version | head -1
 ~~~
 
+## Font fallback and text shaping
+
+nvim-gpui treats `guifont` and `guifontwide` as ordered font chains rather
+than as single font names. The first family in a chain is the primary font;
+the remaining families are tried in order when the primary font does not
+contain a glyph. The two options are independent: `guifont` is used for the
+normal grid role, while `guifontwide` is used for wide-character cells.
+
+The Settings UI edits each chain as font tokens. A token is a complete family
+name, so cursor movement and deletion operate on whole fonts rather than on
+individual characters. The candidate list keeps already-selected fonts
+visible and marks them as selected, which makes the order of the chain
+explicit. An empty chain means that nvim-gpui selects a platform/system font
+for that role.
+
+### Resolving the chains
+
+The resolution order is:
+
+1. Use the chain configured in nvim-gpui Settings, if one exists.
+2. Append the corresponding Neovim option chain (`guifont` or
+   `guifontwide`) as compatibility fallbacks, removing duplicates while
+   preserving order.
+3. If no Settings chain exists, choose the platform-appropriate system font
+   as the primary family and use the Neovim chain as its fallback chain.
+
+For the wide-character role, Neovim's `guifontwide` is preferred. If Neovim
+does not provide it, its `guifont` chain is used as the compatibility fallback
+for wide characters. The parser accepts Neovim's comma-separated font syntax,
+including escaped commas and colons, and takes the first valid `:hSIZE` value
+as the shared font size. The resulting `GuiFontSpec` contains one primary
+family, a fallback-family vector, and one size; it does not create separate
+user-facing settings for every fallback font.
+
+### Styles and glyph selection
+
+The renderer derives four style variants from every resolved chain:
+
+- normal;
+- bold;
+- italic; and
+- bold italic.
+
+The style cache stores these variants for the primary-only font and for the
+cascading chain. Therefore a highlight requesting bold or italic does not
+silently fall back to the normal face. Each fallback family is styled with the
+same requested attributes before glyph coverage is tested, so a missing bold
+glyph is searched for in the bold variant of the next family, not in its
+regular variant.
+
+Glyph coverage is checked per character in primary-first order. Coverage and
+the selected chain position are cached by font role, style, and character;
+the caches retain font-selection decisions, not visual cells or rendered
+lines. The shaped-line cache is separate and is keyed by the text, font runs,
+colors, underline, and strikethrough attributes.
+
+On macOS and Windows, the renderer can pass an explicit font cascade to the
+native text backend. When a cell contains characters from different families,
+the cascade remains available so the backend can shape the mixed content. On
+Linux, the GPUI text backend does not currently forward `Font.fallbacks` to
+cosmic-text, so nvim-gpui resolves coverage itself and splits a mixed cell into
+explicit font runs. This platform-specific split is required for correctness;
+it is not a second user-configurable fallback model.
+
+### Nerd Font fallback is separate
+
+The bundled Symbols Nerd Font is not part of the normal `guifont` or
+`guifontwide` chain. The Settings `Nerd font` and `Fallback mode` controls
+select how Nerd Font cells are handled:
+
+- `None` leaves the cell on the regular resolved chain;
+- `Auto` uses the bundled symbol font only when the regular font lacks the
+  glyph; and
+- `Force` always uses the selected bundled symbol font for Nerd Font cells.
+
+Linux and Windows address the bundled symbol font directly because their GPUI
+backends cannot reliably use the in-memory bundled family as an explicit
+cascade. macOS and other native-cascade backends keep the configured primary
+font and add the symbol family as a fallback when the selected mode requires
+it. This path is intentionally independent from normal, italic, bold, and
+bold-italic text fallback.
+
 ## just tasks
 
 Run tasks from the Nix development shell on macOS/Linux. On Windows, the
