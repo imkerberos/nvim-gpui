@@ -66,6 +66,25 @@ impl EditorRuntime {
                 commit.grid,
                 ViewportAnimation {
                     previous_grid: commit.previous_grid,
+                    previous_images: self
+                        .presentation
+                        .last_presented_snapshot
+                        .as_ref()
+                        .map(|snapshot| {
+                            snapshot
+                                .image_layers
+                                .iter()
+                                .copied()
+                                .filter(|image| image.grid == commit.grid)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    previous_image_sources: self
+                        .presentation
+                        .last_presented_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.image_sources.clone())
+                        .unwrap_or_default(),
                     scroll_delta: viewport.scroll_delta,
                     started_at: Instant::now(),
                     presented: false,
@@ -298,8 +317,33 @@ mod tests {
             dirty_region: GridDirtyRegion::default(),
         };
 
+        let image = ImageLayer {
+            image: ImageId(9),
+            grid: 2,
+            row: 3,
+            column: 1,
+            columns: 4,
+            rows: 2,
+            pixel_width: None,
+            pixel_height: None,
+            z_index: 0,
+        };
+        let source = Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new()));
+        editor.presentation.last_presented_snapshot =
+            Some(Rc::new(compositor::PresentationSnapshot {
+                compositor: editor.compositor_frame(),
+                image_layers: vec![image],
+                image_sources: HashMap::from([(image.image, Arc::clone(&source))]),
+            }));
+
         editor.apply_viewport_commits(vec![commit()]);
         assert!(editor.presentation.viewport_animations.contains_key(&2));
+        let animation = &editor.presentation.viewport_animations[&2];
+        assert_eq!(animation.previous_images, vec![image]);
+        assert!(Arc::ptr_eq(
+            &animation.previous_image_sources[&image.image],
+            &source
+        ));
         editor.apply_viewport_commits(vec![commit()]);
         assert!(!editor.presentation.viewport_animations.contains_key(&2));
         assert!(editor.presentation.scroll_animation_suppressed.contains(&2));

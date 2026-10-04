@@ -68,7 +68,7 @@ impl Default for EditorState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ImageLayer {
     pub(crate) image: ImageId,
     pub(crate) grid: u64,
@@ -84,6 +84,8 @@ pub(crate) struct ImageLayer {
 #[derive(Clone)]
 pub(crate) struct ViewportAnimation {
     pub(crate) previous_grid: Rc<grid::GridModel>,
+    pub(crate) previous_images: Vec<ImageLayer>,
+    pub(crate) previous_image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) scroll_delta: i64,
     pub(crate) started_at: Instant,
     pub(crate) presented: bool,
@@ -133,6 +135,7 @@ pub(crate) struct RenderRuntime {
     pub(crate) scroll_animation_suppressed: HashSet<u64>,
     pub(crate) image_sources: HashMap<ImageId, Arc<Image>>,
     pub(crate) presentation_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
+    pub(crate) last_presented_snapshot: Option<Rc<compositor::PresentationSnapshot>>,
     pub(crate) grid_dirty_regions: HashMap<u64, GridDirtyRegion>,
     pub(crate) grid_paint_caches: HashMap<u64, grid::SharedGridPaintCache>,
 }
@@ -269,6 +272,7 @@ impl EditorRuntime {
         self.glyph_coverage_cache.borrow_mut().clear();
         self.font_selection_cache.borrow_mut().clear();
         self.presentation.grid_paint_caches.clear();
+        self.presentation.last_presented_snapshot = None;
         self.presentation.grid_dirty_regions.clear();
         for image in self
             .protocol

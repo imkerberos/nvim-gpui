@@ -192,14 +192,58 @@ pub(super) fn viewport_rect(
     )
 }
 
+fn image_paint_layers(
+    grid_id: u64,
+    image_layers: &[ImageLayer],
+    image_sources: &HashMap<ImageId, Arc<Image>>,
+    height: usize,
+    current_offset: Pixels,
+    previous: Option<(&ViewportAnimation, Pixels)>,
+) -> Vec<(ImageLayer, Arc<Image>, Pixels)> {
+    let mut images = Vec::new();
+    if let Some((animation, offset)) = previous {
+        let delta = animation
+            .scroll_delta
+            .clamp(-(height as i64), height as i64);
+        for layer in animation
+            .previous_images
+            .iter()
+            .filter(|layer| layer.grid == grid_id)
+        {
+            // A placement present in both frames follows the same trajectory.
+            // Paint it once, using its current anchor, including transparent
+            // images which would otherwise become darker when drawn twice.
+            if image_layers.iter().any(|current| {
+                image_sources.contains_key(&current.image)
+                    && image_scrolls_to(*layer, *current, delta)
+            }) {
+                continue;
+            }
+            if let Some(source) = animation.previous_image_sources.get(&layer.image) {
+                images.push((*layer, Arc::clone(source), offset));
+            }
+        }
+    }
+    for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
+        let Some(source) = image_sources.get(&image_layer.image).cloned() else {
+            continue;
+        };
+        images.push((*image_layer, source, current_offset));
+    }
+    images.sort_by_key(|(layer, _, _)| layer.z_index);
+    images
+}
+
 fn image_surface(
     grid_id: u64,
     image_layers: &[ImageLayer],
     image_sources: &HashMap<ImageId, Arc<Image>>,
     options: GridRenderOptions<'_>,
+    previous: Option<(&ViewportAnimation, Pixels)>,
 ) -> gpui::Div {
     let (left, top, viewport_width, viewport_height) =
         viewport_rect(options.placement, options.width, options.height);
+    // The clip is stationary; translate the image, not its viewport mask.
     let mut surface = div()
         .absolute()
         .left(px(left as f32 * f32::from(options.cell_width)))
@@ -207,20 +251,25 @@ fn image_surface(
         .w(px(viewport_width as f32 * f32::from(options.cell_width)))
         .h(px(viewport_height as f32 * f32::from(options.line_height)))
         .overflow_hidden();
-
-    for image_layer in image_layers.iter().filter(|layer| layer.grid == grid_id) {
-        let Some(source) = image_sources.get(&image_layer.image).cloned() else {
-            continue;
-        };
+    let images = image_paint_layers(
+        grid_id,
+        image_layers,
+        image_sources,
+        options.height,
+        options.viewport_offset,
+        previous,
+    );
+    for (image_layer, source, offset) in images {
         surface = surface.child(
             img(source)
                 .absolute()
                 .left(px(
                     (image_layer.column as f32 - left as f32) * f32::from(options.cell_width)
                 ))
-                .top(px(
-                    (image_layer.row as f32 - top as f32) * f32::from(options.line_height)
-                ))
+                .top(
+                    px((image_layer.row as f32 - top as f32) * f32::from(options.line_height))
+                        + offset,
+                )
                 .w(px(image_layer
                     .pixel_width
                     .map(|width| width as f32)
@@ -238,6 +287,14 @@ fn image_surface(
     }
 
     surface
+}
+
+fn image_scrolls_to(previous: ImageLayer, current: ImageLayer, delta: i64) -> bool {
+    previous.row as i128 - delta as i128 == current.row as i128
+        && ImageLayer {
+            row: current.row,
+            ..previous
+        } == current
 }
 
 impl EditorRuntime {
@@ -494,6 +551,7 @@ impl NvimGpui {
             // redraw may start a fresh scroll animation from this state.
             self.editor.presentation.scroll_animation_suppressed.clear();
             let presentation = self.editor.presentation_snapshot();
+            self.editor.presentation.last_presented_snapshot = Some(Rc::clone(&presentation));
             let compositor_frame = &presentation.compositor;
             let image_layers = &presentation.image_layers;
             let image_sources = &presentation.image_sources;
@@ -591,8 +649,18 @@ impl NvimGpui {
                 main_layer = main_layer.child(grid_surface(main_element, main_options));
             }
 
-            main_layer =
-                main_layer.child(image_surface(1, image_layers, image_sources, main_options));
+            main_layer = main_layer.child(image_surface(
+                1,
+                image_layers,
+                image_sources,
+                main_options,
+                render_previous_grid.then(|| {
+                    (
+                        main_animation.expect("previous grid is rendered"),
+                        old_offset,
+                    )
+                }),
+            ));
             editor = editor.child(main_layer);
 
             for compositor_layer in compositor_frame.layers.iter().skip(1) {
@@ -695,7 +763,20 @@ impl NvimGpui {
                         options,
                     ));
                 }
-                layer = layer.child(image_surface(grid_id, image_layers, image_sources, options));
+                layer = layer.child(image_surface(
+                    grid_id,
+                    image_layers,
+                    image_sources,
+                    options,
+                    render_previous_grid.then(|| {
+                        (
+                            viewport_animations
+                                .get(&grid_id)
+                                .expect("previous grid is rendered"),
+                            old_offset,
+                        )
+                    }),
+                ));
                 editor = editor.child(layer);
             }
 
@@ -737,11 +818,109 @@ mod tests {
     use crate::editor::protocol::GridViewportMargins;
     use std::rc::Rc;
 
+    fn test_image(row: usize) -> ImageLayer {
+        ImageLayer {
+            image: ImageId(1),
+            grid: 2,
+            row,
+            column: 3,
+            columns: 4,
+            rows: 2,
+            pixel_width: None,
+            pixel_height: None,
+            z_index: 0,
+        }
+    }
+
+    fn image_animation(layer: ImageLayer, delta: i64) -> ViewportAnimation {
+        ViewportAnimation {
+            previous_grid: Rc::new(grid::GridModel::new(20, 20)),
+            previous_images: vec![layer],
+            previous_image_sources: HashMap::from([(
+                layer.image,
+                Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new())),
+            )]),
+            scroll_delta: delta,
+            started_at: Instant::now(),
+            presented: true,
+        }
+    }
+
+    #[test]
+    fn shared_images_follow_the_grid_and_are_painted_once_in_both_directions() {
+        for delta in [-3, 3] {
+            let previous = test_image(8);
+            let current = test_image((8i64 - delta) as usize);
+            let animation = image_animation(previous, delta);
+            let (old_offset, current_offset) = animation.offsets(
+                animation.started_at + VIEWPORT_SCROLL_DURATION / 2,
+                20,
+                px(20.0),
+            );
+            let layers = image_paint_layers(
+                2,
+                &[current],
+                &animation.previous_image_sources,
+                20,
+                current_offset,
+                Some((&animation, old_offset)),
+            );
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0].0, current);
+            assert_eq!(layers[0].2, current_offset);
+            assert_eq!(
+                px(previous.row as f32 * 20.0) + old_offset,
+                px(layers[0].0.row as f32 * 20.0) + layers[0].2
+            );
+        }
+    }
+
+    #[test]
+    fn outgoing_images_keep_their_source_until_the_old_grid_leaves() {
+        let animation = image_animation(test_image(0), 3);
+        let sources = HashMap::new();
+        let layers = image_paint_layers(
+            2,
+            &[],
+            &sources,
+            20,
+            px(30.0),
+            Some((&animation, px(-30.0))),
+        );
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].2, px(-30.0));
+        assert!(Arc::ptr_eq(
+            &layers[0].1,
+            &animation.previous_image_sources[&ImageId(1)]
+        ));
+        assert!(image_paint_layers(2, &[], &sources, 20, px(0.0), None).is_empty());
+        assert!(
+            image_paint_layers(3, &[], &sources, 20, px(0.0), Some((&animation, px(-30.0))))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn entering_images_use_current_offset_and_stationary_frames_use_zero() {
+        let layer = test_image(18);
+        let sources = HashMap::from([(
+            layer.image,
+            Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new())),
+        )]);
+        let layers = image_paint_layers(2, &[layer], &sources, 20, px(40.0), None);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].2, px(40.0));
+        let layers = image_paint_layers(2, &[layer], &sources, 20, px(0.0), None);
+        assert_eq!(layers[0].2, px(0.0));
+    }
+
     #[test]
     fn viewport_animation_keeps_previous_grid_at_the_start_of_a_large_jump() {
         let started_at = Instant::now();
         let animation = ViewportAnimation {
             previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            previous_images: Vec::new(),
+            previous_image_sources: HashMap::new(),
             scroll_delta: 10,
             started_at,
             presented: true,
@@ -771,6 +950,8 @@ mod tests {
         let started_at = Instant::now() - Duration::from_millis(200);
         let animation = ViewportAnimation {
             previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            previous_images: Vec::new(),
+            previous_image_sources: HashMap::new(),
             scroll_delta: 10,
             started_at,
             presented: true,
@@ -799,6 +980,8 @@ mod tests {
         let started_at = Instant::now();
         let animation = ViewportAnimation {
             previous_grid: Rc::new(grid::GridModel::new(1, 1)),
+            previous_images: Vec::new(),
+            previous_image_sources: HashMap::new(),
             scroll_delta: 10,
             started_at,
             presented: true,

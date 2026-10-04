@@ -19,6 +19,7 @@ use crate::{
     parse_cli, CliAction, CliOptions, NvimConnection,
 };
 use gpui::{point, px};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -627,6 +628,8 @@ fn disabling_scrolling_animation_clears_active_viewport_transitions() {
         1,
         ViewportAnimation {
             previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
+            previous_images: Vec::new(),
+            previous_image_sources: HashMap::new(),
             scroll_delta: 1,
             started_at: Instant::now(),
             presented: false,
@@ -1333,6 +1336,8 @@ fn delayed_viewport_animation_starts_when_presented() {
     let started_at = Instant::now() - Duration::from_secs(1);
     let mut animation = ViewportAnimation {
         previous_grid: Rc::new(crate::grid::GridModel::new(1, 1)),
+        previous_images: Vec::new(),
+        previous_image_sources: HashMap::new(),
         scroll_delta: 1,
         started_at,
         presented: false,
