@@ -90,6 +90,7 @@ impl RequestState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NvimEvent {
+    StartupReady,
     ApiReady {
         version: NvimVersion,
         capabilities: NvimCapabilities,

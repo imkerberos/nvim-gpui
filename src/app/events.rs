@@ -19,6 +19,11 @@ impl NvimGpui {
     }
 
     pub(crate) fn handle_nvim_event(&mut self, event: NvimEvent, cx: &mut Context<Self>) {
+        if event == NvimEvent::StartupReady {
+            self.app.session.nvim_startup_ready = true;
+            self.flush_pending_file_opens(cx);
+            return;
+        }
         if let Some(reason) = self.process_nvim_event(event) {
             self.handle_disconnect(reason, cx);
         }

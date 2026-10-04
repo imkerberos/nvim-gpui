@@ -11,6 +11,29 @@ const REMOTE_FILE_DROP_NOTICE: &str =
 const FILE_DROP_NOTICE_DURATION: Duration = Duration::from_secs(4);
 
 impl NvimGpui {
+    pub(super) fn flush_pending_file_opens(&mut self, cx: &mut Context<Self>) {
+        let requests = self.app.session.take_pending_file_opens();
+        if requests.is_empty() {
+            return;
+        }
+        cx.spawn(async move |_weak, _cx| {
+            for request in requests {
+                match request.recv().await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => log::error!(
+                        target: "nvim_gpui::startup",
+                        "Neovim could not open a queued platform file: {error}"
+                    ),
+                    Err(error) => log::warn!(
+                        target: "nvim_gpui::startup",
+                        "queued file-open request response was lost: {error}"
+                    ),
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(super) fn start_open_urls_task(
         &mut self,
         open_urls: async_channel::Receiver<Vec<String>>,
@@ -144,15 +167,19 @@ impl Session {
         &mut self,
         paths: Vec<PathBuf>,
     ) -> Vec<async_channel::Receiver<Result<rmpv::Value, String>>> {
-        let Some(nvim) = self.nvim.as_ref() else {
+        if self.nvim.is_none() || !self.nvim_startup_ready {
             log::warn!(
                 target: "nvim_gpui::startup",
-                "queueing {} platform file-open path(s) until Neovim is available",
+                "queueing {} platform file-open path(s) until Neovim startup completes",
                 paths.len()
             );
             self.pending_file_opens.extend(paths);
             return Vec::new();
-        };
+        }
+        let nvim = self.nvim.as_ref().expect("Neovim startup is ready");
+        if nvim.is_remote() {
+            return Vec::new();
+        }
 
         paths
             .into_iter()
@@ -213,6 +240,74 @@ fn path_from_open_url(raw_url: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_file_requests_remain_queued_in_arrival_order() {
+        let mut session = Session::default();
+        let first = PathBuf::from("first.md");
+        let second = PathBuf::from("second.md");
+        assert!(session.queue_open_files(vec![first.clone()]).is_empty());
+        assert!(session.queue_open_files(vec![second.clone()]).is_empty());
+        assert!(session.take_pending_file_opens().is_empty());
+        assert_eq!(session.pending_file_opens, vec![first, second]);
+    }
+
+    #[test]
+    fn connected_nvim_does_not_open_platform_files_before_startup_ready() {
+        let nvim = NvimProcess::spawn(
+            80,
+            24,
+            ["-u", "NONE", "-i", "NONE", "-n"].map(std::ffi::OsString::from),
+        )
+        .unwrap();
+        let mut session = Session {
+            nvim: Some(nvim),
+            ..Session::default()
+        };
+        let files = vec![PathBuf::from("first.md"), PathBuf::from("second.md")];
+        assert!(session.queue_open_files(files.clone()).is_empty());
+        assert!(session.take_pending_file_opens().is_empty());
+        assert_eq!(session.pending_file_opens, files);
+        let events = session.nvim.as_ref().unwrap().events();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "startup was not ready"
+            );
+            if matches!(events.try_recv(), Ok(crate::nvim::NvimEvent::StartupReady)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.nvim_startup_ready = true;
+        let requests = session.take_pending_file_opens();
+        assert_eq!(requests.len(), 2);
+        assert!(session.pending_file_opens.is_empty());
+        for request in requests {
+            request.recv_blocking().unwrap().unwrap();
+        }
+        let current = session
+            .nvim
+            .as_ref()
+            .unwrap()
+            .request(
+                "nvim_eval",
+                rmpv::Value::Array(vec![rmpv::Value::from("expand('%:t')")]),
+            )
+            .unwrap()
+            .recv_blocking()
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.as_str(), Some("second.md"));
+        assert_eq!(
+            session
+                .queue_open_files(vec![PathBuf::from("third.md")])
+                .len(),
+            1
+        );
+        assert!(session.pending_file_opens.is_empty());
+    }
 
     #[cfg(not(target_os = "windows"))]
     #[test]

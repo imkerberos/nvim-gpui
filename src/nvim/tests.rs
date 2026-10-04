@@ -55,6 +55,82 @@ fn spawn_test_nvim() -> NvimProcess {
 }
 
 #[test]
+fn startup_ready_notification_is_distinct_from_redraw() {
+    let (sender, receiver) = unbounded();
+    handle_notification("nvim_gpui_startup_ready", &Value::Array(vec![]), &sender).unwrap();
+    assert_eq!(receiver.try_recv().unwrap(), NvimEvent::StartupReady);
+}
+
+#[test]
+fn embedded_startup_ready_arrives_after_vimenter_autocommands() {
+    let nvim = NvimProcess::spawn(
+        80,
+        24,
+        [
+            "-u",
+            "NONE",
+            "-i",
+            "NONE",
+            "-n",
+            "--cmd",
+            "autocmd VimEnter * let g:gpui_test_startup_finished = 1",
+        ]
+        .map(OsString::from),
+    )
+    .unwrap();
+    let events = nvim.events();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "startup ready event was not delivered"
+        );
+        match events.try_recv() {
+            Ok(NvimEvent::StartupReady) => break,
+            Ok(NvimEvent::Error(error)) => panic!("Neovim startup failed: {error}"),
+            _ => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    let result = nvim
+        .request(
+            "nvim_eval",
+            Value::Array(vec![Value::from(
+                "[v:vim_did_enter, g:gpui_test_startup_finished]",
+            )]),
+        )
+        .unwrap()
+        .recv_blocking()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result, Value::Array(vec![Value::from(1), Value::from(1)]));
+
+    // Installing the hook after startup must also report readiness, without
+    // waiting for a VimEnter event that will never occur again.
+    nvim.request(
+        "nvim_exec_lua",
+        Value::Array(vec![
+            Value::from(super::session::STARTUP_READY_LUA),
+            Value::Array(vec![Value::from(nvim.protocol().unwrap().channel_id)]),
+        ]),
+    )
+    .unwrap()
+    .recv_blocking()
+    .unwrap()
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "already-started readiness was not delivered"
+        );
+        if matches!(events.try_recv(), Ok(NvimEvent::StartupReady)) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
 fn request_frame_uses_msgpack_rpc_shape() {
     let mut bytes = Vec::new();
     write_message(

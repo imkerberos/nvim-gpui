@@ -11,6 +11,28 @@ use super::{
     RpcRequestHandlers, INCOMING_REQUEST_QUEUE_CAPACITY,
 };
 
+const STARTUP_READY_METHOD: &str = "nvim_gpui_startup_ready";
+
+// Schedule after VimEnter so all startup autocommands have returned before
+// the GUI begins opening files received from the operating system.
+pub(super) const STARTUP_READY_LUA: &str = r#"
+local channel = ...
+local function ready()
+    vim.schedule(function()
+        pcall(vim.rpcnotify, channel, "nvim_gpui_startup_ready")
+    end)
+end
+if vim.v.vim_did_enter == 1 then
+    ready()
+else
+    vim.api.nvim_create_autocmd("VimEnter", {
+        group = vim.api.nvim_create_augroup("nvim_gpui_startup_ready", { clear = true }),
+        once = true,
+        callback = ready,
+    })
+end
+"#;
+
 pub(super) struct IncomingRpcRequest {
     id: u64,
     method: String,
@@ -23,6 +45,7 @@ pub(super) fn run_session(
     reader: Box<dyn Read + Send>,
     width: u32,
     height: u32,
+    embedded: bool,
     events: &Sender<NvimEvent>,
     rpc_ready: &Sender<()>,
     startup_theme_sender: &std::sync::mpsc::SyncSender<NvimTheme>,
@@ -74,6 +97,23 @@ pub(super) fn run_session(
         .keys()
         .cloned()
         .collect::<Vec<_>>();
+    if embedded {
+        request(
+            &writer,
+            &mut reader,
+            request_id,
+            "nvim_exec_lua",
+            Value::Array(vec![
+                Value::from(STARTUP_READY_LUA),
+                Value::Array(vec![Value::from(protocol.channel_id)]),
+            ]),
+            events,
+            incoming_requests,
+            &protocol_adapter,
+        )?;
+        request_id += 1;
+    }
+
     request(
         &writer,
         &mut reader,
@@ -122,6 +162,11 @@ pub(super) fn run_session(
     )?;
     let _ = rpc_ready.send_blocking(());
     send_event(events, NvimEvent::UiAttached { width, height })?;
+    if !embedded {
+        // Remote sessions do not accept local platform files and must not
+        // install startup autocommands into another Neovim instance.
+        send_event(events, NvimEvent::StartupReady)?;
+    }
 
     let mut startup_theme = NvimTheme::default();
     let mut startup_theme_sent = false;
@@ -436,6 +481,9 @@ fn handle_notification_with_protocol(
     events: &Sender<NvimEvent>,
     protocol: &NvimProtocolAdapter,
 ) -> Result<(), String> {
+    if method == STARTUP_READY_METHOD {
+        return send_event(events, NvimEvent::StartupReady);
+    }
     if method != "redraw" {
         return Ok(());
     }

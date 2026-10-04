@@ -307,6 +307,7 @@ impl NvimGpui {
         // replacement. Late events and responses from its workers must not
         // be allowed to mutate state while reconnecting.
         self.app.session.session_id = None;
+        self.app.session.nvim_startup_ready = false;
         log::info!(target: "nvim_gpui::app", "Neovim disconnected: reason={reason:?}");
         match reason {
             DisconnectReason::Requested => {}
@@ -455,30 +456,11 @@ impl NvimGpui {
         );
         self.start_event_task(events, session_id, cx);
         self.start_remote_clipboard_bridge(cx);
-
-        let requests = self.app.session.take_pending_file_opens();
-        if !requests.is_empty() {
-            cx.spawn(async move |_weak, _cx| {
-                for request in requests {
-                    match request.recv().await {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => log::error!(
-                            target: "nvim_gpui::startup",
-                            "Neovim could not open a queued platform file: {error}"
-                        ),
-                        Err(error) => log::warn!(
-                            target: "nvim_gpui::startup",
-                            "queued file-open request response was lost: {error}"
-                        ),
-                    }
-                }
-            })
-            .detach();
-        }
     }
 
     fn reset_nvim_session(&mut self, initial_theme: NvimTheme) {
         self.app.session.session_id = None;
+        self.app.session.nvim_startup_ready = false;
         self.editor.protocol = ProtocolState::default();
         self.editor.protocol.theme = initial_theme;
         self.editor.protocol.presentation.grid_size =

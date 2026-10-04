@@ -408,6 +408,7 @@ impl ProtocolState {
         if !matches!(
             &event,
             NvimEvent::ApiReady { .. }
+                | NvimEvent::StartupReady
                 | NvimEvent::UiAttached { .. }
                 | NvimEvent::Flush
                 | NvimEvent::Error(_)
@@ -418,6 +419,7 @@ impl ProtocolState {
         }
 
         match event {
+            NvimEvent::StartupReady => ProtocolOutcome::PendingChanged,
             NvimEvent::ApiReady {
                 version,
                 capabilities: _,

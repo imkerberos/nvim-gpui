@@ -349,6 +349,7 @@ impl NvimProcess {
                     reader,
                     width,
                     height,
+                    worker_child.is_some(),
                     &worker_tx,
                     &worker_rpc_ready,
                     &startup_theme_tx,

@@ -44,6 +44,7 @@ pub(crate) struct Session {
     pub(crate) startup_connection: Option<ConnectionSpec>,
     pub(crate) startup_task: Option<Task<()>>,
     pub(crate) pending_file_opens: Vec<PathBuf>,
+    pub(crate) nvim_startup_ready: bool,
     pub(crate) session_id: Option<SessionId>,
     pub(crate) rpc_status: String,
     pub(crate) api_level: Option<u64>,
@@ -61,6 +62,7 @@ impl Default for Session {
             startup_connection: None,
             startup_task: None,
             pending_file_opens: Vec::new(),
+            nvim_startup_ready: false,
             session_id: None,
             rpc_status: "rpc: starting".to_owned(),
             api_level: None,
@@ -81,6 +83,9 @@ impl Session {
     pub(crate) fn take_pending_file_opens(
         &mut self,
     ) -> Vec<async_channel::Receiver<Result<rmpv::Value, String>>> {
+        if !self.nvim_startup_ready || self.nvim.is_none() {
+            return Vec::new();
+        }
         let paths = std::mem::take(&mut self.pending_file_opens);
         if self.nvim.as_ref().is_some_and(NvimProcess::is_remote) {
             log::info!(
