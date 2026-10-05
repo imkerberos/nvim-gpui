@@ -14,7 +14,7 @@ use super::version::parse_protocol_info;
 use super::{
     disconnect_reason, DisconnectReason, NvimCapabilities, NvimEvent, NvimFloatAnchor,
     NvimFloatPosition, NvimProcess, NvimProtocolInfo, NvimTheme, NvimVersion, RequestRegistry,
-    RequestState, NVIM_EXITED,
+    RequestState, NVIM_EXITED, STARTUP_READY_TEST_TIMEOUT,
 };
 use crate::app::clipboard::{CLIPBOARD_GET_METHOD, CLIPBOARD_SET_METHOD};
 use async_channel::unbounded;
@@ -79,7 +79,7 @@ fn embedded_startup_ready_arrives_after_vimenter_autocommands() {
     )
     .unwrap();
     let events = nvim.events();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + STARTUP_READY_TEST_TIMEOUT;
     loop {
         assert!(
             Instant::now() < deadline,
@@ -117,7 +117,7 @@ fn embedded_startup_ready_arrives_after_vimenter_autocommands() {
     .recv_blocking()
     .unwrap()
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + STARTUP_READY_TEST_TIMEOUT;
     loop {
         assert!(
             Instant::now() < deadline,

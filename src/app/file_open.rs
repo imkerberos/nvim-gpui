@@ -1,5 +1,7 @@
 use super::{NvimGpui, Session};
 use crate::nvim::NvimProcess;
+#[cfg(test)]
+use crate::nvim::STARTUP_READY_TEST_TIMEOUT;
 use gpui::{Context, Window};
 use std::{
     path::{Path, PathBuf},
@@ -269,7 +271,7 @@ mod tests {
         assert!(session.take_pending_file_opens().is_empty());
         assert_eq!(session.pending_file_opens, files);
         let events = session.nvim.as_ref().unwrap().events();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + STARTUP_READY_TEST_TIMEOUT;
         loop {
             assert!(
                 std::time::Instant::now() < deadline,

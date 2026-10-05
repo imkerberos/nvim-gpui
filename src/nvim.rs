@@ -53,6 +53,8 @@ const NVIM_EXITED: &str = "nvim process exited";
 // embedded Neovim process, especially when several protocol tests run in
 // parallel. Keep the startup handshake from being abandoned prematurely.
 const STARTUP_THEME_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+pub(crate) const STARTUP_READY_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const COMMAND_QUEUE_CAPACITY: usize = 256;
 const EVENT_QUEUE_CAPACITY: usize = 4096;
