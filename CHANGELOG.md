@@ -2,6 +2,25 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.8.0] - Unreleased
+
+### Added
+
+- Settings supports editable font fallback chains with live fuzzy search and
+  keyboard selection of font families.
+
+### Improved
+
+- Grid cells are rendered directly and background painting is batched, reducing
+  per-row view overhead.
+- Inline images follow the text grid's scrolling animation and remain aligned
+  with the text while scrolling.
+
+### Fixed
+
+- Files opened from Finder now wait for embedded Neovim startup to complete so
+  filetype detection and startup plugins can process them correctly.
+
 ## [0.7.6] - 2026-10-03
 
 ### Added
