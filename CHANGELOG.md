@@ -2,8 +2,7 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.8.0] - Unreleased
-
+## [0.8.0] - 2026-10-05
 ### Added
 
 - Settings supports editable font fallback chains with live fuzzy search and
