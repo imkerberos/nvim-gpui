@@ -12,6 +12,12 @@ pub const DEFAULT_IMAGE_CACHE_SIZE_MB: u32 = 128;
 pub const IMAGE_CACHE_SIZE_OPTIONS_MB: &[u32] = &[64, 128, 256, 512, 1024];
 pub const DEFAULT_FONT_SIZE: u32 = 14;
 pub const FONT_SIZE_OPTIONS: &[u32] = &[10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
+/// Default number of character columns used to size the first window.
+pub const DEFAULT_GRID_WIDTH: u32 = 120;
+/// Default number of character rows used to size the first window.
+pub const DEFAULT_GRID_HEIGHT: u32 = 40;
+const MIN_GRID_DIMENSION: u32 = 1;
+const MAX_GRID_DIMENSION: u32 = 1000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogLevel {
@@ -392,6 +398,8 @@ pub struct Settings {
     pub font_size: u32,
     pub guifont: String,
     pub guifontwide: String,
+    pub default_grid_width: u32,
+    pub default_grid_height: u32,
     pub nerd_font: NerdFontChoice,
     pub fallback_mode: FallbackMode,
     pub cursor_animation: bool,
@@ -419,6 +427,8 @@ impl Default for Settings {
             font_size: DEFAULT_FONT_SIZE,
             guifont: String::new(),
             guifontwide: String::new(),
+            default_grid_width: DEFAULT_GRID_WIDTH,
+            default_grid_height: DEFAULT_GRID_HEIGHT,
             nerd_font: NerdFontChoice::default(),
             fallback_mode: FallbackMode::default(),
             cursor_animation: true,
@@ -465,12 +475,19 @@ impl Settings {
             .map_err(|error| format!("could not write {}: {error}", path.display()))
     }
 
+    /// Grid dimensions used to size the main window when it is first opened.
+    pub(crate) fn initial_grid_size(&self) -> (u32, u32) {
+        (self.default_grid_width, self.default_grid_height)
+    }
+
     fn to_file_contents(&self) -> String {
         format!(
-            "font_size={}\nguifont={}\nguifontwide={}\nnerd_font={}\nfallback_mode={}\ncursor_animation={}\nscrolling_animation={}\nstartup_maximized={}\nshow_titlebar={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\ncheck_for_updates={}\nlast_update_check={}\n",
+            "font_size={}\nguifont={}\nguifontwide={}\ndefault_grid_width={}\ndefault_grid_height={}\nnerd_font={}\nfallback_mode={}\ncursor_animation={}\nscrolling_animation={}\nstartup_maximized={}\nshow_titlebar={}\nquit_on_window_close={}\nallow_multiple_instances={}\nlog_level={}\nimage_cache_size_mb={}\npaste_shortcut={}\nime_backend={}\nrime_candidate_layout={}\nrime_toggle_shortcut={}\nrime_library_dir={}\nrime_library_auto_detect={}\nrime_data_dir={}\ncheck_for_updates={}\nlast_update_check={}\n",
             self.font_size,
             self.guifont,
             self.guifontwide,
+            self.default_grid_width,
+            self.default_grid_height,
             self.nerd_font.key(),
             self.fallback_mode.key(),
             self.cursor_animation,
@@ -510,6 +527,20 @@ fn parse_settings(contents: &str) -> Settings {
             }
             "guifont" => settings.guifont = value.trim().to_owned(),
             "guifontwide" => settings.guifontwide = value.trim().to_owned(),
+            "default_grid_width" => {
+                if let Ok(value) = value.trim().parse::<u32>() {
+                    if (MIN_GRID_DIMENSION..=MAX_GRID_DIMENSION).contains(&value) {
+                        settings.default_grid_width = value;
+                    }
+                }
+            }
+            "default_grid_height" => {
+                if let Ok(value) = value.trim().parse::<u32>() {
+                    if (MIN_GRID_DIMENSION..=MAX_GRID_DIMENSION).contains(&value) {
+                        settings.default_grid_height = value;
+                    }
+                }
+            }
             "nerd_font" => {
                 if let Some(value) = NerdFontChoice::parse(value.trim()) {
                     settings.nerd_font = value;
@@ -645,13 +676,18 @@ pub(crate) fn rime_user_data_directory() -> Option<PathBuf> {
 mod tests {
     use super::{
         parse_settings, FallbackMode, ImeBackend, LogLevel, NerdFontChoice, PasteShortcut,
-        RimeCandidateLayout, RimeToggleShortcut, Settings, DEFAULT_FONT_SIZE,
+        RimeCandidateLayout, RimeToggleShortcut, Settings, DEFAULT_FONT_SIZE, DEFAULT_GRID_HEIGHT,
+        DEFAULT_GRID_WIDTH,
     };
 
     #[test]
     fn defaults_are_conservative_and_use_a_128_mb_image_cache() {
-        assert_eq!(Settings::default().image_cache_size_mb, 128);
-        assert_eq!(Settings::default().font_size, DEFAULT_FONT_SIZE);
+        let default_settings = Settings::default();
+
+        assert_eq!(default_settings.image_cache_size_mb, 128);
+        assert_eq!(default_settings.font_size, DEFAULT_FONT_SIZE);
+        assert_eq!(default_settings.default_grid_width, DEFAULT_GRID_WIDTH);
+        assert_eq!(default_settings.default_grid_height, DEFAULT_GRID_HEIGHT);
         assert!(Settings::default().guifont.is_empty());
         assert!(Settings::default().guifontwide.is_empty());
         assert_eq!(Settings::default().nerd_font, NerdFontChoice::Symbols);
@@ -692,12 +728,14 @@ mod tests {
     #[test]
     fn settings_parser_ignores_unknown_and_invalid_values() {
         let settings = parse_settings(
-            "font_size=18\nguifont=Iosevka Term\nguifontwide=PingFang SC\nnerd_font=symbols-mono\nfallback_mode=force\ncursor_animation=false\nscrolling_animation=false\nstartup_maximized=true\nshow_titlebar=false\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\ncheck_for_updates=false\nlast_update_check=123\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nfont_size=17\nimage_cache_size_mb=1\n",
+            "font_size=18\nguifont=Iosevka Term\nguifontwide=PingFang SC\ndefault_grid_width=132\ndefault_grid_height=44\nnerd_font=symbols-mono\nfallback_mode=force\ncursor_animation=false\nscrolling_animation=false\nstartup_maximized=true\nshow_titlebar=false\nquit_on_window_close=false\nallow_multiple_instances=false\nlog_level=debug\nimage_cache_size_mb=512\npaste_shortcut=ctrl-v\nime_backend=system\nrime_candidate_layout=horizontal\nrime_toggle_shortcut=ctrl-shift-space\nrime_library_dir=/tmp/librime\nrime_library_auto_detect=true\nrime_data_dir=/tmp/rime-data\ncheck_for_updates=false\nlast_update_check=123\nrime_user_data_dir=/tmp/rime-user\nrime_staging_data_dir=/tmp/rime-staging\nunknown=x\nfont_size=17\nimage_cache_size_mb=1\n",
         );
 
         assert_eq!(settings.font_size, 18);
         assert_eq!(settings.guifont, "Iosevka Term");
         assert_eq!(settings.guifontwide, "PingFang SC");
+        assert_eq!(settings.default_grid_width, 132);
+        assert_eq!(settings.default_grid_height, 44);
         assert_eq!(settings.nerd_font, NerdFontChoice::SymbolsMono);
         assert_eq!(settings.fallback_mode, FallbackMode::Force);
         assert!(!settings.cursor_animation);
@@ -724,6 +762,17 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_invalid_grid_settings_fall_back_to_defaults() {
+        let settings = parse_settings("font_size=18\n");
+        assert_eq!(settings.default_grid_width, DEFAULT_GRID_WIDTH);
+        assert_eq!(settings.default_grid_height, DEFAULT_GRID_HEIGHT);
+
+        let settings = parse_settings("default_grid_width=0\ndefault_grid_height=1001\n");
+        assert_eq!(settings.default_grid_width, DEFAULT_GRID_WIDTH);
+        assert_eq!(settings.default_grid_height, DEFAULT_GRID_HEIGHT);
+    }
+
+    #[test]
     fn log_levels_map_to_filters_and_ignore_invalid_values() {
         assert_eq!(LogLevel::Off.filter(), log::LevelFilter::Off);
         assert_eq!(LogLevel::Error.filter(), log::LevelFilter::Error);
@@ -743,6 +792,8 @@ mod tests {
             font_size: 18,
             guifont: "Iosevka Term".to_owned(),
             guifontwide: "PingFang SC".to_owned(),
+            default_grid_width: 140,
+            default_grid_height: 45,
             quit_on_window_close: false,
             allow_multiple_instances: false,
             log_level: LogLevel::Trace,
@@ -756,6 +807,8 @@ mod tests {
         assert!(contents.contains("font_size=18\n"));
         assert!(contents.contains("guifont=Iosevka Term\n"));
         assert!(contents.contains("guifontwide=PingFang SC\n"));
+        assert!(contents.contains("default_grid_width=140\n"));
+        assert!(contents.contains("default_grid_height=45\n"));
         assert!(contents.contains("cursor_animation=true\n"));
         assert!(contents.contains("scrolling_animation=true\n"));
         assert!(contents.contains(&format!(

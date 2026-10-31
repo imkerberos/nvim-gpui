@@ -262,6 +262,20 @@ vim.api.nvim_create_autocmd("UIEnter", {
 The window uses the current font and line spacing, within the screen's limits.
 Maximized and fullscreen windows keep their size.
 
+The initial window size can also be configured in the nvim-gpui settings file
+(`%APPDATA%\nvim-gpui\settings.conf` on Windows,
+`~/Library/Application Support/nvim-gpui/settings.conf` on macOS, and
+`$XDG_CONFIG_HOME/nvim-gpui/settings.conf` on Linux):
+
+```ini
+default_grid_width=120
+default_grid_height=40
+```
+
+The values are the character grid used to size the first window, in columns and
+rows. `columns` and `lines` from Neovim still take precedence once a session is
+running. Missing, non-numeric, or out-of-range values fall back to `120x40`.
+
 ## Font configuration
 
 Font selection is available in Settings → `Font and image`. nvim-gpui uses the
