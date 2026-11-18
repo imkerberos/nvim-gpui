@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ''
+      platform:
+        description: Platform to build, or all.
+        required: false
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       ref:
@@ -15,13 +20,19 @@ on:
         required: false
         type: string
         default: ''
+      platform:
+        description: Platform to build.
+        required: false
+        type: choice
+        default: all
+        options: [all, macos, debian, fedora, arch, windows]
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: preview-${{ inputs.ref || github.ref }}
+  group: preview-${{ inputs.ref || github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -29,6 +40,7 @@ env:
 
 jobs:
   macos:
+    if: ${{ !inputs.platform || inputs.platform == 'all' || inputs.platform == 'macos' }}
     name: Preview macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -108,6 +120,7 @@ jobs:
           retention-days: 7
 
   debian:
+    if: ${{ !inputs.platform || inputs.platform == 'all' || inputs.platform == 'debian' }}
     name: Preview Debian ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -163,6 +176,7 @@ jobs:
           retention-days: 7
 
   fedora:
+    if: ${{ !inputs.platform || inputs.platform == 'all' || inputs.platform == 'fedora' }}
     name: Preview Fedora ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -197,6 +211,7 @@ jobs:
           retention-days: 7
 
   arch:
+    if: ${{ !inputs.platform || inputs.platform == 'all' || inputs.platform == 'arch' }}
     name: Preview Arch Linux x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -223,6 +238,7 @@ jobs:
           retention-days: 7
 
   windows:
+    if: ${{ !inputs.platform || inputs.platform == 'all' || inputs.platform == 'windows' }}
     name: Preview Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 75
