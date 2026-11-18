@@ -2,7 +2,7 @@
 
 All notable changes to nvim-gpui are documented here.
 
-## [0.8.2] - Unreleased
+## [0.8.2] - 2026-11-19
 
 ### Fixed
 
