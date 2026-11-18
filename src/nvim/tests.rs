@@ -737,7 +737,6 @@ fn embedded_nvim_accepts_literal_angle_brackets_and_dedent_keys() {
     use crate::input::{key_to_nvim_input, text_to_nvim_input};
 
     let process = spawn_test_nvim();
-    wait_for_event(&process, NvimEvent::StartupReady);
     request(
         &process,
         "nvim_command",
