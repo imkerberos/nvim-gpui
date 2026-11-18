@@ -1570,8 +1570,8 @@ mod tests {
         let element = GridElement::with_shared_model(Rc::clone(model));
         let mut cache = GridPaintCache::default();
         cache.update_context(element.paint_context(1.0), model);
-        for index in 0..model.height() {
-            cache.rows[index] = Some(CachedGridRow {
+        for (index, row) in cache.rows.iter_mut().enumerate().take(model.height()) {
+            *row = Some(CachedGridRow {
                 row: model.row_handle(index).unwrap(),
                 columns: (0, model.width()),
                 paint: Rc::new(GridPrepaintState::default()),
