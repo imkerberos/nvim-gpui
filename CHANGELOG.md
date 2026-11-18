@@ -2,6 +2,13 @@
 
 All notable changes to nvim-gpui are documented here.
 
+## [0.8.2] - Unreleased
+
+### Fixed
+
+- Escape literal `<` characters sent to Neovim so text input and normal/visual
+  mode dedent commands work correctly (issue #9).
+
 ## [0.8.1] - 2026-10-17
 
 ### Added

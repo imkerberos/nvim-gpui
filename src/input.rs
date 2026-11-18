@@ -365,6 +365,11 @@ pub fn rime_modifier_transition(
     rime_modifier_event(key, modifiers, !is_pressed)
 }
 
+/// Encode literal text for `nvim_input`, which also parses special key notation.
+pub fn text_to_nvim_input(text: &str) -> String {
+    text.replace('<', "<LT>")
+}
+
 pub fn key_to_nvim_input(keystroke: &Keystroke) -> String {
     if !keystroke.modifiers.control
         && !keystroke.modifiers.alt
@@ -373,14 +378,14 @@ pub fn key_to_nvim_input(keystroke: &Keystroke) -> String {
     {
         if let Some(key_char) = keystroke.key_char.as_ref() {
             if !matches!(keystroke.key.as_str(), "enter" | "tab") {
-                return key_char.clone();
+                return text_to_nvim_input(key_char);
             }
         }
         if keystroke.key.chars().count() == 1 {
             if keystroke.modifiers.shift {
-                return keystroke.key.to_uppercase();
+                return text_to_nvim_input(&keystroke.key.to_uppercase());
             }
-            return keystroke.key.clone();
+            return text_to_nvim_input(&keystroke.key);
         }
     }
 
@@ -616,9 +621,9 @@ mod tests {
     use super::{
         context_for_nvim_mode, key_to_nvim_input, nvim_mouse_button, nvim_mouse_modifiers,
         rime_key_event, rime_modifier_transition, scroll_delta_to_lines,
-        should_route_key_to_neovim, InputContext, InputRouter, InputRouterConfig, InputTarget,
-        SystemImeState, RIME_ALT_MASK, RIME_CONTROL_MASK, RIME_RELEASE_MASK, RIME_SHIFT_MASK,
-        RIME_SUPER_MASK,
+        should_route_key_to_neovim, text_to_nvim_input, InputContext, InputRouter,
+        InputRouterConfig, InputTarget, SystemImeState, RIME_ALT_MASK, RIME_CONTROL_MASK,
+        RIME_RELEASE_MASK, RIME_SHIFT_MASK, RIME_SUPER_MASK,
     };
     use gpui::{point, px, Keystroke, Modifiers, MouseButton, ScrollDelta};
 
@@ -713,6 +718,31 @@ mod tests {
 
         let control = Keystroke::parse("ctrl-w").expect("control key should parse");
         assert_eq!(key_to_nvim_input(&control), "<C-w>");
+    }
+
+    #[test]
+    fn literal_text_escapes_key_notation() {
+        assert_eq!(text_to_nvim_input("<div>你好"), "<LT>div>你好");
+        assert_eq!(text_to_nvim_input("<Esc><LT>"), "<LT>Esc><LT>LT>");
+        assert_eq!(text_to_nvim_input(">"), ">");
+    }
+
+    #[test]
+    fn less_than_key_is_escaped_with_and_without_key_char() {
+        let mut key = Keystroke {
+            key: ",".to_owned(),
+            key_char: Some("<".to_owned()),
+            modifiers: Modifiers::shift(),
+        };
+        assert_eq!(key_to_nvim_input(&key), "<LT>");
+        key.key = "<".to_owned();
+        key.key_char = None;
+        assert_eq!(key_to_nvim_input(&key), "<LT>");
+        key.modifiers = Modifiers::default();
+        assert_eq!(key_to_nvim_input(&key), "<LT>");
+        key.key = ">".to_owned();
+        key.key_char = Some(">".to_owned());
+        assert_eq!(key_to_nvim_input(&key), ">");
     }
 
     #[test]

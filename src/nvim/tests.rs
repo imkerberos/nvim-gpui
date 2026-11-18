@@ -733,6 +733,56 @@ fn gui_clipboard_provider_forwards_remote_yanks_to_the_client() {
 }
 
 #[test]
+fn embedded_nvim_accepts_literal_angle_brackets_and_dedent_keys() {
+    use crate::input::{key_to_nvim_input, text_to_nvim_input};
+
+    let process = spawn_test_nvim();
+    wait_for_event(&process, NvimEvent::StartupReady);
+    request(
+        &process,
+        "nvim_command",
+        vec![Value::from("set expandtab shiftwidth=4")],
+    );
+
+    let assert_line = |expected: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let line = request(&process, "nvim_get_current_line", vec![]);
+            if line.as_str() == Some(expected) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {expected:?}, got {line:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let less_than = key_to_nvim_input(&gpui::Keystroke {
+        key: ",".to_owned(),
+        key_char: Some("<".to_owned()),
+        modifiers: gpui::Modifiers::shift(),
+    });
+
+    process.send_input("i").unwrap();
+    process
+        .send_input(text_to_nvim_input("<div><Esc>你好"))
+        .unwrap();
+    process.send_input("<Esc>").unwrap();
+    assert_line("<div><Esc>你好");
+
+    process.send_input(">>").unwrap();
+    assert_line("    <div><Esc>你好");
+    process.send_input(less_than.repeat(2)).unwrap();
+    assert_line("<div><Esc>你好");
+
+    process.send_input("V>").unwrap();
+    assert_line("    <div><Esc>你好");
+    process.send_input(format!("V{less_than}")).unwrap();
+    assert_line("<div><Esc>你好");
+}
+
+#[test]
 fn embedded_nvim_accepts_multiline_paste() {
     let process = spawn_test_nvim();
     process

@@ -67,7 +67,7 @@ impl EntityInputHandler for NvimGpui {
         self.editor.input.system_ime.replace_text(range, text);
         if !text.is_empty() {
             if let Some(nvim) = self.app.session.nvim.as_ref() {
-                if let Err(error) = nvim.send_input(text.to_owned()) {
+                if let Err(error) = nvim.send_input(input::text_to_nvim_input(text)) {
                     log::error!(
                         target: "nvim_gpui::ime",
                         "failed to forward committed IME text: {error}"
