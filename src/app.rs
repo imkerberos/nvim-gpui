@@ -1,6 +1,3 @@
-pub(crate) const DEFAULT_GRID_WIDTH: u32 = 80;
-pub(crate) const DEFAULT_GRID_HEIGHT: u32 = 24;
-
 pub(crate) mod clipboard;
 mod events;
 mod file_open;
@@ -15,6 +12,7 @@ use crate::editor::EditorRuntime;
 use gpui::{AnyWindowHandle, FocusHandle, Subscription, Task};
 
 pub(crate) use crate::editor::initial_window_size_for_grid;
+pub(crate) use crate::settings::{DEFAULT_GRID_HEIGHT, DEFAULT_GRID_WIDTH};
 pub(crate) use startup::run;
 pub(crate) use state::{AppState, Session};
 #[cfg(target_os = "linux")]

@@ -1,9 +1,8 @@
 use super::{
-    initial_window_size_for_grid, NvimGpui, DEBUG_WINDOW_HEIGHT, DEFAULT_GRID_HEIGHT,
-    DEFAULT_GRID_WIDTH, DEFAULT_WINDOW_TITLE, LOGO_ASSET, MD_ICON_ARROW_DROP_DOWN_ASSET,
-    MD_ICON_ARROW_DROP_UP_ASSET, MD_ICON_CLOSE_ASSET, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
-    WINDOW_CONTROL_CLOSE_ASSET, WINDOW_CONTROL_MAXIMIZE_ASSET, WINDOW_CONTROL_MINIMIZE_ASSET,
-    WINDOW_CONTROL_RESTORE_ASSET,
+    initial_window_size_for_grid, NvimGpui, DEBUG_WINDOW_HEIGHT, DEFAULT_WINDOW_TITLE, LOGO_ASSET,
+    MD_ICON_ARROW_DROP_DOWN_ASSET, MD_ICON_ARROW_DROP_UP_ASSET, MD_ICON_CLOSE_ASSET,
+    MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, WINDOW_CONTROL_CLOSE_ASSET, WINDOW_CONTROL_MAXIMIZE_ASSET,
+    WINDOW_CONTROL_MINIMIZE_ASSET, WINDOW_CONTROL_RESTORE_ASSET,
 };
 use crate::app::{themed_titlebar_options, themed_window_decorations};
 use crate::gui::DebugWindow;
@@ -54,17 +53,20 @@ pub(crate) fn run(
     logger: Option<flexi_logger::LoggerHandle>,
 ) -> bool {
     let startup_maximized = app_settings.startup_maximized;
+    let initial_grid_size = app_settings.initial_grid_size();
     crate::app::set_themed_titlebar_enabled(app_settings.show_titlebar);
     log::debug!(
         target: "nvim_gpui::startup",
-        "loaded settings: nerd_font={}, fallback_mode={}, startup_maximized={}, quit_on_window_close={}, allow_multiple_instances={}, log_level={}, image_cache_size_mb={}",
+        "loaded settings: nerd_font={}, fallback_mode={}, startup_maximized={}, quit_on_window_close={}, allow_multiple_instances={}, log_level={}, image_cache_size_mb={}, default_grid={}x{}",
         app_settings.nerd_font.key(),
         app_settings.fallback_mode.key(),
         app_settings.startup_maximized,
         app_settings.quit_on_window_close,
         app_settings.allow_multiple_instances,
         app_settings.log_level.key(),
-        app_settings.image_cache_size_mb
+        app_settings.image_cache_size_mb,
+        initial_grid_size.0,
+        initial_grid_size.1
     );
     let connection = match options.connection {
         NvimConnection::Embed => {
@@ -97,7 +99,7 @@ pub(crate) fn run(
         let Some(view) = reopen_view_for_handler.borrow().clone() else {
             return;
         };
-        if let Err(error) = open_main_window(view, startup_maximized, cx) {
+        if let Err(error) = open_main_window(view, startup_maximized, initial_grid_size, cx) {
             log::error!(target: "nvim_gpui::startup", "failed to reopen main window: {error}");
             return;
         }
@@ -149,13 +151,13 @@ pub(crate) fn run(
             });
             *reopen_view.borrow_mut() = Some(nvim_view.clone());
 
-            open_main_window(nvim_view.clone(), startup_maximized, cx)
+            open_main_window(nvim_view.clone(), startup_maximized, initial_grid_size, cx)
                 .expect("failed to open nvim-gpui window");
 
             if show_debug_window {
                 let main_bounds = Bounds::centered(
                     None,
-                    initial_window_size_for_grid(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT),
+                    initial_window_size_for_grid(initial_grid_size.0, initial_grid_size.1),
                     cx,
                 );
                 let debug_height = px(DEBUG_WINDOW_HEIGHT);
@@ -193,11 +195,12 @@ pub(crate) fn run(
 fn open_main_window(
     nvim_view: Entity<NvimGpui>,
     startup_maximized: bool,
+    initial_grid_size: (u32, u32),
     cx: &mut App,
 ) -> gpui::Result<WindowHandle<NvimGpui>> {
     let bounds = Bounds::centered(
         None,
-        initial_window_size_for_grid(DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT),
+        initial_window_size_for_grid(initial_grid_size.0, initial_grid_size.1),
         cx,
     );
     let close_guard_view = nvim_view.downgrade();

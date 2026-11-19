@@ -1,6 +1,6 @@
 use super::{
-    AppState, NvimGpui, QuitDialogState, Session, WindowRuntime, DEFAULT_GRID_HEIGHT,
-    DEFAULT_GRID_WIDTH, DEFAULT_WINDOW_TITLE, MAX_EVENTS_PER_UI_UPDATE,
+    AppState, NvimGpui, QuitDialogState, Session, WindowRuntime, DEFAULT_WINDOW_TITLE,
+    MAX_EVENTS_PER_UI_UPDATE,
 };
 use crate::editor::ProtocolState;
 use crate::input::{InputRouter, InputRouterConfig};
@@ -71,6 +71,7 @@ impl NvimGpui {
         // known and Neovim has been attached with that size.
         this.editor.protocol.startup.nvim_grid_ready = false;
         this.editor.protocol.startup.maximize_pending = startup_maximized;
+        this.editor.protocol.presentation.grid_size = Some(this.app.settings.initial_grid_size());
         this.editor.apply_runtime_settings(&this.app.settings);
         // librime deployment can rebuild a large data set. Start the backend
         // away from the UI thread so the first window remains responsive.
@@ -383,7 +384,7 @@ impl NvimGpui {
             .app
             .last_resize
             .or(self.editor.protocol.presentation.grid_size)
-            .unwrap_or((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
+            .unwrap_or_else(|| self.app.settings.initial_grid_size());
         self.app.session.reconnect_attempt = self.app.session.reconnect_attempt.saturating_add(1);
         let attempt = self.app.session.reconnect_attempt;
         let backoff = 250_u64 * (1_u64 << attempt.saturating_sub(1).min(4));
@@ -517,8 +518,7 @@ impl NvimGpui {
         self.app.session.nvim_startup_ready = false;
         self.editor.protocol = ProtocolState::default();
         self.editor.protocol.theme = initial_theme;
-        self.editor.protocol.presentation.grid_size =
-            Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT));
+        self.editor.protocol.presentation.grid_size = Some(self.app.settings.initial_grid_size());
         self.editor.protocol.startup.nvim_grid_ready = false;
         self.app.last_resize = None;
         self.app.pending_window_size = None;
@@ -934,7 +934,7 @@ mod tests {
         assert!(app.editor.presentation.presentation_snapshot.is_none());
         assert_eq!(
             app.editor.protocol.presentation.grid_size,
-            Some((DEFAULT_GRID_WIDTH, DEFAULT_GRID_HEIGHT))
+            Some(app.app.settings.initial_grid_size())
         );
         assert!(!app.editor.protocol.startup.grid_content_seen);
         assert!(!app.editor.protocol.startup.redraw_pending);
